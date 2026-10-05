@@ -1,5 +1,8 @@
 //! The checked-out tree for the selected repo: legend, rows, keyboard navigation.
 
+use std::path::PathBuf;
+
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
@@ -19,6 +22,13 @@ pub struct CollapseChanged {
     pub collapsed: bool,
 }
 
+/// Enter or the inline button asked to open a worktree in the editor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenRequested {
+    pub path: PathBuf,
+    pub openable: bool,
+}
+
 pub struct TreeView {
     repo: Option<RepoSnapshot>,
     collapsed: Vec<String>,
@@ -29,6 +39,7 @@ pub struct TreeView {
 }
 
 impl EventEmitter<CollapseChanged> for TreeView {}
+impl EventEmitter<OpenRequested> for TreeView {}
 
 impl Focusable for TreeView {
     fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
@@ -135,11 +146,44 @@ impl TreeView {
             "down" => NavKey::Down,
             "left" => NavKey::Left,
             "right" => NavKey::Right,
+            "enter" => {
+                self.request_open(cx);
+                cx.stop_propagation();
+                return;
+            }
             _ => return,
         };
         let effect = navigate(&self.tree, self.selected.as_ref(), key);
         self.apply(effect, cx);
         cx.stop_propagation();
+    }
+
+    /// Opens the selected row's worktree (a branch opens its first one).
+    fn request_open(&mut self, cx: &mut Context<Self>) {
+        let target = self
+            .selected
+            .as_ref()
+            .and_then(|id| self.tree.worktree_for(id));
+        if let Some((path, openable)) = target {
+            cx.emit(OpenRequested {
+                path: path.to_path_buf(),
+                openable,
+            });
+        }
+    }
+
+    /// Dev hook: selects the first worktree row and opens it.
+    pub fn dev_open_first(&mut self, cx: &mut Context<Self>) {
+        let first = self
+            .tree
+            .rows
+            .iter()
+            .find(|r| matches!(r.kind, RowKind::Worktree { .. }));
+        if let Some(id) = first.map(|r| r.id.clone()) {
+            self.select(id);
+            self.request_open(cx);
+            cx.notify();
+        }
     }
 
     fn on_row_click(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -247,6 +291,7 @@ impl TreeView {
                 display,
                 is_main,
                 detached_at,
+                openable,
                 ..
             } => base
                 .text_color(theme::worktree_text())
@@ -276,11 +321,64 @@ impl TreeView {
                 .when(*is_main, |d| d.child(badge("main worktree")))
                 .when_some(detached_at.as_ref(), |d, sha| {
                     d.child(badge(format!("detached @ {sha}")))
+                })
+                .when(selected, |d| {
+                    d.child(div().flex_1())
+                        .child(self.open_button(ix, *openable, cx))
                 }),
             RowKind::DetachedSection => unreachable!(),
         }
         .test_support()
         .into_any_element()
+    }
+}
+
+impl TreeView {
+    /// Inline "Open in <editor>" on the selected worktree row; disabled when missing.
+    fn open_button(&self, ix: usize, openable: bool, cx: &mut Context<Self>) -> AnyElement {
+        let editor = crate::launcher::editor_name(cx);
+        let label: SharedString = match &editor {
+            Some(name) => format!("Open in {name}").into(),
+            None => "Open in editor".into(),
+        };
+        let tip: SharedString = if openable {
+            format!("{label} (↵)").into()
+        } else {
+            "Folder is missing; run git worktree prune".into()
+        };
+        div()
+            .id(("open-editor", ix))
+            .flex_none()
+            .h(px(24.))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .font_family(theme::SANS)
+            .text_size(px(12.))
+            .child(icon(icons::EDITOR, 13.).text_color(if openable {
+                theme::link()
+            } else {
+                theme::faint()
+            }))
+            .child(label)
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .when_else(
+                openable,
+                |d| {
+                    d.bg(theme::raised())
+                        .text_color(theme::text())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::border()))
+                        .on_click(cx.listener(|this, _, _, cx| this.request_open(cx)))
+                },
+                |d| d.text_color(theme::faint()),
+            )
+            .test_support()
+            .into_any_element()
     }
 }
 

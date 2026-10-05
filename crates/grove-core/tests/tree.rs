@@ -281,3 +281,28 @@ fn keyboard_navigation_over_real_tree() {
     let last = collapsed.rows.last().unwrap().id.clone();
     assert_eq!(navigate(&collapsed, Some(&last), NavKey::Down).select, None);
 }
+
+#[test]
+fn rows_resolve_to_the_worktree_they_open() {
+    let f = Fixture::new();
+    prefixed_repo(&f);
+    let code = f.code().canonicalize().unwrap();
+    let wt = code.join("wt");
+    std::fs::remove_dir_all(wt.join("api-c")).unwrap();
+    let tree = tree_of(&f.scan(), "api", &[]);
+    let api = code.join("api");
+
+    let branch = |n: &str| tree.worktree_for(&RowId::Branch(n.into()));
+    assert_eq!(branch("main"), Some((api.as_path(), true)));
+    assert_eq!(
+        branch("feature/a"),
+        Some((wt.join("api-a").as_path(), true))
+    );
+    assert_eq!(
+        tree.worktree_for(&RowId::Worktree(wt.join("api-b"))),
+        Some((wt.join("api-b").as_path(), true))
+    );
+    // Deleted folder: git reports it prunable, so it can't be opened.
+    assert_eq!(branch("fix/c"), Some((wt.join("api-c").as_path(), false)));
+    assert_eq!(tree.worktree_for(&RowId::Folder("feature/".into())), None);
+}

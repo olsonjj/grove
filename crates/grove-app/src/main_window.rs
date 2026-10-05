@@ -7,12 +7,26 @@ use gpui_kit::{
     TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
 
-use crate::tree_view::{CollapseChanged, TreeView};
-use crate::{shell, theme};
+use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
+use crate::{launcher, shell, theme};
+
+const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Open in editor";
+
+/// The status bar's confirmation or failure line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub text: String,
+    pub error: bool,
+    /// Fixable in settings: show the settings link.
+    pub settings: bool,
+}
 
 struct MainWindow {
     tree: Entity<TreeView>,
-    _collapse: Subscription,
+    status: Option<Status>,
+    /// Bumped per open so a slow earlier launch can't overwrite a newer status.
+    open_seq: u64,
+    _subs: [Subscription; 2],
 }
 
 /// The saved repo if it still exists, else the first.
@@ -34,13 +48,36 @@ impl MainWindow {
         let collapse = cx.subscribe(&tree, |_, _, ev: &CollapseChanged, cx| {
             shell::set_collapsed(&ev.repo, &ev.prefix, ev.collapsed, cx);
         });
+        let open = cx.subscribe(&tree, |this, _, ev: &OpenRequested, cx| {
+            this.open(ev, cx);
+        });
         window.focus(&tree.focus_handle(cx), cx);
         let mut this = Self {
             tree,
-            _collapse: collapse,
+            status: None,
+            open_seq: 0,
+            _subs: [collapse, open],
         };
         this.show_repo(selected_repo(cx), cx);
+        if std::env::var_os("GROVE_DEV_OPEN").is_some() {
+            this.dev_open(cx);
+        }
         this
+    }
+
+    /// Dev: opens the first worktree once editors are detected, so the inline button and
+    /// status bar can be checked without synthetic input.
+    fn dev_open(&self, cx: &mut Context<Self>) {
+        let tree = self.tree.clone();
+        cx.spawn(async move |_, cx| {
+            while !cx.update(|cx| launcher::ready(cx)) {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(50))
+                    .await;
+            }
+            tree.update(cx, |tree, cx| tree.dev_open_first(cx));
+        })
+        .detach();
     }
 
     fn show_repo(&mut self, name: Option<String>, cx: &mut Context<Self>) {
@@ -55,6 +92,97 @@ impl MainWindow {
             .unwrap_or_default();
         self.tree
             .update(cx, |tree, cx| tree.set_repo(repo, collapsed, cx));
+    }
+}
+
+impl MainWindow {
+    fn set_status(&mut self, text: String, error: bool, settings: bool, cx: &mut Context<Self>) {
+        self.status = Some(Status {
+            text,
+            error,
+            settings,
+        });
+        cx.notify();
+    }
+
+    fn open(&mut self, req: &OpenRequested, cx: &mut Context<Self>) {
+        self.open_seq += 1;
+        let seq = self.open_seq;
+        if !req.openable {
+            let text = format!(
+                "Can't open {}: folder is missing (run git worktree prune)",
+                tilde(&req.path)
+            );
+            return self.set_status(text, true, false, cx);
+        }
+        match launcher::open_in_editor(&req.path, cx) {
+            Err(e) => self.set_status(e.message, true, e.settings, cx),
+            Ok(opening) => {
+                self.set_status(opening.message, false, false, cx);
+                cx.spawn(async move |this, cx| {
+                    let result = opening.done.await;
+                    if let Err(e) = result {
+                        eprintln!("[grove] launch failed: {e}");
+                        let _ = this.update(cx, |this, cx| {
+                            if this.open_seq == seq {
+                                this.set_status(e.to_string(), true, false, cx);
+                            }
+                        });
+                    }
+                })
+                .detach();
+            }
+        }
+    }
+
+    fn status_bar(&self) -> impl IntoElement {
+        let line = match &self.status {
+            Some(s) => div()
+                .flex()
+                .min_w_0()
+                .gap(px(10.))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(if s.error {
+                            theme::warn_text()
+                        } else {
+                            theme::text_soft()
+                        })
+                        .child(s.text.clone()),
+                )
+                // Placeholder until the settings window exists (ticket 13).
+                .when(s.settings, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .text_color(theme::link())
+                            .child("Settings…"),
+                    )
+                }),
+            None => div(),
+        };
+        div()
+            .id("status-bar")
+            .flex_none()
+            .h(px(28.))
+            .px(px(14.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(16.))
+            .border_t_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
+            .text_size(px(12.))
+            .child(line)
+            .child(
+                div()
+                    .flex_none()
+                    .text_color(theme::faint())
+                    .child(SHORTCUTS),
+            )
     }
 }
 
@@ -176,10 +304,18 @@ impl Render for MainWindow {
         div()
             .size_full()
             .flex()
+            .flex_col()
             .bg(theme::bg())
             .text_color(theme::text())
-            .child(sidebar)
-            .child(content)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(sidebar)
+                    .child(content),
+            )
+            .child(self.status_bar())
     }
 }
 
@@ -224,18 +360,32 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use std::sync::Mutex;
+
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Point, TestAppContext};
-    use grove_core::{RowId, RowKind, Settings, SettingsFile, Snapshot};
+    use grove_core::{
+        Editor, LaunchError, LaunchPlan, OpenTarget, RowId, RowKind, Settings, SettingsFile,
+        Snapshot, TargetKind,
+    };
     use tempfile::TempDir;
 
     use super::*;
+    use crate::launcher::Launcher;
     use crate::shell::Library;
     use crate::tree_view::tests::canned;
 
     fn launch(
         cx: &mut TestAppContext,
         file: &SettingsFile,
+    ) -> (AnyWindowHandle, Entity<MainWindow>) {
+        launch_repo(cx, file, canned())
+    }
+
+    fn launch_repo(
+        cx: &mut TestAppContext,
+        file: &SettingsFile,
+        repo: grove_core::RepoSnapshot,
     ) -> (AnyWindowHandle, Entity<MainWindow>) {
         let settings = file.load().unwrap();
         cx.update(|cx| {
@@ -246,7 +396,7 @@ mod tests {
                 snapshot: Arc::new(Snapshot {
                     code_dir: PathBuf::from("/c"),
                     code_dir_exists: true,
-                    repos: vec![canned()],
+                    repos: vec![repo],
                 }),
                 saves: Default::default(),
             });
@@ -319,5 +469,202 @@ mod tests {
         let (_, main) = launch(cx, &file);
         assert!(folder_collapsed(cx, &main, "feature/"));
         assert!(!folder_collapsed(cx, &main, "fix/"));
+    }
+
+    type Launches = Arc<Mutex<Vec<Vec<String>>>>;
+
+    /// Fake launcher with VS Code and Zed CLIs; records each plan's argv instead of
+    /// spawning, and fails when `fail` is set.
+    fn fake_launcher(cx: &mut TestAppContext, fail: Option<LaunchError>) -> Launches {
+        let launches: Launches = Default::default();
+        let sink = launches.clone();
+        let editor = |e: Editor| OpenTarget {
+            kind: TargetKind::Editor(e),
+            app: None,
+            cli: Some(format!("/fake/bin/{}", e.cli_name()).into()),
+        };
+        cx.update(|cx| {
+            cx.set_global(Launcher {
+                targets: Some(vec![editor(Editor::VsCode), editor(Editor::Zed)]),
+                executor: Arc::new(move |plan| {
+                    let LaunchPlan::Spawn { program, args, .. } = plan;
+                    let argv = std::iter::once(program.display().to_string())
+                        .chain(args.iter().map(|a| a.to_string_lossy().into_owned()))
+                        .collect();
+                    sink.lock().unwrap().push(argv);
+                    fail.clone().map_or(Ok(()), Err)
+                }),
+            })
+        });
+        launches
+    }
+
+    fn keys(cx: &mut TestAppContext, w: AnyWindowHandle, keys: &[&str]) {
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            for k in keys {
+                window.press(k, cx);
+            }
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    fn status(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> Option<Status> {
+        main.read_with(cx, |m, _| m.status.clone())
+    }
+
+    fn settings_file(tmp: &TempDir, settings: Settings) -> SettingsFile {
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        file.save(&settings).unwrap();
+        file
+    }
+
+    fn code(path: &str) -> Vec<String> {
+        vec!["/fake/bin/code".into(), "--new-window".into(), path.into()]
+    }
+
+    #[gpui_kit::test]
+    fn enter_opens_worktree_and_branch_rows_in_default_editor(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, None);
+        let (w, main) = launch(cx, &file);
+
+        // Branch row `main` opens its worktree.
+        keys(cx, w, &["enter"]);
+        assert_eq!(*launches.lock().unwrap(), [code("/c/api")]);
+        let s = status(cx, &main).unwrap();
+        assert_eq!(s.text, "Opening /c/api in VS Code…");
+        assert!(!s.error);
+
+        // main → wt → feature/ → feature/x → its worktree.
+        keys(cx, w, &["down", "down", "down", "enter", "down", "enter"]);
+        assert_eq!(
+            launches.lock().unwrap()[1..],
+            [code("/c/wt/api-x"), code("/c/wt/api-x")]
+        );
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Opening /c/wt/api-x in VS Code…"
+        );
+
+        // A folder row opens nothing; every open is a new launch, never deduped.
+        keys(cx, w, &["up", "up", "enter"]);
+        assert_eq!(launches.lock().unwrap().len(), 3);
+    }
+
+    #[gpui_kit::test]
+    fn configured_editor_is_used(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                default_editor: Some("zed".into()),
+                ..Default::default()
+            },
+        );
+        let launches = fake_launcher(cx, None);
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["enter"]);
+        assert_eq!(
+            *launches.lock().unwrap(),
+            [vec!["/fake/bin/zed", "--new", "/c/api"]]
+        );
+        assert_eq!(status(cx, &main).unwrap().text, "Opening /c/api in Zed…");
+    }
+
+    #[gpui_kit::test]
+    fn launch_failure_shows_reason(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let fail = LaunchError::Exit {
+            program: "code".into(),
+            status: "exit status: 1".into(),
+            stderr: "bad option".into(),
+        };
+        let launches = fake_launcher(cx, Some(fail));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["enter"]);
+        assert_eq!(launches.lock().unwrap().len(), 1);
+        let s = status(cx, &main).unwrap();
+        assert_eq!(s.text, "code failed: bad option");
+        assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn uninstalled_default_editor_is_an_error(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                default_editor: Some("cursor".into()),
+                ..Default::default()
+            },
+        );
+        let launches = fake_launcher(cx, None);
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["enter"]);
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(
+            status(cx, &main).unwrap(),
+            Status {
+                text: "Your default editor, Cursor, isn't installed anymore".into(),
+                error: true,
+                settings: true,
+            }
+        );
+    }
+
+    #[gpui_kit::test]
+    fn inline_button_on_selected_worktree_only(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, None);
+        let (w, main) = launch(cx, &file);
+        let has_button = |cx: &mut TestAppContext, ix: usize| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(("open-editor", ix)).is_some()
+            })
+            .unwrap()
+        };
+        // Branch row selected: no button anywhere.
+        assert!(!(0..10).any(|ix| has_button(cx, ix)));
+        keys(cx, w, &["down"]);
+        assert!(has_button(cx, 1));
+        assert!(!has_button(cx, 4));
+
+        cx.update_window(w, |_, window, cx| window.click(("open-editor", 1usize), cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(*launches.lock().unwrap(), [code("/c/api")]);
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Opening /c/api in VS Code…"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn missing_worktree_cannot_be_opened(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, None);
+        let mut repo = canned();
+        repo.worktrees[1].prunable = true; // /c/wt/api-x
+        let (w, main) = launch_repo(cx, &file, repo);
+
+        // feature/x branch, then its worktree; Enter and the button both refuse.
+        keys(cx, w, &["down", "down", "down", "enter", "down", "enter"]);
+        cx.update_window(w, |_, window, cx| window.click(("open-editor", 4usize), cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(launches.lock().unwrap().is_empty());
+        let s = status(cx, &main).unwrap();
+        assert_eq!(
+            s.text,
+            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+        );
+        assert!(s.error);
     }
 }

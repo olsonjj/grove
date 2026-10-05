@@ -34,8 +34,8 @@ pub struct Saves {
 }
 
 struct Shell {
-    _tray: TrayIcon,
-    _hotkeys: GlobalHotKeyManager,
+    _tray: Option<TrayIcon>,
+    _hotkeys: Option<GlobalHotKeyManager>,
     popover: Option<AnyWindowHandle>,
     popover_closed_at: Option<Instant>,
     switcher: Option<AnyWindowHandle>,
@@ -49,9 +49,15 @@ impl Global for Shell {}
 /// is complete, so a half-configured Grove has no menu bar icon or shortcuts.
 pub fn start(library: Library, cx: &mut App) {
     let (tx, rx) = async_channel::unbounded::<PlatformEvent>();
-    let tray = status_item::install(tx.clone()).expect("status item");
-    let hotkeys = hotkeys::install(tx).expect("global hotkeys");
+    // Either can fail, e.g. a second Grove can't take the same hotkeys; keep running.
+    let tray = status_item::install(tx.clone())
+        .inspect_err(|e| eprintln!("[grove] status item unavailable: {e}"))
+        .ok();
+    let hotkeys = hotkeys::install(tx)
+        .inspect_err(|e| eprintln!("[grove] global hotkeys unavailable: {e}"))
+        .ok();
     cx.set_global(library);
+    crate::launcher::install(cx);
     cx.set_global(Shell {
         _tray: tray,
         _hotkeys: hotkeys,

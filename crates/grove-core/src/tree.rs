@@ -39,6 +39,8 @@ pub enum RowKind {
         display: DisplayPath,
         is_main: bool,
         locked: bool,
+        /// False when git reports the folder gone (deleted or on an unmounted drive).
+        openable: bool,
         /// Short (7 char) SHA when detached.
         detached_at: Option<String>,
     },
@@ -65,6 +67,24 @@ pub struct Tree {
 impl Tree {
     pub fn index_of(&self, id: &RowId) -> Option<usize> {
         self.rows.iter().position(|r| &r.id == id)
+    }
+
+    /// The worktree a row opens: itself, or a branch's first worktree (main first).
+    /// Returns its path and whether it can be opened.
+    pub fn worktree_for(&self, id: &RowId) -> Option<(&Path, bool)> {
+        let ix = self.index_of(id)?;
+        let row = match &self.rows[ix].kind {
+            RowKind::Worktree { .. } => &self.rows[ix],
+            RowKind::Branch { .. } => self
+                .rows
+                .get(ix + 1)
+                .filter(|r| r.parent.as_ref() == Some(id))?,
+            _ => return None,
+        };
+        match &row.kind {
+            RowKind::Worktree { path, openable, .. } => Some((path.as_path(), *openable)),
+            _ => None,
+        }
     }
 
     /// Rows a user can select (everything but section headers).
@@ -241,6 +261,7 @@ fn worktree_row(wt: &Worktree, depth: usize, parent: Option<RowId>, home: Option
             display: DisplayPath::new(&wt.path, home),
             is_main: wt.is_main,
             locked: wt.locked,
+            openable: !wt.prunable,
             detached_at: wt
                 .branch
                 .is_none()

@@ -1,5 +1,6 @@
 mod hotkeys;
 mod icons;
+mod launcher;
 mod macos;
 mod main_window;
 mod setup;
