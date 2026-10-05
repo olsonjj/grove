@@ -1,18 +1,28 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyManager;
-use gpui_kit::{AnyWindowHandle, App, Global, WindowId};
+use gpui_kit::{AnyWindowHandle, App, AppContext, Global, WindowId};
+use grove_core::{Settings, SettingsFile, Snapshot};
 use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
 
-use crate::{PlatformEvent, macos, windows};
+use crate::{PlatformEvent, hotkeys, macos, main_window, status_item, windows};
 
 /// A status-item click that arrives right after the popover closed on deactivation is the
 /// same click that deactivated it; ignore it so the click toggles instead of reopening.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
 
+/// Settings and snapshot the windows render from.
+pub struct Library {
+    pub settings_file: SettingsFile,
+    pub settings: Settings,
+    pub snapshot: Arc<Snapshot>,
+}
+
 struct Shell {
+    library: Library,
     _tray: TrayIcon,
     _hotkeys: GlobalHotKeyManager,
     popover: Option<AnyWindowHandle>,
@@ -24,8 +34,14 @@ struct Shell {
 
 impl Global for Shell {}
 
-pub fn init(cx: &mut App, tray: TrayIcon, hotkeys: GlobalHotKeyManager) {
+/// Installs the status item and hotkeys and opens the main window. Only called once setup
+/// is complete, so a half-configured Grove has no menu bar icon or shortcuts.
+pub fn start(library: Library, cx: &mut App) {
+    let (tx, rx) = async_channel::unbounded::<PlatformEvent>();
+    let tray = status_item::install(tx.clone()).expect("status item");
+    let hotkeys = hotkeys::install(tx).expect("global hotkeys");
     cx.set_global(Shell {
+        library,
         _tray: tray,
         _hotkeys: hotkeys,
         popover: None,
@@ -34,7 +50,42 @@ pub fn init(cx: &mut App, tray: TrayIcon, hotkeys: GlobalHotKeyManager) {
         main: None,
         prev_app: None,
     });
-    cx.on_window_closed(on_window_closed).detach();
+    windows::warm_up(cx);
+    cx.spawn(async move |cx| {
+        while let Ok(event) = rx.recv().await {
+            cx.update(|cx| handle(event, cx));
+        }
+    })
+    .detach();
+    handle(PlatformEvent::ShowMain, cx);
+}
+
+pub fn is_running(cx: &App) -> bool {
+    cx.has_global::<Shell>()
+}
+
+pub fn library(cx: &App) -> &Library {
+    &cx.global::<Shell>().library
+}
+
+pub fn select_repo(name: &str, cx: &mut App) {
+    let library = &mut cx.global_mut::<Shell>().library;
+    if library.settings.last_selected_repo.as_deref() == Some(name) {
+        return;
+    }
+    library.settings.last_selected_repo = Some(name.to_string());
+    save_settings(cx);
+}
+
+fn save_settings(cx: &mut App) {
+    let library = &cx.global::<Shell>().library;
+    let (file, settings) = (library.settings_file.clone(), library.settings.clone());
+    cx.background_spawn(async move {
+        if let Err(e) = file.save(&settings) {
+            eprintln!("[grove] saving settings to {}: {e}", file.path().display());
+        }
+    })
+    .detach();
 }
 
 pub fn handle(event: PlatformEvent, cx: &mut App) {
@@ -71,7 +122,7 @@ pub fn handle(event: PlatformEvent, cx: &mut App) {
             if let Some(main) = cx.global::<Shell>().main {
                 let _ = main.update(cx, |_, window, _| window.activate_window());
             } else {
-                let handle = windows::open_main(cx);
+                let handle = main_window::open(cx);
                 cx.global_mut::<Shell>().main = handle;
             }
             eprintln!("[grove] main window shown");
@@ -83,7 +134,7 @@ pub fn close(window: AnyWindowHandle, cx: &mut App) {
     let _ = window.update(cx, |_, window, _| window.remove_window());
 }
 
-fn on_window_closed(cx: &mut App, id: WindowId) {
+pub fn on_window_closed(cx: &mut App, id: WindowId) {
     let shell = cx.global_mut::<Shell>();
     let is = |h: Option<AnyWindowHandle>| h.is_some_and(|h| h.window_id() == id);
     if is(shell.popover) {

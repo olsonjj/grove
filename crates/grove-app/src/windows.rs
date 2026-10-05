@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext, Bounds, Context, FocusHandle, InteractiveElement,
-    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, TitlebarOptions,
-    Window, WindowBounds, WindowKind, WindowOptions, div, point, px, rgb, size,
+    IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled, Window, WindowBounds,
+    WindowKind, WindowOptions, div, point, px, rgb, size,
 };
 
 use crate::{shell, status_item::Anchor};
@@ -179,42 +179,4 @@ pub fn warm_up(cx: &mut App) {
         shell::close(handle, cx);
     }
     eprintln!("[grove] renderer warm-up {:.1} ms", ms(start));
-}
-
-// Main window
-
-struct MainWindow;
-
-impl Render for MainWindow {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .bg(rgb(0x1e1f22))
-            .text_color(rgb(0x9da0a6))
-            .p_4()
-            .child("Grove main window (empty)")
-    }
-}
-
-pub fn open_main(cx: &mut App) -> Option<AnyWindowHandle> {
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-            None,
-            size(px(960.), px(640.)),
-            cx,
-        ))),
-        titlebar: Some(TitlebarOptions {
-            title: Some("Grove".into()),
-            ..Default::default()
-        }),
-        focus: true,
-        show: true,
-        kind: WindowKind::Normal,
-        ..Default::default()
-    };
-    let result = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| MainWindow));
-    result
-        .map(|(handle, _)| handle)
-        .inspect_err(|e| eprintln!("[grove] main: {e:#}"))
-        .ok()
 }

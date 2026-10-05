@@ -1,7 +1,10 @@
 mod hotkeys;
 mod macos;
+mod main_window;
+mod setup;
 mod shell;
 mod status_item;
+mod theme;
 mod windows;
 
 use std::time::Instant;
@@ -22,18 +25,16 @@ fn main() {
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
             macos::set_accessory_activation_policy();
-
-            let (tx, rx) = async_channel::unbounded::<PlatformEvent>();
-            let tray = status_item::install(tx.clone()).expect("status item");
-            let hotkeys = hotkeys::install(tx).expect("global hotkeys");
-            shell::init(cx, tray, hotkeys);
-            windows::warm_up(cx);
-
-            cx.spawn(async move |cx| {
-                while let Ok(event) = rx.recv().await {
-                    cx.update(|cx| shell::handle(event, cx));
+            macos::use_dark_appearance();
+            cx.on_window_closed(|cx, id| {
+                if shell::is_running(cx) {
+                    shell::on_window_closed(cx, id);
+                } else {
+                    // Setup closed before finishing: nothing else can bring Grove back.
+                    cx.quit();
                 }
             })
             .detach();
+            setup::launch(cx);
         });
 }

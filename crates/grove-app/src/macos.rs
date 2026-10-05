@@ -4,8 +4,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Bool, Imp, Sel};
 use objc2::sel;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
-    NSRunningApplication, NSScreen, NSWorkspace,
+    NSAppearance, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions,
+    NSApplicationActivationPolicy, NSRunningApplication, NSScreen, NSWorkspace,
 };
 use objc2_foundation::MainThreadMarker;
 
@@ -45,6 +45,14 @@ pub fn set_accessory_activation_policy() {
         app.activationPolicy(),
         NSApplicationActivationPolicy::Accessory
     );
+}
+
+/// Dark theme only: also darkens titlebars and system panels (folder picker).
+pub fn use_dark_appearance() {
+    // SAFETY: AppKit-provided constant.
+    let name = unsafe { NSAppearanceNameDarkAqua };
+    let appearance = NSAppearance::appearanceNamed(name);
+    NSApplication::sharedApplication(mtm()).setAppearance(appearance.as_deref());
 }
 
 pub fn is_app_active() -> bool {

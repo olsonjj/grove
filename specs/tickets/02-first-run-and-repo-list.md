@@ -6,14 +6,23 @@
 
 **Status:** ready-for-agent
 
-- [ ] Core library builds and tests with no GPUI dependency
-- [ ] All subprocesses use the login-shell PATH; Homebrew `git` is found when launched from Finder
-- [ ] Setup screen states Grove reads only this folder and it can be changed later
-- [ ] Continue disabled until a folder is chosen; choice saved to settings
-- [ ] Discovery walks 2 levels deep; does not descend into a repo
-- [ ] Linked worktrees inside the code directory are grouped under their repo, not listed as repos
-- [ ] Worktrees outside the code directory are counted for their repo
-- [ ] Bare repos listed
-- [ ] No repos found → "No Git repos found in <folder>" with Choose folder…; same screen if the saved folder is later missing or empty
-- [ ] `git` missing or too old → blocking message with install instructions
-- [ ] Core tests cover: flat repo, nested org/repo, linked worktree inside and outside code dir, bare repo, empty folder
+- [x] Core library builds and tests with no GPUI dependency
+- [x] All subprocesses use the login-shell PATH; Homebrew `git` is found when launched from Finder
+- [x] Setup screen states Grove reads only this folder and it can be changed later
+- [x] Continue disabled until a folder is chosen; choice saved to settings
+- [x] Discovery walks 2 levels deep; does not descend into a repo
+- [x] Linked worktrees inside the code directory are grouped under their repo, not listed as repos
+- [x] Worktrees outside the code directory are counted for their repo
+- [x] Bare repos listed
+- [x] No repos found → "No Git repos found in <folder>" with Choose folder…; same screen if the saved folder is later missing or empty
+- [x] `git` missing or too old → blocking message with install instructions
+- [x] Core tests cover: flat repo, nested org/repo, linked worktree inside and outside code dir, bare repo, empty folder
+
+## Notes
+
+- Min git 2.20: covers `worktree list --porcelain` (2.7), `status --porcelain=v2` (2.11), `GIT_OPTIONAL_LOCKS` (2.15); every Xcode CLT/Homebrew git on macOS 14+ is newer.
+- PATH: `$SHELL -l -c` (5 s timeout), fallback = inherited PATH + /opt/homebrew/bin, /usr/local/bin, system dirs. Under `env -i HOME=$HOME` the log shows the login-shell PATH (with /opt/homebrew/bin before /usr/bin) and git resolved through it. No Homebrew git on this machine; verified instead with a stand-in git in a dir added only via `ZDOTDIR/.zprofile`, launched under `env -i` — Grove resolved that git.
+- Repo names are paths relative to the code dir (`org/repo`), `.git` suffix dropped; a `repo/.bare` layout is named `repo`.
+- A linked worktree whose repo is outside the code dir is skipped (spec 9: repos outside the folder are dropped).
+- Dev env vars: `GROVE_SETTINGS_PATH` (settings file), `GROVE_CODE_DIR` (open setup as if this folder was just picked), `GROVE_GIT` (git binary override, used to simulate missing/old git).
+- Closing the setup window before Continue quits Grove (nothing else can bring it back). Not checked by eye.
