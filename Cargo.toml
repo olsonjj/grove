@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+publish = false
+
+[workspace.dependencies]
+gpui-kit = "=0.7.0"
+tray-icon = { version = "=0.26.0", default-features = false }
+global-hotkey = "=0.8.0"
+async-channel = "=2.5.0"
+objc2 = "=0.6.4"
+objc2-foundation = "=0.3.2"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSWorkspace",
+] }
