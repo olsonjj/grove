@@ -10,7 +10,7 @@ use gpui_kit::{
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
 
-const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Open in editor";
+const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Editor   ⌘↵ Terminal";
 
 /// The status bar's confirmation or failure line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,20 +115,30 @@ impl MainWindow {
             );
             return self.set_status(text, true, false, cx);
         }
-        match launcher::open_in_editor(&req.path, cx) {
+        match launcher::open(req.role, &req.path, cx) {
             Err(e) => self.set_status(e.message, true, e.settings, cx),
             Ok(opening) => {
                 self.set_status(opening.message, false, false, cx);
+                let follow_up = opening.follow_up;
                 cx.spawn(async move |this, cx| {
-                    let result = opening.done.await;
-                    if let Err(e) = result {
-                        eprintln!("[grove] launch failed: {e}");
-                        let _ = this.update(cx, |this, cx| {
-                            if this.open_seq == seq {
-                                this.set_status(e.to_string(), true, false, cx);
+                    let (text, warn) = match opening.done.await {
+                        Ok(outcome) => {
+                            eprintln!("[grove] launch: {outcome:?}");
+                            match follow_up(&outcome) {
+                                Some(n) => (n.text, n.warn),
+                                None => return,
                             }
-                        });
-                    }
+                        }
+                        Err(e) => {
+                            eprintln!("[grove] launch failed: {e}");
+                            (e.to_string(), true)
+                        }
+                    };
+                    let _ = this.update(cx, |this, cx| {
+                        if this.open_seq == seq {
+                            this.set_status(text, warn, false, cx);
+                        }
+                    });
                 })
                 .detach();
             }
@@ -365,8 +375,8 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Point, TestAppContext};
     use grove_core::{
-        Editor, LaunchError, LaunchPlan, OpenTarget, RowId, RowKind, Settings, SettingsFile,
-        Snapshot, TargetKind,
+        Editor, Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Permission, RowId, RowKind,
+        Settings, SettingsFile, Snapshot, TargetKind, Terminal, TerminalOpensIn,
     };
     use tempfile::TempDir;
 
@@ -473,9 +483,10 @@ mod tests {
 
     type Launches = Arc<Mutex<Vec<Vec<String>>>>;
 
-    /// Fake launcher with VS Code and Zed CLIs; records each plan's argv instead of
-    /// spawning, and fails when `fail` is set.
-    fn fake_launcher(cx: &mut TestAppContext, fail: Option<LaunchError>) -> Launches {
+    /// Fake launcher with VS Code and Zed CLIs, Terminal, Warp and Ghostty; records each plan instead
+    /// of running it (a spawn as its argv, AppleScript as `["osascript", script]`) and
+    /// returns `result`.
+    fn fake_launcher(cx: &mut TestAppContext, result: Result<Outcome, LaunchError>) -> Launches {
         let launches: Launches = Default::default();
         let sink = launches.clone();
         let editor = |e: Editor| OpenTarget {
@@ -483,16 +494,34 @@ mod tests {
             app: None,
             cli: Some(format!("/fake/bin/{}", e.cli_name()).into()),
         };
+        let terminal = |t: Terminal, app: &str| OpenTarget {
+            kind: TargetKind::Terminal(t),
+            app: Some(app.into()),
+            cli: None,
+        };
         cx.update(|cx| {
             cx.set_global(Launcher {
-                targets: Some(vec![editor(Editor::VsCode), editor(Editor::Zed)]),
+                targets: Some(vec![
+                    editor(Editor::VsCode),
+                    editor(Editor::Zed),
+                    terminal(
+                        Terminal::Terminal,
+                        "/System/Applications/Utilities/Terminal.app",
+                    ),
+                    terminal(Terminal::Warp, "/Applications/Warp.app"),
+                    terminal(Terminal::Ghostty, "/Applications/Ghostty.app"),
+                ]),
                 executor: Arc::new(move |plan| {
-                    let LaunchPlan::Spawn { program, args, .. } = plan;
-                    let argv = std::iter::once(program.display().to_string())
-                        .chain(args.iter().map(|a| a.to_string_lossy().into_owned()))
-                        .collect();
-                    sink.lock().unwrap().push(argv);
-                    fail.clone().map_or(Ok(()), Err)
+                    let recorded = match plan {
+                        LaunchPlan::Spawn { program, args, .. } => {
+                            std::iter::once(program.display().to_string())
+                                .chain(args.iter().map(|a| a.to_string_lossy().into_owned()))
+                                .collect()
+                        }
+                        LaunchPlan::AppleScript { script, .. } => vec!["osascript".into(), script],
+                    };
+                    sink.lock().unwrap().push(recorded);
+                    crate::launcher::finished(result.clone())
                 }),
             })
         });
@@ -508,6 +537,14 @@ mod tests {
         })
         .unwrap();
         cx.run_until_parked();
+    }
+
+    fn has(cx: &mut TestAppContext, w: AnyWindowHandle, id: &'static str, ix: usize) -> bool {
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find((id, ix)).is_some()
+        })
+        .unwrap()
     }
 
     fn status(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> Option<Status> {
@@ -528,7 +565,7 @@ mod tests {
     fn enter_opens_worktree_and_branch_rows_in_default_editor(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
-        let launches = fake_launcher(cx, None);
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let (w, main) = launch(cx, &file);
 
         // Branch row `main` opens its worktree.
@@ -564,7 +601,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let launches = fake_launcher(cx, None);
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let (w, main) = launch(cx, &file);
         keys(cx, w, &["enter"]);
         assert_eq!(
@@ -583,7 +620,7 @@ mod tests {
             status: "exit status: 1".into(),
             stderr: "bad option".into(),
         };
-        let launches = fake_launcher(cx, Some(fail));
+        let launches = fake_launcher(cx, Err(fail));
         let (w, main) = launch(cx, &file);
         keys(cx, w, &["enter"]);
         assert_eq!(launches.lock().unwrap().len(), 1);
@@ -602,7 +639,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let launches = fake_launcher(cx, None);
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let (w, main) = launch(cx, &file);
         keys(cx, w, &["enter"]);
         assert!(launches.lock().unwrap().is_empty());
@@ -620,15 +657,9 @@ mod tests {
     fn inline_button_on_selected_worktree_only(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
-        let launches = fake_launcher(cx, None);
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let (w, main) = launch(cx, &file);
-        let has_button = |cx: &mut TestAppContext, ix: usize| {
-            cx.update_window(w, |_, window, cx| {
-                window.render_frame(cx);
-                window.try_find(("open-editor", ix)).is_some()
-            })
-            .unwrap()
-        };
+        let has_button = |cx: &mut TestAppContext, ix: usize| has(cx, w, "open-editor", ix);
         // Branch row selected: no button anywhere.
         assert!(!(0..10).any(|ix| has_button(cx, ix)));
         keys(cx, w, &["down"]);
@@ -649,7 +680,7 @@ mod tests {
     fn missing_worktree_cannot_be_opened(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
-        let launches = fake_launcher(cx, None);
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let mut repo = canned();
         repo.worktrees[1].prunable = true; // /c/wt/api-x
         let (w, main) = launch_repo(cx, &file, repo);
@@ -664,6 +695,262 @@ mod tests {
         assert_eq!(
             s.text,
             "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+        );
+        assert!(s.error);
+    }
+
+    /// The Terminal.app tab script that `cd`s into `path`.
+    fn terminal_tab(launch: &[String], path: &str) {
+        assert_eq!(launch[0], "osascript");
+        assert!(
+            launch[1].contains(&format!("do script \"cd '{path}'\"")),
+            "{}",
+            launch[1]
+        );
+        assert!(launch[1].contains(r#"keystroke "t" using command down"#));
+    }
+
+    #[gpui_kit::test]
+    fn cmd_enter_opens_worktree_and_branch_rows_in_default_terminal(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+
+        // Branch row `main` opens its worktree in a new Terminal tab.
+        keys(cx, w, &["cmd-enter"]);
+        let got = launches.lock().unwrap().clone();
+        assert_eq!(got.len(), 1);
+        terminal_tab(&got[0], "/c/api");
+        let s = status(cx, &main).unwrap();
+        assert_eq!(s.text, "Opening /c/api in Terminal…");
+        assert!(!s.error);
+
+        // feature/x branch, then its worktree row; each open is a new launch.
+        keys(
+            cx,
+            w,
+            &["down", "down", "down", "cmd-enter", "down", "cmd-enter"],
+        );
+        let got = launches.lock().unwrap().clone();
+        assert_eq!(got.len(), 3);
+        terminal_tab(&got[1], "/c/wt/api-x");
+        terminal_tab(&got[2], "/c/wt/api-x");
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Opening /c/wt/api-x in Terminal…"
+        );
+
+        // Folder row: nothing. Plain Enter still goes to the editor.
+        keys(cx, w, &["up", "up", "cmd-enter", "down", "enter"]);
+        let got = launches.lock().unwrap().clone();
+        assert_eq!(got.len(), 4);
+        assert_eq!(got[3], code("/c/wt/api-x"));
+    }
+
+    #[gpui_kit::test]
+    fn configured_terminal_and_window_setting(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                default_terminal: Some("warp".into()),
+                terminal_opens_in: TerminalOpensIn::Window,
+                ..Default::default()
+            },
+        );
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["cmd-enter"]);
+        assert_eq!(
+            *launches.lock().unwrap(),
+            [vec![
+                "/usr/bin/open",
+                "warp://action/new_window?path=/c/api"
+            ]]
+        );
+        assert_eq!(status(cx, &main).unwrap().text, "Opening /c/api in Warp…");
+    }
+
+    #[gpui_kit::test]
+    fn automation_denied_shows_permission_hint(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let denied = Outcome::FellBack(Fallback::Denied(Permission::Automation));
+        let launches = fake_launcher(cx, Ok(denied));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["cmd-enter"]);
+        assert_eq!(launches.lock().unwrap().len(), 1);
+        let s = status(cx, &main).unwrap();
+        assert_eq!(
+            s.text,
+            "Opened /c/api in a new Terminal window. For tabs, allow Grove in System Settings → Privacy & Security → Automation"
+        );
+        assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn terminal_launch_failure_shows_reason(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let fail = LaunchError::Exit {
+            program: "open".into(),
+            status: "exit status: 1".into(),
+            stderr: "Unable to find application named 'Terminal'".into(),
+        };
+        fake_launcher(cx, Err(fail));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["cmd-enter"]);
+        let s = status(cx, &main).unwrap();
+        assert_eq!(
+            s.text,
+            "open failed: Unable to find application named 'Terminal'"
+        );
+        assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn uninstalled_default_terminal_is_an_error(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                default_terminal: Some("iterm2".into()),
+                ..Default::default()
+            },
+        );
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["cmd-enter"]);
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(
+            status(cx, &main).unwrap(),
+            Status {
+                text: "Your default terminal, iTerm2, isn't installed anymore".into(),
+                error: true,
+                settings: true,
+            }
+        );
+    }
+
+    #[gpui_kit::test]
+    fn inline_terminal_button_opens_and_refuses_missing(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[1].prunable = true; // /c/wt/api-x
+        let (w, main) = launch_repo(cx, &file, repo);
+        let has_button = |cx: &mut TestAppContext, ix: usize| has(cx, w, "open-terminal", ix);
+        assert!(!(0..10).any(|ix| has_button(cx, ix)));
+        keys(cx, w, &["down"]);
+        assert!(has_button(cx, 1));
+        assert!(!has_button(cx, 4));
+
+        cx.update_window(w, |_, window, cx| {
+            window.click(("open-terminal", 1usize), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let got = launches.lock().unwrap().clone();
+        assert_eq!(got.len(), 1);
+        terminal_tab(&got[0], "/c/api");
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Opening /c/api in Terminal…"
+        );
+
+        // Missing worktree: the button is inert and ⌘Enter refuses.
+        keys(cx, w, &["down", "down", "down"]);
+        assert!(has_button(cx, 4));
+        cx.update_window(w, |_, window, cx| {
+            window.click(("open-terminal", 4usize), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(launches.lock().unwrap().len(), 1);
+        keys(cx, w, &["cmd-enter"]);
+        assert_eq!(launches.lock().unwrap().len(), 1);
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn default_app_names_follow_detection_order(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        launch(cx, &file);
+        cx.update(|cx| {
+            assert_eq!(
+                launcher::target_name(grove_core::Role::Terminal, cx).as_deref(),
+                Some("Terminal")
+            );
+            assert_eq!(
+                launcher::target_name(grove_core::Role::Editor, cx).as_deref(),
+                Some("VS Code")
+            );
+        });
+    }
+
+    /// Status after ⌘Enter on `main` when the executor returns `outcome`.
+    fn terminal_status(cx: &mut TestAppContext, settings: Settings, outcome: Outcome) -> Status {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, settings);
+        fake_launcher(cx, Ok(outcome));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["cmd-enter"]);
+        status(cx, &main).unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn permission_timeout_is_reported(cx: &mut TestAppContext) {
+        let s = terminal_status(cx, Settings::default(), Outcome::TimedOut);
+        assert_eq!(
+            s.text,
+            "Still waiting for permission to control Terminal. To open it, allow Grove in System Settings → Privacy & Security → Automation"
+        );
+        assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn old_ghostty_tab_falls_back_softly(cx: &mut TestAppContext) {
+        let settings = Settings {
+            default_terminal: Some("ghostty".into()),
+            ..Default::default()
+        };
+        let unsupported = Outcome::FellBack(Fallback::Unsupported(
+            "Expected end of line but found identifier. (-2741)".into(),
+        ));
+        let s = terminal_status(cx, settings, unsupported);
+        assert_eq!(
+            s.text,
+            "Opened /c/api in a new Ghostty window (tabs need Ghostty 1.3 or later)"
+        );
+        assert!(!s.error);
+    }
+
+    #[gpui_kit::test]
+    fn cold_launch_fallback_keeps_confirmation(cx: &mut TestAppContext) {
+        let settings = Settings {
+            default_terminal: Some("ghostty".into()),
+            ..Default::default()
+        };
+        let s = terminal_status(cx, settings, Outcome::FellBack(Fallback::NotRunning));
+        assert_eq!(s.text, "Opening /c/api in Ghostty…");
+        assert!(!s.error);
+    }
+
+    #[gpui_kit::test]
+    fn tab_script_failure_names_the_reason(cx: &mut TestAppContext) {
+        let failed =
+            Outcome::FellBack(Fallback::Failed("Terminal didn't come to the front".into()));
+        let s = terminal_status(cx, Settings::default(), failed);
+        assert_eq!(
+            s.text,
+            "Opened /c/api in a new Terminal window (new tab failed: Terminal didn't come to the front)"
         );
         assert!(s.error);
     }

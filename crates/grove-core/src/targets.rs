@@ -1,4 +1,4 @@
-//! App detection: which editors (later terminals, custom commands) Grove can open a
+//! App detection: which editors and terminals (later custom commands) Grove can open a
 //! worktree in.
 
 use std::path::{Path, PathBuf};
@@ -115,8 +115,171 @@ impl Editor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Terminal {
+    Terminal,
+    ITerm2,
+    Warp,
+    Ghostty,
+    Kitty,
+}
+
+impl Terminal {
+    /// Detection order; Terminal.app ships with macOS, so it's the usual default.
+    pub const ALL: [Terminal; 5] = [
+        Terminal::Terminal,
+        Terminal::ITerm2,
+        Terminal::Warp,
+        Terminal::Ghostty,
+        Terminal::Kitty,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Terminal::Terminal => "terminal",
+            Terminal::ITerm2 => "iterm2",
+            Terminal::Warp => "warp",
+            Terminal::Ghostty => "ghostty",
+            Terminal::Kitty => "kitty",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.id() == id)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Terminal::Terminal => "Terminal",
+            Terminal::ITerm2 => "iTerm2",
+            Terminal::Warp => "Warp",
+            Terminal::Ghostty => "Ghostty",
+            Terminal::Kitty => "Kitty",
+        }
+    }
+
+    fn bundle_ids(self) -> &'static [&'static str] {
+        match self {
+            Terminal::Terminal => &["com.apple.Terminal"],
+            Terminal::ITerm2 => &["com.googlecode.iterm2"],
+            Terminal::Warp => &["dev.warp.Warp-Stable"],
+            Terminal::Ghostty => &["com.mitchellh.ghostty"],
+            Terminal::Kitty => &["net.kovidgoyal.kitty"],
+        }
+    }
+
+    fn app_names(self) -> &'static [&'static str] {
+        match self {
+            Terminal::Terminal => &["Terminal.app"],
+            Terminal::ITerm2 => &["iTerm.app"],
+            Terminal::Warp => &["Warp.app"],
+            Terminal::Ghostty => &["Ghostty.app"],
+            Terminal::Kitty => &["kitty.app"],
+        }
+    }
+
+    fn cli_name(self) -> Option<&'static str> {
+        match self {
+            Terminal::Ghostty => Some("ghostty"),
+            Terminal::Kitty => Some("kitty"),
+            _ => None,
+        }
+    }
+
+    fn bundled_cli(self) -> Option<&'static str> {
+        match self {
+            Terminal::Ghostty => Some("Contents/MacOS/ghostty"),
+            Terminal::Kitty => Some("Contents/MacOS/kitty"),
+            _ => None,
+        }
+    }
+}
+
+/// What an open target is for: Enter opens the editor, ⌘Enter the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Role {
+    Editor,
+    Terminal,
+}
+
+impl Role {
+    fn noun(self) -> &'static str {
+        match self {
+            Role::Editor => "editor",
+            Role::Terminal => "terminal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetKind {
     Editor(Editor),
+    Terminal(Terminal),
+}
+
+impl TargetKind {
+    /// Every detectable kind, editors then terminals, each in its detection order.
+    pub fn all() -> impl Iterator<Item = TargetKind> {
+        Editor::ALL
+            .into_iter()
+            .map(TargetKind::Editor)
+            .chain(Terminal::ALL.into_iter().map(TargetKind::Terminal))
+    }
+
+    pub fn role(self) -> Role {
+        match self {
+            TargetKind::Editor(_) => Role::Editor,
+            TargetKind::Terminal(_) => Role::Terminal,
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            TargetKind::Editor(e) => e.id(),
+            TargetKind::Terminal(t) => t.id(),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TargetKind::Editor(e) => e.name(),
+            TargetKind::Terminal(t) => t.name(),
+        }
+    }
+
+    fn from_id(role: Role, id: &str) -> Option<Self> {
+        match role {
+            Role::Editor => Editor::from_id(id).map(TargetKind::Editor),
+            Role::Terminal => Terminal::from_id(id).map(TargetKind::Terminal),
+        }
+    }
+
+    fn bundle_ids(self) -> &'static [&'static str] {
+        match self {
+            TargetKind::Editor(e) => e.bundle_ids(),
+            TargetKind::Terminal(t) => t.bundle_ids(),
+        }
+    }
+
+    fn app_names(self) -> &'static [&'static str] {
+        match self {
+            TargetKind::Editor(e) => e.app_names(),
+            TargetKind::Terminal(t) => t.app_names(),
+        }
+    }
+
+    fn cli_name(self) -> Option<&'static str> {
+        match self {
+            TargetKind::Editor(e) => Some(e.cli_name()),
+            TargetKind::Terminal(t) => t.cli_name(),
+        }
+    }
+
+    fn bundled_cli(self) -> Option<&'static str> {
+        match self {
+            TargetKind::Editor(e) => e.bundled_cli(),
+            TargetKind::Terminal(t) => t.bundled_cli(),
+        }
+    }
 }
 
 /// Something Grove can launch on a worktree.
@@ -131,31 +294,34 @@ pub struct OpenTarget {
 
 impl OpenTarget {
     pub fn id(&self) -> &str {
-        match self.kind {
-            TargetKind::Editor(e) => e.id(),
-        }
+        self.kind.id()
     }
 
     pub fn name(&self) -> &str {
-        match self.kind {
-            TargetKind::Editor(e) => e.name(),
-        }
+        self.kind.name()
     }
 
-    pub fn is_editor(&self) -> bool {
-        matches!(self.kind, TargetKind::Editor(_))
+    pub fn role(&self) -> Role {
+        self.kind.role()
     }
 }
 
-/// Installed editors, in `Editor::ALL` order. Blocking (Spotlight + filesystem); run off
-/// the UI thread.
+/// Installed editors and terminals, in `TargetKind::all` order. Blocking (Spotlight +
+/// filesystem); run off the UI thread.
 pub fn detect() -> Vec<OpenTarget> {
     let home = crate::tree::home_dir();
     let mut dirs = vec![PathBuf::from("/Applications")];
     if let Some(home) = home {
         dirs.push(home.join("Applications"));
     }
-    dirs.push(PathBuf::from("/Applications/Setapp"));
+    dirs.extend(
+        [
+            "/Applications/Setapp",
+            "/Applications/Utilities",
+            "/System/Applications/Utilities",
+        ]
+        .map(PathBuf::from),
+    );
     detect_in(resolved_env(), &dirs, true)
 }
 
@@ -167,37 +333,34 @@ pub fn detect_in(env: &ShellEnv, app_dirs: &[PathBuf], spotlight: bool) -> Vec<O
     } else {
         Vec::new()
     };
-    Editor::ALL
-        .into_iter()
-        .filter_map(|editor| {
+    TargetKind::all()
+        .filter_map(|kind| {
             let app = app_dirs
                 .iter()
-                .flat_map(|dir| editor.app_names().iter().map(move |n| dir.join(n)))
+                .flat_map(|dir| kind.app_names().iter().map(move |n| dir.join(n)))
                 .find(|p| p.is_dir())
                 .or_else(|| {
                     found
                         .iter()
-                        .find(|(_, id)| editor.bundle_ids().contains(&id.as_str()))
+                        .find(|(_, id)| kind.bundle_ids().contains(&id.as_str()))
                         .map(|(p, _)| p.clone())
                 });
-            let cli = env.which(editor.cli_name()).or_else(|| {
-                let rel = editor.bundled_cli()?;
-                app.as_ref().map(|a| a.join(rel)).filter(|p| p.is_file())
-            });
-            (app.is_some() || cli.is_some()).then_some(OpenTarget {
-                kind: TargetKind::Editor(editor),
-                app,
-                cli,
-            })
+            let cli = kind
+                .cli_name()
+                .and_then(|name| env.which(name))
+                .or_else(|| {
+                    let rel = kind.bundled_cli()?;
+                    app.as_ref().map(|a| a.join(rel)).filter(|p| p.is_file())
+                });
+            (app.is_some() || cli.is_some()).then_some(OpenTarget { kind, app, cli })
         })
         .collect()
 }
 
-/// `(app path, bundle id)` for every known editor bundle Spotlight indexes.
+/// `(app path, bundle id)` for every known bundle Spotlight indexes.
 fn spotlight_apps() -> Vec<(PathBuf, String)> {
-    let query = Editor::ALL
-        .iter()
-        .flat_map(|e| e.bundle_ids())
+    let query = TargetKind::all()
+        .flat_map(|k| k.bundle_ids())
         .map(|id| format!("{BUNDLE_ID_ATTR} == '{id}'"))
         .collect::<Vec<_>>()
         .join(" || ");
@@ -221,42 +384,70 @@ fn parse_mdfind(out: &str) -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// Why there's no editor to open with.
+/// Why there's no editor or terminal to open with.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NoEditor {
-    /// `settings.default_editor` names an editor that is no longer installed.
-    Uninstalled(String),
-    NoneDetected,
+pub enum NoTarget {
+    /// The configured default names an app that is no longer installed.
+    Uninstalled(Role, String),
+    NoneDetected(Role),
 }
 
-impl std::fmt::Display for NoEditor {
+impl std::fmt::Display for NoTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NoEditor::Uninstalled(id) => {
-                let name: &str = Editor::from_id(id).map_or(id, |e| e.name());
-                write!(f, "Your default editor, {name}, isn't installed anymore")
+            NoTarget::Uninstalled(role, id) => {
+                let name: &str = TargetKind::from_id(*role, id).map_or(id, |k| k.name());
+                let noun = role.noun();
+                write!(f, "Your default {noun}, {name}, isn't installed anymore")
             }
-            NoEditor::NoneDetected => write!(
-                f,
-                "No editor found (looked for VS Code, Cursor, Zed, IntelliJ IDEA, Sublime Text)"
-            ),
+            NoTarget::NoneDetected(role) => {
+                let names: Vec<&str> = TargetKind::all()
+                    .filter(|k| k.role() == *role)
+                    .map(TargetKind::name)
+                    .collect();
+                write!(
+                    f,
+                    "No {} found (looked for {})",
+                    role.noun(),
+                    names.join(", ")
+                )
+            }
         }
     }
 }
 
-/// The configured default editor; with none configured, the first detected one. A
-/// configured editor that's gone is an error, not a silent switch to another editor.
+/// The configured default for `role`; with none configured, the first detected one. A
+/// configured app that's gone is an error, not a silent switch to another app.
+pub fn default_target<'a>(
+    role: Role,
+    settings: &Settings,
+    targets: &'a [OpenTarget],
+) -> Result<&'a OpenTarget, NoTarget> {
+    let configured = match role {
+        Role::Editor => settings.default_editor.as_deref(),
+        Role::Terminal => settings.default_terminal.as_deref(),
+    };
+    let mut of_role = targets.iter().filter(|t| t.role() == role);
+    match configured {
+        Some(id) => of_role
+            .find(|t| t.id() == id)
+            .ok_or_else(|| NoTarget::Uninstalled(role, id.to_string())),
+        None => of_role.next().ok_or(NoTarget::NoneDetected(role)),
+    }
+}
+
 pub fn default_editor<'a>(
     settings: &Settings,
     targets: &'a [OpenTarget],
-) -> Result<&'a OpenTarget, NoEditor> {
-    let mut editors = targets.iter().filter(|t| t.is_editor());
-    match settings.default_editor.as_deref() {
-        Some(id) => editors
-            .find(|t| t.id() == id)
-            .ok_or_else(|| NoEditor::Uninstalled(id.to_string())),
-        None => editors.next().ok_or(NoEditor::NoneDetected),
-    }
+) -> Result<&'a OpenTarget, NoTarget> {
+    default_target(Role::Editor, settings, targets)
+}
+
+pub fn default_terminal<'a>(
+    settings: &Settings,
+    targets: &'a [OpenTarget],
+) -> Result<&'a OpenTarget, NoTarget> {
+    default_target(Role::Terminal, settings, targets)
 }
 
 #[cfg(test)]
@@ -346,14 +537,72 @@ mod tests {
         assert_eq!(default_editor(&s, &targets).unwrap().id(), "sublime");
         s.default_editor = Some("vscode".into());
         let err = default_editor(&s, &targets).unwrap_err();
-        assert_eq!(err, NoEditor::Uninstalled("vscode".into()));
+        assert_eq!(err, NoTarget::Uninstalled(Role::Editor, "vscode".into()));
         assert_eq!(
             err.to_string(),
             "Your default editor, VS Code, isn't installed anymore"
         );
         assert_eq!(
             default_editor(&Settings::default(), &[]).unwrap_err(),
-            NoEditor::NoneDetected
+            NoTarget::NoneDetected(Role::Editor)
+        );
+    }
+
+    #[test]
+    fn detects_terminals() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let apps = tmp.path().join("Applications");
+        let utils = tmp.path().join("System/Applications/Utilities");
+        let bin = tmp.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        // Terminal in Utilities, Warp app only, Ghostty with bundled CLI, kitty CLI only.
+        fs::create_dir_all(utils.join("Terminal.app")).unwrap();
+        fs::create_dir_all(apps.join("Warp.app")).unwrap();
+        executable(&apps.join("Ghostty.app/Contents/MacOS/ghostty"));
+        executable(&bin.join("kitty"));
+
+        let t = detect_in(&env(&bin), &[apps.clone(), utils.clone()], false);
+        assert_eq!(ids(&t), ["terminal", "warp", "ghostty", "kitty"]);
+        assert!(t.iter().all(|t| t.role() == Role::Terminal));
+        assert_eq!(t[0].app, Some(utils.join("Terminal.app")));
+        assert_eq!(t[0].cli, None);
+        assert_eq!(
+            t[2].cli,
+            Some(apps.join("Ghostty.app/Contents/MacOS/ghostty"))
+        );
+        assert_eq!(
+            (t[3].app.clone(), t[3].cli.clone()),
+            (None, Some(bin.join("kitty")))
+        );
+    }
+
+    #[test]
+    fn default_terminal_prefers_settings_then_first_detected() {
+        let t = |k: Terminal| OpenTarget {
+            kind: TargetKind::Terminal(k),
+            app: None,
+            cli: None,
+        };
+        let targets = [
+            target(Editor::Zed),
+            t(Terminal::Terminal),
+            t(Terminal::Warp),
+        ];
+        let mut s = Settings::default();
+        assert_eq!(default_terminal(&s, &targets).unwrap().id(), "terminal");
+        assert_eq!(default_editor(&s, &targets).unwrap().id(), "zed");
+        s.default_terminal = Some("warp".into());
+        assert_eq!(default_terminal(&s, &targets).unwrap().id(), "warp");
+        s.default_terminal = Some("iterm2".into());
+        assert_eq!(
+            default_terminal(&s, &targets).unwrap_err().to_string(),
+            "Your default terminal, iTerm2, isn't installed anymore"
+        );
+        assert_eq!(
+            default_terminal(&Settings::default(), &targets[..1])
+                .unwrap_err()
+                .to_string(),
+            "No terminal found (looked for Terminal, iTerm2, Warp, Ghostty, Kitty)"
         );
     }
 }

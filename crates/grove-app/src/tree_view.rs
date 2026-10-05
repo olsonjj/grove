@@ -9,7 +9,7 @@ use gpui_kit::{
     KeyDownEvent, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, TestSupportExt, Window, div, px, rgb,
 };
-use grove_core::{NavEffect, NavKey, RepoSnapshot, Row, RowId, RowKind, Tree, navigate};
+use grove_core::{NavEffect, NavKey, RepoSnapshot, Role, Row, RowId, RowKind, Tree, navigate};
 
 use crate::icons::{self, icon};
 use crate::theme;
@@ -22,11 +22,12 @@ pub struct CollapseChanged {
     pub collapsed: bool,
 }
 
-/// Enter or the inline button asked to open a worktree in the editor.
+/// Enter / ⌘Enter or an inline button asked to open a worktree in the editor / terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenRequested {
     pub path: PathBuf,
     pub openable: bool,
+    pub role: Role,
 }
 
 pub struct TreeView {
@@ -138,7 +139,14 @@ impl TreeView {
 
     fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
-        if m.platform || m.control || m.alt || m.shift {
+        if m.control || m.alt || m.shift {
+            return;
+        }
+        if m.platform {
+            if ev.keystroke.key == "enter" {
+                self.request_open(Role::Terminal, cx);
+                cx.stop_propagation();
+            }
             return;
         }
         let key = match ev.keystroke.key.as_str() {
@@ -147,7 +155,7 @@ impl TreeView {
             "left" => NavKey::Left,
             "right" => NavKey::Right,
             "enter" => {
-                self.request_open(cx);
+                self.request_open(Role::Editor, cx);
                 cx.stop_propagation();
                 return;
             }
@@ -159,7 +167,7 @@ impl TreeView {
     }
 
     /// Opens the selected row's worktree (a branch opens its first one).
-    fn request_open(&mut self, cx: &mut Context<Self>) {
+    fn request_open(&mut self, role: Role, cx: &mut Context<Self>) {
         let target = self
             .selected
             .as_ref()
@@ -168,6 +176,7 @@ impl TreeView {
             cx.emit(OpenRequested {
                 path: path.to_path_buf(),
                 openable,
+                role,
             });
         }
     }
@@ -181,7 +190,7 @@ impl TreeView {
             .find(|r| matches!(r.kind, RowKind::Worktree { .. }));
         if let Some(id) = first.map(|r| r.id.clone()) {
             self.select(id);
-            self.request_open(cx);
+            self.request_open(Role::Editor, cx);
             cx.notify();
         }
     }
@@ -325,6 +334,7 @@ impl TreeView {
                 .when(selected, |d| {
                     d.child(div().flex_1())
                         .child(self.open_button(ix, *openable, cx))
+                        .child(self.terminal_button(ix, *openable, cx))
                 }),
             RowKind::DetachedSection => unreachable!(),
         }
@@ -336,7 +346,7 @@ impl TreeView {
 impl TreeView {
     /// Inline "Open in <editor>" on the selected worktree row; disabled when missing.
     fn open_button(&self, ix: usize, openable: bool, cx: &mut Context<Self>) -> AnyElement {
-        let editor = crate::launcher::editor_name(cx);
+        let editor = crate::launcher::target_name(Role::Editor, cx);
         let label: SharedString = match &editor {
             Some(name) => format!("Open in {name}").into(),
             None => "Open in editor".into(),
@@ -373,10 +383,48 @@ impl TreeView {
                         .text_color(theme::text())
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::border()))
-                        .on_click(cx.listener(|this, _, _, cx| this.request_open(cx)))
+                        .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Editor, cx)))
                 },
                 |d| d.text_color(theme::faint()),
             )
+            .test_support()
+            .into_any_element()
+    }
+}
+
+impl TreeView {
+    /// Inline icon button "Open in <terminal>" next to the editor button.
+    fn terminal_button(&self, ix: usize, openable: bool, cx: &mut Context<Self>) -> AnyElement {
+        let tip: SharedString = if openable {
+            match crate::launcher::target_name(Role::Terminal, cx) {
+                Some(name) => format!("Open in {name} (⌘↵)").into(),
+                None => "Open in terminal (⌘↵)".into(),
+            }
+        } else {
+            "Folder is missing; run git worktree prune".into()
+        };
+        div()
+            .id(("open-terminal", ix))
+            .flex_none()
+            .size(px(24.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .child(icon(icons::TERMINAL, 13.).text_color(if openable {
+                theme::link()
+            } else {
+                theme::faint()
+            }))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .when(openable, |d| {
+                d.bg(theme::raised())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::border()))
+                    .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Terminal, cx)))
+            })
             .test_support()
             .into_any_element()
     }
