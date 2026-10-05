@@ -41,8 +41,6 @@ pub enum RowKind {
         is_main: bool,
         locked: bool,
         presence: Presence,
-        /// Short (7 char) SHA when detached.
-        detached_at: Option<String>,
         badges: Vec<Badge>,
     },
     DetachedSection,
@@ -263,11 +261,6 @@ fn worktree_row(wt: &Worktree, depth: usize, parent: Option<RowId>, home: Option
             is_main: wt.is_main,
             locked: wt.locked,
             presence: wt.presence,
-            detached_at: wt
-                .branch
-                .is_none()
-                .then(|| wt.head.as_deref().map(|h| h[..h.len().min(7)].to_string()))
-                .flatten(),
             badges: wt.badges(),
         },
     }

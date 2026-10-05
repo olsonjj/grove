@@ -20,7 +20,7 @@ pub use launch::{
 };
 pub use settings::{CustomCommand, Settings, SettingsFile, TerminalOpensIn};
 pub use snapshot::{
-    Presence, RepoSnapshot, Snapshot, SnapshotStore, Worktree, read_statuses, scan,
+    Presence, RepoSnapshot, Snapshot, SnapshotStore, StatusReads, StatusResult, Worktree, scan,
 };
 pub use targets::{
     Editor, NoTarget, OpenTarget, Role, TargetKind, Terminal, default_editor, default_target,

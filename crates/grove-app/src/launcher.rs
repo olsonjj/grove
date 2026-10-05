@@ -1,5 +1,5 @@
 //! Detected open targets plus the executor that runs launch plans. Tests swap the executor
-//! so nothing really spawns.
+//! so nothing really spawns, and the presence check so fake paths count as present.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_channel::Receiver;
 use gpui_kit::{App, AppContext, Global, Task};
 use grove_core::{
-    Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Role, TargetKind, Terminal,
+    Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Presence, Role, TargetKind, Terminal,
     default_target, plan,
 };
 
@@ -17,6 +17,7 @@ use crate::shell;
 pub type LaunchResult = Result<Outcome, LaunchError>;
 /// Starts a plan and returns where its result will arrive.
 pub type Executor = Arc<dyn Fn(LaunchPlan) -> Receiver<LaunchResult> + Send + Sync>;
+pub type PresenceCheck = Arc<dyn Fn(&Path) -> Presence + Send + Sync>;
 
 /// A receiver that already holds `result` (for executors that finish synchronously).
 #[cfg(test)]
@@ -30,6 +31,7 @@ pub struct Launcher {
     /// `None` until detection finishes.
     pub targets: Option<Vec<OpenTarget>>,
     pub executor: Executor,
+    pub presence: PresenceCheck,
 }
 
 impl Global for Launcher {}
@@ -39,6 +41,7 @@ pub fn install(cx: &mut App) {
     cx.set_global(Launcher {
         targets: None,
         executor: threaded_executor(),
+        presence: Arc::new(Presence::of),
     });
     cx.spawn(async move |cx| {
         let targets = cx.background_spawn(async { grove_core::detect() }).await;
@@ -67,6 +70,14 @@ fn threaded_executor() -> Executor {
 pub fn ready(cx: &App) -> bool {
     cx.try_global::<Launcher>()
         .is_some_and(|l| l.targets.is_some())
+}
+
+/// Whether `worktree`'s folder is there right now (a stat, cheap enough for the UI thread).
+pub fn presence(worktree: &Path, cx: &App) -> Presence {
+    match cx.try_global::<Launcher>() {
+        Some(l) => (l.presence)(worktree),
+        None => Presence::of(worktree),
+    }
 }
 
 /// Name of the app Enter (editor) or ⌘Enter (terminal) opens with, if there is one.

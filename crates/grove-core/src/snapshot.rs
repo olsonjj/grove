@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
 use crate::discovery::{RepoRef, discover};
@@ -25,28 +26,11 @@ impl Snapshot {
         self.repos.iter().flat_map(|r| &r.worktrees)
     }
 
-    /// Worktrees whose status can be read (folder present).
-    pub fn status_targets(&self) -> Vec<PathBuf> {
-        self.worktrees()
-            .filter(|w| w.presence == Presence::Present)
-            .map(|w| w.path.clone())
-            .collect()
-    }
-
-    /// Stores a status read for the worktree at `path`; false if no such worktree.
-    pub fn set_status(&mut self, path: &Path, status: Result<WorktreeStatus, GitError>) -> bool {
-        let found = self
-            .repos
+    fn worktree_mut(&mut self, path: &Path) -> Option<&mut Worktree> {
+        self.repos
             .iter_mut()
             .flat_map(|r| &mut r.worktrees)
-            .find(|w| w.path == path);
-        match found {
-            Some(w) => {
-                w.status = Some(status);
-                true
-            }
-            None => false,
-        }
+            .find(|w| w.path == path)
     }
 }
 
@@ -79,10 +63,9 @@ pub struct Worktree {
     pub detached: bool,
     pub is_main: bool,
     pub locked: bool,
-    pub prunable: bool,
     pub presence: Presence,
     /// `None` until read (and never for a folder that isn't present).
-    pub status: Option<Result<WorktreeStatus, GitError>>,
+    pub status: Option<StatusResult>,
 }
 
 /// Whether a worktree's folder is on disk.
@@ -129,24 +112,34 @@ fn presence_in(path: &Path, volumes: &Path) -> Presence {
     }
 }
 
-/// Reads each path's status, at most `MAX_PARALLEL_READS` at a time, handing each result to
-/// `each` as it lands. Blocking; run off the UI thread.
-pub fn read_statuses(
-    paths: &[PathBuf],
-    each: impl Fn(&Path, Result<WorktreeStatus, GitError>) + Sync,
-) {
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    thread::scope(|s| {
-        for _ in 0..MAX_PARALLEL_READS.min(paths.len()) {
-            s.spawn(|| {
-                while let Some(path) =
-                    paths.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-                {
-                    each(path, git::read_worktree_status(path));
-                }
-            });
-        }
-    });
+pub type StatusResult = Result<WorktreeStatus, GitError>;
+
+/// Status reads for every present worktree of one snapshot generation.
+#[derive(Debug, Clone)]
+pub struct StatusReads {
+    generation: u64,
+    paths: Vec<PathBuf>,
+}
+
+impl StatusReads {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Reads each status, at most `MAX_PARALLEL_READS` at a time, handing each result to
+    /// `each` as it lands. Blocking; run off the UI thread.
+    pub fn run(&self, each: impl Fn(&Path, StatusResult) + Sync) {
+        let next = AtomicUsize::new(0);
+        thread::scope(|s| {
+            for _ in 0..MAX_PARALLEL_READS.min(self.paths.len()) {
+                s.spawn(|| {
+                    while let Some(path) = self.paths.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        each(path, git::read_worktree_status(path));
+                    }
+                });
+            }
+        });
+    }
 }
 
 /// Builds a fresh snapshot: discovery plus each repo's worktrees (including ones outside
@@ -213,7 +206,6 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
                     head: e.head,
                     detached: e.detached,
                     locked: e.locked.is_some(),
-                    prunable: e.prunable.is_some(),
                 })
                 .collect();
             RepoSnapshot {
@@ -236,6 +228,8 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
 #[derive(Debug, Clone)]
 pub struct SnapshotStore {
     snapshot: Arc<Snapshot>,
+    /// Bumped whenever the snapshot is replaced, so reads started on an older one are dropped.
+    generation: u64,
 }
 
 impl SnapshotStore {
@@ -247,49 +241,104 @@ impl SnapshotStore {
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
         Self {
             snapshot: Arc::new(snapshot),
+            generation: 0,
         }
     }
 
-    pub fn snapshot(&self) -> Arc<Snapshot> {
-        self.snapshot.clone()
+    pub fn snapshot(&self) -> &Arc<Snapshot> {
+        &self.snapshot
+    }
+
+    /// Swaps in a new snapshot; status reads still in flight for the old one are dropped.
+    pub fn replace(&mut self, snapshot: Snapshot) {
+        self.snapshot = Arc::new(snapshot);
+        self.generation += 1;
     }
 
     /// Rescans the same code directory (blocking). Statuses start unread.
     pub fn refresh_all(&mut self) {
-        self.snapshot = Arc::new(scan(&self.snapshot.code_dir));
+        self.replace(scan(&self.snapshot.code_dir));
+    }
+
+    /// Status reads for the current snapshot's present worktrees; run them off the UI
+    /// thread and hand each result to `apply_status`.
+    pub fn status_reads(&self) -> StatusReads {
+        self.reads_where(|_| true)
+    }
+
+    /// Status read for one worktree, if it's known and present.
+    pub fn status_read(&self, path: &Path) -> StatusReads {
+        self.reads_where(|w| w.path == path)
+    }
+
+    fn reads_where(&self, keep: impl Fn(&Worktree) -> bool) -> StatusReads {
+        StatusReads {
+            generation: self.generation,
+            paths: self
+                .snapshot
+                .worktrees()
+                .filter(|w| w.presence.is_openable() && keep(w))
+                .map(|w| w.path.clone())
+                .collect(),
+        }
+    }
+
+    /// Stores a status read; false (dropped) if it's from a replaced snapshot, the worktree
+    /// is unknown, or its folder is no longer present.
+    pub fn apply_status(&mut self, generation: u64, path: &Path, status: StatusResult) -> bool {
+        if generation != self.generation {
+            return false;
+        }
+        match Arc::make_mut(&mut self.snapshot).worktree_mut(path) {
+            Some(w) if w.presence.is_openable() => {
+                w.status = Some(status);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Records a fresh presence check; a folder that isn't present loses its status. False
+    /// if the worktree is unknown.
+    pub fn set_presence(&mut self, path: &Path, presence: Presence) -> bool {
+        let Some(current) = self.snapshot.worktrees().find(|w| w.path == path) else {
+            return false;
+        };
+        if current.presence != presence
+            && let Some(w) = Arc::make_mut(&mut self.snapshot).worktree_mut(path)
+        {
+            w.presence = presence;
+            if !presence.is_openable() {
+                w.status = None;
+            }
+        }
+        true
     }
 
     /// Reads every present worktree's status, in parallel (blocking).
     pub fn refresh_statuses(&mut self) {
-        let results = std::sync::Mutex::new(Vec::new());
-        read_statuses(&self.snapshot.status_targets(), |path, status| {
+        let reads = self.status_reads();
+        let results = Mutex::new(Vec::new());
+        reads.run(|path, status| {
             results
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(PoisonError::into_inner)
                 .push((path.to_path_buf(), status));
         });
-        let snapshot = Arc::make_mut(&mut self.snapshot);
-        for (path, status) in results.into_inner().unwrap_or_else(|e| e.into_inner()) {
-            snapshot.set_status(&path, status);
+        for (path, status) in results.into_inner().unwrap_or_else(PoisonError::into_inner) {
+            self.apply_status(reads.generation, &path, status);
         }
     }
 
     /// Re-checks one worktree's folder and rereads its status (blocking); false if unknown.
     pub fn refresh_worktree(&mut self, path: &Path) -> bool {
-        let snapshot = Arc::make_mut(&mut self.snapshot);
-        let Some(wt) = snapshot
-            .repos
-            .iter_mut()
-            .flat_map(|r| &mut r.worktrees)
-            .find(|w| w.path == path)
-        else {
+        let presence = Presence::of(path);
+        if !self.set_presence(path, presence) {
             return false;
-        };
-        wt.presence = Presence::of(path);
-        wt.status = wt
-            .presence
-            .is_openable()
-            .then(|| git::read_worktree_status(path));
+        }
+        if presence.is_openable() {
+            self.apply_status(self.generation, path, git::read_worktree_status(path));
+        }
         true
     }
 }

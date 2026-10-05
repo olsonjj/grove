@@ -10,7 +10,7 @@ use grove_core::{Presence, RowId, Snapshot, SnapshotStore, Worktree};
 fn read(f: &Fixture) -> Snapshot {
     let mut store = SnapshotStore::new(&f.code());
     store.refresh_statuses();
-    (*store.snapshot()).clone()
+    store.snapshot().as_ref().clone()
 }
 
 fn worktree<'a>(s: &'a Snapshot, folder: &str) -> &'a Worktree {
@@ -227,7 +227,7 @@ fn refresh_worktree_rereads_one_status() {
     assert!(store.snapshot().repos[0].worktrees[0].status.is_none());
     store.refresh_statuses();
     assert_eq!(
-        badges(&store.snapshot(), "api"),
+        badges(store.snapshot(), "api"),
         ["main worktree", "local only"]
     );
 
@@ -235,10 +235,69 @@ fn refresh_worktree_rereads_one_status() {
     let path = store.snapshot().repos[0].worktrees[0].path.clone();
     assert!(store.refresh_worktree(&path));
     assert_eq!(
-        badges(&store.snapshot(), "api"),
+        badges(store.snapshot(), "api"),
         ["main worktree", "1 changed", "local only"]
     );
     assert!(!store.refresh_worktree(Path::new("/nowhere")));
+}
+
+#[test]
+fn reads_from_a_replaced_snapshot_are_dropped() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let mut store = SnapshotStore::new(&f.code());
+    let stale = store.status_reads();
+    store.refresh_all();
+    let fresh = store.status_reads();
+    let status = || grove_core::read_worktree_status(&api);
+    let path = store.snapshot().repos[0].worktrees[0].path.clone();
+    assert!(!store.apply_status(stale.generation(), &path, status()));
+    assert!(store.snapshot().repos[0].worktrees[0].status.is_none());
+    assert!(store.apply_status(fresh.generation(), &path, status()));
+    assert!(store.snapshot().repos[0].worktrees[0].status.is_some());
+}
+
+#[test]
+fn presence_recheck_clears_status_and_blocks_late_reads() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let wt = f.code().join("api-x");
+    add_worktree(&api, &wt, "x");
+    let mut store = SnapshotStore::new(&f.code());
+    let reads = store.status_reads();
+    store.refresh_statuses();
+    let path = worktree(store.snapshot(), "api-x").path.clone();
+    let late = grove_core::read_worktree_status(&path);
+
+    fs::remove_dir_all(&wt).unwrap();
+    assert!(store.set_presence(&path, Presence::of(&path)));
+    assert_eq!(badges(store.snapshot(), "api-x"), ["missing"]);
+    assert!(!store.apply_status(reads.generation(), &path, late));
+    assert!(worktree(store.snapshot(), "api-x").status.is_none());
+    assert!(!store.set_presence(Path::new("/nowhere"), Presence::Missing));
+}
+
+#[test]
+fn single_read_covers_one_present_worktree() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let wt = f.code().join("api-x");
+    add_worktree(&api, &wt, "x");
+    let mut store = SnapshotStore::new(&f.code());
+    let path = worktree(store.snapshot(), "api-x").path.clone();
+    let landed = std::sync::Mutex::new(Vec::new());
+    store
+        .status_read(&path)
+        .run(|p, _| landed.lock().unwrap().push(p.to_path_buf()));
+    assert_eq!(*landed.lock().unwrap(), std::slice::from_ref(&path));
+
+    store.set_presence(&path, Presence::Unavailable);
+    store
+        .status_read(&path)
+        .run(|_, _| panic!("read an unavailable worktree"));
+    store
+        .status_read(Path::new("/nowhere"))
+        .run(|_, _| panic!("read an unknown worktree"));
 }
 
 #[test]

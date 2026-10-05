@@ -91,11 +91,11 @@ impl TreeView {
     }
 
     /// Same repo with fresher data (e.g. a status read landed); keeps selection and collapse.
-    pub fn update_repo(&mut self, repo: Option<RepoSnapshot>, cx: &mut Context<Self>) {
-        if self.repo == repo {
+    pub fn update_repo(&mut self, repo: Option<&RepoSnapshot>, cx: &mut Context<Self>) {
+        if self.repo.as_ref() == repo {
             return;
         }
-        self.repo = repo;
+        self.repo = repo.cloned();
         self.rebuild();
         if self
             .selected
@@ -628,7 +628,6 @@ pub(crate) mod tests {
             detached: branch.is_none(),
             is_main,
             locked: false,
-            prunable: false,
             presence: Presence::Present,
             status: None,
         }

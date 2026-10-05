@@ -6,6 +6,7 @@ use gpui_kit::{
     IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
     TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
+use grove_core::Presence;
 
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
@@ -32,7 +33,7 @@ struct MainWindow {
 /// The saved repo if it still exists, else the first.
 fn selected_repo(cx: &App) -> Option<String> {
     let library = shell::library(cx);
-    let snapshot = &library.snapshot;
+    let snapshot = library.store.snapshot();
     library
         .settings
         .last_selected_repo
@@ -87,10 +88,8 @@ impl MainWindow {
             return;
         }
         let name = self.tree.read(cx).repo_name().map(str::to_string);
-        let repo = name
-            .as_deref()
-            .and_then(|n| shell::library(cx).snapshot.repo(n))
-            .cloned();
+        let snapshot = shell::library(cx).store.snapshot().clone();
+        let repo = name.as_deref().and_then(|n| snapshot.repo(n));
         self.tree.update(cx, |tree, cx| tree.update_repo(repo, cx));
         cx.notify();
     }
@@ -99,7 +98,7 @@ impl MainWindow {
         let library = shell::library(cx);
         let repo = name
             .as_deref()
-            .and_then(|n| library.snapshot.repo(n))
+            .and_then(|n| library.store.snapshot().repo(n))
             .cloned();
         let collapsed = name
             .as_deref()
@@ -123,7 +122,17 @@ impl MainWindow {
     fn open(&mut self, req: &OpenRequested, cx: &mut Context<Self>) {
         self.open_seq += 1;
         let seq = self.open_seq;
-        if let Some(reason) = req.presence.reason() {
+        // Presence was read at scan time; the folder may have gone or come back since.
+        let presence = launcher::presence(&req.path, cx);
+        if presence != req.presence {
+            cx.global_mut::<shell::Library>()
+                .store
+                .set_presence(&req.path, presence);
+            if presence == Presence::Present {
+                shell::read_status(&req.path, cx);
+            }
+        }
+        if let Some(reason) = presence.reason() {
             let text = format!("Can't open {}: {reason}", tilde(&req.path));
             return self.set_status(text, true, false, cx);
         }
@@ -211,7 +220,7 @@ impl MainWindow {
 impl Render for MainWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let library = shell::library(cx);
-        let snapshot = library.snapshot.clone();
+        let snapshot = library.store.snapshot().clone();
         let selected = selected_repo(cx);
 
         let rows = snapshot.repos.iter().enumerate().map(|(i, repo)| {
@@ -388,8 +397,8 @@ mod tests {
     use gpui_kit::{Point, TestAppContext};
     use grove_core::{
         Editor, Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Permission, Presence,
-        RowId, RowKind, Settings, SettingsFile, Snapshot, TargetKind, Terminal, TerminalOpensIn,
-        Upstream, WorktreeStatus,
+        RowId, RowKind, Settings, SettingsFile, Snapshot, SnapshotStore, TargetKind, Terminal,
+        TerminalOpensIn, Upstream, WorktreeStatus,
     };
     use tempfile::TempDir;
 
@@ -416,7 +425,7 @@ mod tests {
             cx.set_global(Library {
                 settings_file: file.clone(),
                 settings,
-                snapshot: Arc::new(Snapshot {
+                store: SnapshotStore::from_snapshot(Snapshot {
                     code_dir: PathBuf::from("/c"),
                     code_dir_exists: true,
                     repos: vec![repo],
@@ -536,9 +545,23 @@ mod tests {
                     sink.lock().unwrap().push(recorded);
                     crate::launcher::finished(result.clone())
                 }),
+                presence: Arc::new(|_| Presence::Present),
             })
         });
         launches
+    }
+
+    /// Makes the fake presence check report `presence` for `path`, Present elsewhere.
+    fn fake_presence(cx: &mut TestAppContext, path: &'static str, presence: Presence) {
+        cx.update(|cx| {
+            cx.global_mut::<Launcher>().presence = Arc::new(move |p| {
+                if p == Path::new(path) {
+                    presence
+                } else {
+                    Presence::Present
+                }
+            })
+        });
     }
 
     fn keys(cx: &mut TestAppContext, w: AnyWindowHandle, keys: &[&str]) {
@@ -717,8 +740,9 @@ mod tests {
         assert!(row_badges(cx, &main, "/c/wt/api-x").is_empty());
 
         cx.update(|cx| {
-            let snapshot = Arc::make_mut(&mut cx.global_mut::<Library>().snapshot);
-            snapshot.set_status(
+            let store = &mut cx.global_mut::<Library>().store;
+            store.apply_status(
+                store.status_reads().generation(),
                 Path::new("/c/wt/api-x"),
                 Ok(WorktreeStatus {
                     changed: 3,
@@ -741,6 +765,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        fake_presence(cx, "/c/wt/api-x", Presence::Unavailable);
         let mut repo = canned();
         repo.worktrees[1].presence = Presence::Unavailable;
         let (w, main) = launch_repo(cx, &file, repo);
@@ -758,6 +783,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        fake_presence(cx, "/c/wt/api-x", Presence::Missing);
         let mut repo = canned();
         repo.worktrees[1].presence = Presence::Missing; // /c/wt/api-x
         let (w, main) = launch_repo(cx, &file, repo);
@@ -774,6 +800,51 @@ mod tests {
             "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
         );
         assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn folder_deleted_after_scan_is_refused_and_badged(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        assert!(row_badges(cx, &main, "/c/wt/api-x").is_empty());
+        fake_presence(cx, "/c/wt/api-x", Presence::Missing);
+
+        keys(cx, w, &["down", "down", "down", "down", "enter"]);
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+        );
+        assert_eq!(row_badges(cx, &main, "/c/wt/api-x"), ["missing"]);
+        keys(cx, w, &["cmd-enter"]);
+        assert!(launches.lock().unwrap().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn remounted_worktree_opens_and_rereads_status(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[1].presence = Presence::Unavailable; // /c/wt/api-x
+        let (w, main) = launch_repo(cx, &file, repo);
+        assert_eq!(row_badges(cx, &main, "/c/wt/api-x"), ["unavailable"]);
+
+        keys(cx, w, &["down", "down", "down", "down", "enter"]);
+        assert_eq!(*launches.lock().unwrap(), [code("/c/wt/api-x")]);
+        let wt = cx.update(|cx| {
+            shell::library(cx).store.snapshot().repos[0]
+                .worktrees
+                .iter()
+                .find(|w| w.path == Path::new("/c/wt/api-x"))
+                .cloned()
+                .unwrap()
+        });
+        assert_eq!(wt.presence, Presence::Present);
+        // The fake path isn't a repo, so the reread lands as a failure, not unread.
+        assert!(matches!(wt.status, Some(Err(_))));
     }
 
     /// The Terminal.app script (window by default) that `cd`s into `path`.
@@ -918,6 +989,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        fake_presence(cx, "/c/wt/api-x", Presence::Missing);
         let mut repo = canned();
         repo.worktrees[1].presence = Presence::Missing; // /c/wt/api-x
         let (w, main) = launch_repo(cx, &file, repo);

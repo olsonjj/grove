@@ -3,7 +3,7 @@ mod common;
 use std::path::Path;
 
 use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{NavKey, Presence, RowId, RowKind, Snapshot, Tree, navigate};
+use grove_core::{Badge, NavKey, Presence, RowId, RowKind, Snapshot, Tree, navigate};
 
 /// One line per visible row, indented by depth. Worktrees show their folder name.
 fn shape(tree: &Tree) -> Vec<String> {
@@ -18,17 +18,14 @@ fn shape(tree: &Tree) -> Vec<String> {
                 } => format!("{} {prefix} {count}", if *collapsed { "▸" } else { "▾" }),
                 RowKind::Branch { label, .. } => format!("branch {label}"),
                 RowKind::Worktree {
-                    display,
-                    is_main,
-                    detached_at,
-                    ..
+                    display, badges, ..
                 } => {
                     let mut s = format!("wt {}", display.name);
-                    if *is_main {
-                        s.push_str(" [main worktree]");
-                    }
-                    if let Some(sha) = detached_at {
-                        s.push_str(&format!(" [detached @ {sha}]"));
+                    for b in badges
+                        .iter()
+                        .filter(|b| matches!(b, Badge::MainWorktree | Badge::Detached(_)))
+                    {
+                        s.push_str(&format!(" [{}]", b.label()));
                     }
                     s
                 }

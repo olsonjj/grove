@@ -32,16 +32,11 @@ impl Badge {
             Self::Missing => "missing".into(),
             Self::Unavailable => "unavailable".into(),
             Self::Changed(n) => format!("{n} changed"),
-            Self::Sync { ahead, behind, .. } => {
-                let mut parts = Vec::new();
-                if *ahead > 0 {
-                    parts.push(format!("↑{ahead}"));
-                }
-                if *behind > 0 {
-                    parts.push(format!("↓{behind}"));
-                }
-                parts.join(" ")
-            }
+            Self::Sync { ahead, behind, .. } => match (ahead, behind) {
+                (a, 0) => format!("↑{a}"),
+                (0, b) => format!("↓{b}"),
+                (a, b) => format!("↑{a} ↓{b}"),
+            },
             Self::UpstreamGone(_) => "upstream gone".into(),
             Self::LocalOnly => "local only".into(),
             Self::Locked => "locked".into(),
@@ -85,7 +80,7 @@ impl Worktree {
         if self.branch.is_none()
             && let Some(head) = &self.head
         {
-            out.push(Badge::Detached(head[..head.len().min(7)].to_string()));
+            out.push(Badge::Detached(head.get(..7).unwrap_or(head).to_string()));
         }
         match self.presence {
             Presence::Missing => out.push(Badge::Missing),

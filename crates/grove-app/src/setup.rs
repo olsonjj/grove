@@ -1,7 +1,6 @@
 //! Launch flow: git check → saved code folder → main window, or the setup window.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use gpui_kit::{
     App, AppContext, Bounds, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement,
@@ -9,7 +8,7 @@ use gpui_kit::{
     Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::git::{self, GitError};
-use grove_core::{Settings, SettingsFile, Snapshot, resolved_env, scan};
+use grove_core::{Settings, SettingsFile, Snapshot, SnapshotStore, resolved_env, scan};
 
 use crate::main_window::tilde;
 use crate::shell::{self, Library};
@@ -81,7 +80,7 @@ fn boot() -> Boot {
     Boot::Ready(Library {
         settings_file: setup.settings_file,
         settings: setup.settings,
-        snapshot: Arc::new(snapshot),
+        store: SnapshotStore::from_snapshot(snapshot),
         saves: Default::default(),
     })
 }
@@ -183,7 +182,7 @@ impl Setup {
         let library = Library {
             settings_file: self.settings_file.clone(),
             settings: self.settings.clone(),
-            snapshot: Arc::new(snapshot),
+            store: SnapshotStore::from_snapshot(snapshot),
             saves: Default::default(),
         };
         shell::start(library, cx);

@@ -1,9 +1,10 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyManager;
 use gpui_kit::{AnyWindowHandle, App, AppContext, Global, WindowId};
-use grove_core::{Settings, SettingsFile, Snapshot};
+use grove_core::{Settings, SettingsFile, SnapshotStore, StatusReads};
 use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
@@ -19,7 +20,7 @@ const REOPEN_GUARD: Duration = Duration::from_millis(300);
 pub struct Library {
     pub settings_file: SettingsFile,
     pub settings: Settings,
-    pub snapshot: Arc<Snapshot>,
+    pub store: SnapshotStore,
     pub saves: Saves,
 }
 
@@ -87,12 +88,24 @@ pub fn library(cx: &App) -> &Library {
 }
 
 /// Reads every worktree's git status on background threads, applying results to the
-/// snapshot as they land so badges fill in without blocking the UI.
+/// snapshot as they land so badges fill in without blocking the UI. Results for a snapshot
+/// that's since been replaced are dropped.
 pub fn read_statuses(cx: &mut App) {
-    let paths = library(cx).snapshot.status_targets();
+    let reads = library(cx).store.status_reads();
+    run_reads(reads, cx);
+}
+
+/// Rereads one worktree's status in the background, e.g. after its folder came back.
+pub fn read_status(path: &Path, cx: &mut App) {
+    let reads = library(cx).store.status_read(path);
+    run_reads(reads, cx);
+}
+
+fn run_reads(reads: StatusReads, cx: &mut App) {
+    let generation = reads.generation();
     let (tx, rx) = async_channel::unbounded();
     cx.background_spawn(async move {
-        grove_core::read_statuses(&paths, |path, status| {
+        reads.run(|path, status| {
             let _ = tx.send_blocking((path.to_path_buf(), status));
         });
     })
@@ -104,10 +117,9 @@ pub fn read_statuses(cx: &mut App) {
                 batch.push(more);
             }
             cx.update(|cx| {
-                let snapshot = &mut cx.global_mut::<Library>().snapshot;
-                let snapshot = Arc::make_mut(snapshot);
+                let store = &mut cx.global_mut::<Library>().store;
                 for (path, status) in batch {
-                    snapshot.set_status(&path, status);
+                    store.apply_status(generation, &path, status);
                 }
             });
         }
