@@ -1,0 +1,15 @@
+# 15: Accessibility and performance check
+
+**What to build:** A verification pass over the finished app against the spec's non-functional requirements, fixing what fails. Produces a manual checklist kept in the repo for the platform pieces that aren't unit tested.
+
+**Blocked by:** 07, 08, 10, 11, 13
+
+**Status:** ready-for-agent
+
+- [ ] Every action reachable by keyboard on every surface
+- [ ] All icon-only buttons have accessible labels
+- [ ] Text meets 4.5:1 contrast in the dark theme
+- [ ] No state shown by color alone
+- [ ] Switcher appears within 100 ms of ⌥⌘K
+- [ ] Idle CPU near zero with all repos watched
+- [ ] Manual checklist written and passed: hotkeys from other apps, popover placement on multiple displays, login item, Automation fallback, no network traffic beyond fetch
