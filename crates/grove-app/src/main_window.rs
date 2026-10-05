@@ -2,27 +2,67 @@ use std::path::Path;
 
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext, Bounds, Context, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, TitlebarOptions,
-    Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
+    AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement,
+    IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
+    TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
-use grove_core::RepoSnapshot;
 
+use crate::tree_view::{CollapseChanged, TreeView};
 use crate::{shell, theme};
 
-struct MainWindow;
+struct MainWindow {
+    tree: Entity<TreeView>,
+    _collapse: Subscription,
+}
+
+/// The saved repo if it still exists, else the first.
+fn selected_repo(cx: &App) -> Option<String> {
+    let library = shell::library(cx);
+    let snapshot = &library.snapshot;
+    library
+        .settings
+        .last_selected_repo
+        .as_deref()
+        .and_then(|name| snapshot.repo(name))
+        .or_else(|| snapshot.repos.first())
+        .map(|r| r.name().to_string())
+}
+
+impl MainWindow {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let tree = cx.new(TreeView::new);
+        let collapse = cx.subscribe(&tree, |_, _, ev: &CollapseChanged, cx| {
+            shell::set_collapsed(&ev.repo, &ev.prefix, ev.collapsed, cx);
+        });
+        window.focus(&tree.focus_handle(cx), cx);
+        let mut this = Self {
+            tree,
+            _collapse: collapse,
+        };
+        this.show_repo(selected_repo(cx), cx);
+        this
+    }
+
+    fn show_repo(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+        let library = shell::library(cx);
+        let repo = name
+            .as_deref()
+            .and_then(|n| library.snapshot.repo(n))
+            .cloned();
+        let collapsed = name
+            .as_deref()
+            .map(|n| library.settings.collapsed(n).to_vec())
+            .unwrap_or_default();
+        self.tree
+            .update(cx, |tree, cx| tree.set_repo(repo, collapsed, cx));
+    }
+}
 
 impl Render for MainWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let library = shell::library(cx);
         let snapshot = library.snapshot.clone();
-        let selected = library
-            .settings
-            .last_selected_repo
-            .as_deref()
-            .and_then(|name| snapshot.repo(name))
-            .or_else(|| snapshot.repos.first())
-            .map(|r| r.name().to_string());
+        let selected = selected_repo(cx);
 
         let rows = snapshot.repos.iter().enumerate().map(|(i, repo)| {
             let is_selected = selected.as_deref() == Some(repo.name());
@@ -46,8 +86,12 @@ impl Render for MainWindow {
                             .hover(|s| s.bg(theme::raised()))
                     },
                 )
-                .on_click(cx.listener(move |_, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     shell::select_repo(&name, cx);
+                    if this.tree.read(cx).repo_name() != Some(name.as_str()) {
+                        this.show_repo(Some(name.clone()), cx);
+                    }
+                    window.focus(&this.tree.focus_handle(cx), cx);
                     cx.notify();
                 }))
                 .child(theme::mono(repo.name().to_string()).truncate())
@@ -119,13 +163,14 @@ impl Render for MainWindow {
                     ),
             );
 
-        let content = match selected.as_deref().and_then(|n| snapshot.repo(n)) {
-            Some(repo) => repo_detail(repo).into_any_element(),
-            None => div()
+        let content = if snapshot.repos.is_empty() {
+            div()
                 .p(px(16.))
                 .text_color(theme::muted())
                 .child("No repos")
-                .into_any_element(),
+                .into_any_element()
+        } else {
+            self.tree.clone().into_any_element()
         };
 
         div()
@@ -138,93 +183,9 @@ impl Render for MainWindow {
     }
 }
 
-fn repo_detail(repo: &RepoSnapshot) -> impl IntoElement {
-    let count = repo.worktree_count();
-    let rows = repo.worktrees.iter().map(|wt| {
-        let label: SharedString = match (&wt.branch, &wt.head) {
-            (Some(b), _) => b.clone().into(),
-            (None, Some(h)) => format!("detached @ {}", &h[..h.len().min(7)]).into(),
-            (None, None) => "".into(),
-        };
-        div()
-            .px(px(12.))
-            .py(px(8.))
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .rounded(px(6.))
-            .bg(theme::panel())
-            .child(
-                theme::mono(label)
-                    .w(px(220.))
-                    .flex_none()
-                    .text_size(px(13.))
-                    .truncate(),
-            )
-            .child(
-                theme::path_text(tilde(&wt.path))
-                    .flex_1()
-                    .text_size(px(12.))
-                    .text_color(theme::muted()),
-            )
-            .children(wt.is_main.then(|| {
-                div()
-                    .flex_none()
-                    .text_size(px(11.))
-                    .text_color(theme::faint())
-                    .child("main worktree")
-            }))
-    });
-    div()
-        .id("repo-detail")
-        .flex_1()
-        .min_w_0()
-        .h_full()
-        .overflow_y_scroll()
-        .p(px(16.))
-        .flex()
-        .flex_col()
-        .gap(px(6.))
-        .child(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(px(10.))
-                .pb(px(8.))
-                .child(
-                    theme::mono(repo.name().to_string())
-                        .text_size(px(16.))
-                        .font_weight(FontWeight::SEMIBOLD),
-                )
-                .child(div().text_size(px(13.)).text_color(theme::muted()).child(
-                    match (count, repo.repo.bare) {
-                        (1, false) => "1 worktree".to_string(),
-                        (1, true) => "bare · 1 worktree".to_string(),
-                        (n, false) => format!("{n} worktrees"),
-                        (n, true) => format!("bare · {n} worktrees"),
-                    },
-                )),
-        )
-        .children(repo.error.as_ref().map(|e| {
-            div()
-                .p(px(10.))
-                .rounded(px(6.))
-                .bg(theme::warn_bg())
-                .text_color(theme::warn_text())
-                .text_size(px(13.))
-                .child(e.to_string())
-        }))
-        .children(rows)
-}
-
 /// `/Users/me/code` → `~/code`.
 pub fn tilde(path: &Path) -> String {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    match home.as_deref().and_then(|h| path.strip_prefix(h).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".into(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
-    }
+    grove_core::tilde(path, grove_core::home_dir().as_deref())
 }
 
 pub fn open(cx: &mut App) -> Option<AnyWindowHandle> {
@@ -243,9 +204,120 @@ pub fn open(cx: &mut App) -> Option<AnyWindowHandle> {
         kind: WindowKind::Normal,
         ..Default::default()
     };
-    let result = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| MainWindow));
-    result
+    open_with(options, cx)
         .map(|(handle, _)| handle)
         .inspect_err(|e| eprintln!("[grove] main: {e:#}"))
         .ok()
+}
+
+fn open_with(
+    options: WindowOptions,
+    cx: &mut App,
+) -> gpui_kit::Result<(AnyWindowHandle, Entity<MainWindow>)> {
+    gpui_kit::open_window(options, cx, |window, cx| {
+        cx.new(|cx| MainWindow::new(window, cx))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{Point, TestAppContext};
+    use grove_core::{RowId, RowKind, Settings, SettingsFile, Snapshot};
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::shell::Library;
+    use crate::tree_view::tests::canned;
+
+    fn launch(
+        cx: &mut TestAppContext,
+        file: &SettingsFile,
+    ) -> (AnyWindowHandle, Entity<MainWindow>) {
+        let settings = file.load().unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(Library {
+                settings_file: file.clone(),
+                settings,
+                snapshot: Arc::new(Snapshot {
+                    code_dir: PathBuf::from("/c"),
+                    code_dir_exists: true,
+                    repos: vec![canned()],
+                }),
+                saves: Default::default(),
+            });
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: size(px(960.), px(640.)),
+                })),
+                ..Default::default()
+            };
+            open_with(options, cx).unwrap()
+        })
+    }
+
+    fn folder_collapsed(cx: &mut TestAppContext, main: &Entity<MainWindow>, prefix: &str) -> bool {
+        main.read_with(cx, |m, cx| {
+            m.tree.read(cx).tree().rows.iter().any(|r| {
+                r.id == RowId::Folder(prefix.into())
+                    && matches!(
+                        r.kind,
+                        RowKind::Folder {
+                            collapsed: true,
+                            ..
+                        }
+                    )
+            })
+        })
+    }
+
+    #[gpui_kit::test]
+    fn collapse_by_key_is_saved_and_restored(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        file.save(&Settings {
+            last_selected_repo: Some("api".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let (w, main) = launch(cx, &file);
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            // main → main worktree → feature/, then collapse it.
+            for k in ["down", "down", "left"] {
+                window.press(k, cx);
+            }
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(folder_collapsed(cx, &main, "feature/"));
+        assert_eq!(file.load().unwrap().collapsed("api"), ["feature/"]);
+
+        cx.update_window(w, |_, window, cx| {
+            window.press("right", cx);
+            window.press("left", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file.load().unwrap().collapsed("api"), ["feature/"]);
+        cx.update_window(w, |_, window, cx| window.press("right", cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert!(file.load().unwrap().collapsed("api").is_empty());
+        cx.update_window(w, |_, window, cx| window.press("left", cx))
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| cx.remove_global::<Library>());
+
+        // Fresh load from the same file restores it.
+        let (_, main) = launch(cx, &file);
+        assert!(folder_collapsed(cx, &main, "feature/"));
+        assert!(!folder_collapsed(cx, &main, "fix/"));
+    }
 }

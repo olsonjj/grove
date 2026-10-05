@@ -1,73 +1,11 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod common;
 
+use std::fs;
+use std::path::PathBuf;
+
+use common::{Fixture, add_worktree, git, init_repo};
 use grove_core::{Settings, SettingsFile, Snapshot, scan};
 use tempfile::TempDir;
-
-/// Runs git with an isolated config so tests work on any machine.
-fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args([
-            "-c",
-            "user.name=Grove Test",
-            "-c",
-            "user.email=test@grove.invalid",
-        ])
-        .args([
-            "-c",
-            "init.defaultBranch=main",
-            "-c",
-            "commit.gpgsign=false",
-        ])
-        .args(args)
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .expect("run git");
-    assert!(
-        out.status.success(),
-        "git {args:?} in {}: {}",
-        dir.display(),
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn init_repo(path: &Path) -> PathBuf {
-    fs::create_dir_all(path).unwrap();
-    git(path, &["init", "-q"]);
-    git(path, &["commit", "-q", "--allow-empty", "-m", "init"]);
-    path.to_path_buf()
-}
-
-fn add_worktree(repo: &Path, at: &Path, branch: &str) {
-    git(
-        repo,
-        &["worktree", "add", "-q", "-b", branch, at.to_str().unwrap()],
-    );
-}
-
-struct Fixture {
-    tmp: TempDir,
-}
-
-impl Fixture {
-    fn new() -> Self {
-        let tmp = TempDir::new().unwrap();
-        fs::create_dir(tmp.path().join("code")).unwrap();
-        Self { tmp }
-    }
-    fn code(&self) -> PathBuf {
-        self.tmp.path().join("code")
-    }
-    fn outside(&self, name: &str) -> PathBuf {
-        self.tmp.path().join("elsewhere").join(name)
-    }
-    fn scan(&self) -> Snapshot {
-        scan(&self.code())
-    }
-}
 
 /// (repo name, worktree count) pairs.
 fn summary(s: &Snapshot) -> Vec<(String, usize)> {
@@ -238,4 +176,17 @@ fn settings_tolerate_missing_fields() {
     let s = SettingsFile::new(&path).load().unwrap();
     assert_eq!(s.code_dir, Some(PathBuf::from("/x")));
     assert!(s.show_menu_bar_icon && s.launch_at_login && !s.background_fetch);
+}
+
+#[test]
+fn collapse_state_per_repo() {
+    let mut s = Settings::default();
+    assert!(s.set_collapsed("api", "fix/", true));
+    assert!(s.set_collapsed("api", "feature/", true));
+    assert!(!s.set_collapsed("api", "fix/", true));
+    assert_eq!(s.collapsed("api"), ["feature/", "fix/"]);
+    assert!(s.collapsed("web").is_empty());
+    s.set_collapsed("api", "feature/", false);
+    s.set_collapsed("api", "fix/", false);
+    assert!(s.collapsed.is_empty());
 }

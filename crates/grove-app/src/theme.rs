@@ -57,7 +57,19 @@ pub fn warn_text() -> Rgba {
     rgb(0xf7c987)
 }
 
+/// Worktree rows are tinted so a folder never reads as a branch name.
+pub fn worktree_row() -> Rgba {
+    rgb(0x151d27)
+}
+pub fn worktree_text() -> Rgba {
+    rgb(0xbfdbff)
+}
+pub fn connector() -> Rgba {
+    rgb(0x4a5462)
+}
+
 pub const MONO: &str = "Menlo";
+pub const SANS: &str = ".SystemUIFont";
 
 pub fn mono(text: impl Into<SharedString>) -> Div {
     div().font_family(MONO).child(text.into())

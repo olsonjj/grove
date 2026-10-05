@@ -82,6 +82,7 @@ fn boot() -> Boot {
         settings_file: setup.settings_file,
         settings: setup.settings,
         snapshot: Arc::new(snapshot),
+        saves: Default::default(),
     })
 }
 
@@ -184,6 +185,7 @@ impl Setup {
             settings_file: self.settings_file.clone(),
             settings: self.settings.clone(),
             snapshot: Arc::new(snapshot),
+            saves: Default::default(),
         };
         shell::start(library, cx);
         window.remove_window();

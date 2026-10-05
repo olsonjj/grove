@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyManager;
@@ -14,15 +14,26 @@ use crate::{PlatformEvent, hotkeys, macos, main_window, status_item, windows};
 /// same click that deactivated it; ignore it so the click toggles instead of reopening.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
 
-/// Settings and snapshot the windows render from.
+/// Settings and snapshot the windows render from. A global of its own so windows don't
+/// depend on the platform shell (tests set it alone).
 pub struct Library {
     pub settings_file: SettingsFile,
     pub settings: Settings,
     pub snapshot: Arc<Snapshot>,
+    pub saves: Saves,
+}
+
+impl Global for Library {}
+
+/// Orders settings writes: saves run on background threads, so a newer one can finish
+/// first; an older one arriving after it is dropped instead of overwriting it.
+#[derive(Default)]
+pub struct Saves {
+    issued: u64,
+    written: Arc<Mutex<u64>>,
 }
 
 struct Shell {
-    library: Library,
     _tray: TrayIcon,
     _hotkeys: GlobalHotKeyManager,
     popover: Option<AnyWindowHandle>,
@@ -40,8 +51,8 @@ pub fn start(library: Library, cx: &mut App) {
     let (tx, rx) = async_channel::unbounded::<PlatformEvent>();
     let tray = status_item::install(tx.clone()).expect("status item");
     let hotkeys = hotkeys::install(tx).expect("global hotkeys");
+    cx.set_global(library);
     cx.set_global(Shell {
-        library,
         _tray: tray,
         _hotkeys: hotkeys,
         popover: None,
@@ -65,11 +76,11 @@ pub fn is_running(cx: &App) -> bool {
 }
 
 pub fn library(cx: &App) -> &Library {
-    &cx.global::<Shell>().library
+    cx.global::<Library>()
 }
 
 pub fn select_repo(name: &str, cx: &mut App) {
-    let library = &mut cx.global_mut::<Shell>().library;
+    let library = cx.global_mut::<Library>();
     if library.settings.last_selected_repo.as_deref() == Some(name) {
         return;
     }
@@ -77,12 +88,27 @@ pub fn select_repo(name: &str, cx: &mut App) {
     save_settings(cx);
 }
 
+pub fn set_collapsed(repo: &str, prefix: &str, collapsed: bool, cx: &mut App) {
+    let library = cx.global_mut::<Library>();
+    if library.settings.set_collapsed(repo, prefix, collapsed) {
+        save_settings(cx);
+    }
+}
+
 fn save_settings(cx: &mut App) {
-    let library = &cx.global::<Shell>().library;
+    let library = cx.global_mut::<Library>();
+    library.saves.issued += 1;
+    let generation = library.saves.issued;
+    let written = library.saves.written.clone();
     let (file, settings) = (library.settings_file.clone(), library.settings.clone());
     cx.background_spawn(async move {
-        if let Err(e) = file.save(&settings) {
-            eprintln!("[grove] saving settings to {}: {e}", file.path().display());
+        let mut written = written.lock().unwrap_or_else(|e| e.into_inner());
+        if *written > generation {
+            return;
+        }
+        match file.save(&settings) {
+            Ok(()) => *written = generation,
+            Err(e) => eprintln!("[grove] saving settings to {}: {e}", file.path().display()),
         }
     })
     .detach();

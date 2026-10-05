@@ -41,6 +41,28 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    pub fn collapsed(&self, repo: &str) -> &[String] {
+        self.collapsed.get(repo).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns whether anything changed. Repos with nothing collapsed are dropped.
+    pub fn set_collapsed(&mut self, repo: &str, prefix: &str, collapsed: bool) -> bool {
+        let list = self.collapsed.entry(repo.to_string()).or_default();
+        let had = list.iter().any(|p| p == prefix);
+        if collapsed && !had {
+            list.push(prefix.to_string());
+            list.sort();
+        } else if !collapsed && had {
+            list.retain(|p| p != prefix);
+        }
+        if list.is_empty() {
+            self.collapsed.remove(repo);
+        }
+        had != collapsed
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalOpensIn {

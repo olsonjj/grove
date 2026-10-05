@@ -1,10 +1,12 @@
 mod hotkeys;
+mod icons;
 mod macos;
 mod main_window;
 mod setup;
 mod shell;
 mod status_item;
 mod theme;
+mod tree_view;
 mod windows;
 
 use std::time::Instant;
@@ -21,6 +23,7 @@ pub enum PlatformEvent {
 fn main() {
     macos::force_accessory_activation_policy();
     gpui_kit::application()
+        .with_assets(icons::Assets)
         .with_quit_mode(QuitMode::Explicit)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
