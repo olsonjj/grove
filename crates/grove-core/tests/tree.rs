@@ -3,7 +3,7 @@ mod common;
 use std::path::Path;
 
 use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{NavKey, RowId, RowKind, Snapshot, Tree, navigate};
+use grove_core::{NavKey, Presence, RowId, RowKind, Snapshot, Tree, navigate};
 
 /// One line per visible row, indented by depth. Worktrees show their folder name.
 fn shape(tree: &Tree) -> Vec<String> {
@@ -293,16 +293,18 @@ fn rows_resolve_to_the_worktree_they_open() {
     let api = code.join("api");
 
     let branch = |n: &str| tree.worktree_for(&RowId::Branch(n.into()));
-    assert_eq!(branch("main"), Some((api.as_path(), true)));
+    assert_eq!(branch("main"), Some((api.as_path(), Presence::Present)));
     assert_eq!(
         branch("feature/a"),
-        Some((wt.join("api-a").as_path(), true))
+        Some((wt.join("api-a").as_path(), Presence::Present))
     );
     assert_eq!(
         tree.worktree_for(&RowId::Worktree(wt.join("api-b"))),
-        Some((wt.join("api-b").as_path(), true))
+        Some((wt.join("api-b").as_path(), Presence::Present))
     );
-    // Deleted folder: git reports it prunable, so it can't be opened.
-    assert_eq!(branch("fix/c"), Some((wt.join("api-c").as_path(), false)));
+    assert_eq!(
+        branch("fix/c"),
+        Some((wt.join("api-c").as_path(), Presence::Missing))
+    );
     assert_eq!(tree.worktree_for(&RowId::Folder("feature/".into())), None);
 }

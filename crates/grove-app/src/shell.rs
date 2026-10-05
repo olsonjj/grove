@@ -57,6 +57,7 @@ pub fn start(library: Library, cx: &mut App) {
         .inspect_err(|e| eprintln!("[grove] global hotkeys unavailable: {e}"))
         .ok();
     cx.set_global(library);
+    read_statuses(cx);
     crate::launcher::install(cx);
     cx.set_global(Shell {
         _tray: tray,
@@ -83,6 +84,35 @@ pub fn is_running(cx: &App) -> bool {
 
 pub fn library(cx: &App) -> &Library {
     cx.global::<Library>()
+}
+
+/// Reads every worktree's git status on background threads, applying results to the
+/// snapshot as they land so badges fill in without blocking the UI.
+pub fn read_statuses(cx: &mut App) {
+    let paths = library(cx).snapshot.status_targets();
+    let (tx, rx) = async_channel::unbounded();
+    cx.background_spawn(async move {
+        grove_core::read_statuses(&paths, |path, status| {
+            let _ = tx.send_blocking((path.to_path_buf(), status));
+        });
+    })
+    .detach();
+    cx.spawn(async move |cx| {
+        while let Ok(first) = rx.recv().await {
+            let mut batch = vec![first];
+            while let Ok(more) = rx.try_recv() {
+                batch.push(more);
+            }
+            cx.update(|cx| {
+                let snapshot = &mut cx.global_mut::<Library>().snapshot;
+                let snapshot = Arc::make_mut(snapshot);
+                for (path, status) in batch {
+                    snapshot.set_status(&path, status);
+                }
+            });
+        }
+    })
+    .detach();
 }
 
 pub fn select_repo(name: &str, cx: &mut App) {

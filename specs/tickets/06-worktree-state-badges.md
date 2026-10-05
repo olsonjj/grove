@@ -6,12 +6,12 @@
 
 **Status:** ready-for-agent
 
-- [ ] Every git call sets `GIT_OPTIONAL_LOCKS=0` and has a timeout
-- [ ] Ahead/behind against `@{u}` on any remote; no upstream → "local only", no counts
-- [ ] Upstream configured but ref missing → "upstream gone"
-- [ ] Change count from `git status`; badge carries the word, not color alone
-- [ ] Locked → lock badge, opens normally
-- [ ] Missing folder → "missing", Open disabled, prune hint
-- [ ] Unmounted path → dimmed "unavailable", Open disabled
-- [ ] No "HEAD" badge
-- [ ] Core tests: dirty worktree, ahead/behind vs local bare remote, fork tracking another remote, no upstream, gone upstream, locked, deleted folder; repo index unchanged after reads
+- [x] Every git call sets `GIT_OPTIONAL_LOCKS=0` and has a timeout
+- [x] Ahead/behind against `@{u}` on any remote; no upstream → "local only", no counts
+- [x] Upstream configured but ref missing → "upstream gone"
+- [x] Change count from `git status`; badge carries the word, not color alone
+- [x] Locked → lock badge, opens normally
+- [x] Missing folder → "missing", Open disabled, prune hint
+- [x] Unmounted path → dimmed "unavailable", Open disabled
+- [x] No "HEAD" badge
+- [x] Core tests: dirty worktree, ahead/behind vs local bare remote, fork tracking another remote, no upstream, gone upstream, locked, deleted folder; repo index unchanged after reads

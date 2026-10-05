@@ -47,6 +47,9 @@ pub fn link() -> Rgba {
 pub fn accent() -> Rgba {
     rgb(0xf0a847)
 }
+pub fn accent_bg() -> Rgba {
+    rgb(0x2e2414)
+}
 pub fn on_accent() -> Rgba {
     rgb(0x1a1307)
 }

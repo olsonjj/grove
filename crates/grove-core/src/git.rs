@@ -83,6 +83,27 @@ pub struct WorktreeEntry {
     pub prunable: Option<String>,
 }
 
+/// One worktree's `git status`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorktreeStatus {
+    /// Paths `git status` lists: modified, staged, unmerged and untracked.
+    pub changed: usize,
+    pub upstream: Upstream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Upstream {
+    /// No upstream configured, or HEAD is detached.
+    None,
+    Tracking {
+        name: String,
+        ahead: u32,
+        behind: u32,
+    },
+    /// Configured, but its remote-tracking ref no longer exists.
+    Gone { name: String },
+}
+
 /// The git binary: `$GROVE_GIT` if set (dev/testing override), else `git` on the resolved PATH.
 pub fn binary() -> Option<&'static Path> {
     static BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
@@ -127,6 +148,12 @@ pub fn common_dir(path: &Path) -> Result<PathBuf, GitError> {
     let out = run(Some(path), &["rev-parse", "--git-common-dir"], QUICK)?;
     let dir = path.join(out.trim_end_matches(['\n', '\r']));
     Ok(dir.canonicalize().unwrap_or(dir))
+}
+
+/// Change count and ahead/behind vs `@{u}` (any remote), from one read-only `git status`.
+pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
+    let out = run(Some(path), &["status", "--porcelain=v2", "--branch"], READ)?;
+    Ok(parse_status(&out))
 }
 
 fn run(dir: Option<&Path>, args: &[&str], timeout: Duration) -> Result<String, GitError> {
@@ -200,6 +227,38 @@ fn parse_worktree_list(out: &str) -> Vec<WorktreeEntry> {
     entries
 }
 
+fn parse_status(out: &str) -> WorktreeStatus {
+    let mut changed = 0;
+    let mut upstream = None;
+    let mut ab = None;
+    for line in out.lines() {
+        let Some(header) = line.strip_prefix("# ") else {
+            changed += usize::from(!line.is_empty());
+            continue;
+        };
+        if let Some(name) = header.strip_prefix("branch.upstream ") {
+            upstream = Some(name.to_string());
+        } else if let Some(counts) = header.strip_prefix("branch.ab ") {
+            // "+1 -2"
+            let mut it = counts
+                .split(' ')
+                .map(|c| c.get(1..).and_then(|n| n.parse::<u32>().ok()));
+            ab = it.next().flatten().zip(it.next().flatten());
+        }
+    }
+    // git omits branch.ab when the upstream ref is missing.
+    let upstream = match (upstream, ab) {
+        (None, _) => Upstream::None,
+        (Some(name), Some((ahead, behind))) => Upstream::Tracking {
+            name,
+            ahead,
+            behind,
+        },
+        (Some(name), None) => Upstream::Gone { name },
+    };
+    WorktreeStatus { changed, upstream }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +283,36 @@ mod tests {
         assert_eq!(e[1].branch.as_deref(), Some("feature/x"));
         assert_eq!(e[1].locked.as_deref(), Some(""));
         assert!(e[2].detached && e[2].prunable.is_some());
+    }
+
+    #[test]
+    fn parses_status_porcelain_v2() {
+        let s = parse_status(
+            "# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +1 -2\n\
+             1 .M N... 100644 100644 100644 a a f.txt\n2 R. N... 100644 100644 100644 a a R100 new\told\n\
+             u UU N... 1 2 3 4 a b c m.txt\n? u.txt\n",
+        );
+        assert_eq!(s.changed, 4);
+        assert_eq!(
+            s.upstream,
+            Upstream::Tracking {
+                name: "origin/main".into(),
+                ahead: 1,
+                behind: 2
+            }
+        );
+        let gone = parse_status("# branch.oid abc\n# branch.head g\n# branch.upstream origin/g\n");
+        assert_eq!(
+            gone,
+            WorktreeStatus {
+                changed: 0,
+                upstream: Upstream::Gone {
+                    name: "origin/g".into()
+                }
+            }
+        );
+        let detached = parse_status("# branch.oid abc\n# branch.head (detached)\n? x\n");
+        assert_eq!(detached.upstream, Upstream::None);
+        assert_eq!(detached.changed, 1);
     }
 }

@@ -9,7 +9,9 @@ use gpui_kit::{
     KeyDownEvent, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
     Styled, TestSupportExt, Window, div, px, rgb,
 };
-use grove_core::{NavEffect, NavKey, RepoSnapshot, Role, Row, RowId, RowKind, Tree, navigate};
+use grove_core::{
+    Badge, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind, Tree, navigate,
+};
 
 use crate::icons::{self, icon};
 use crate::theme;
@@ -26,7 +28,7 @@ pub struct CollapseChanged {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenRequested {
     pub path: PathBuf,
-    pub openable: bool,
+    pub presence: Presence,
     pub role: Role,
 }
 
@@ -86,6 +88,24 @@ impl TreeView {
         self.rebuild();
         self.selected = None;
         self.apply(navigate(&self.tree, None, NavKey::Down), cx);
+    }
+
+    /// Same repo with fresher data (e.g. a status read landed); keeps selection and collapse.
+    pub fn update_repo(&mut self, repo: Option<RepoSnapshot>, cx: &mut Context<Self>) {
+        if self.repo == repo {
+            return;
+        }
+        self.repo = repo;
+        self.rebuild();
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|id| self.tree.index_of(id).is_none())
+        {
+            self.selected = None;
+            self.apply(navigate(&self.tree, None, NavKey::Down), cx);
+        }
+        cx.notify();
     }
 
     fn rebuild(&mut self) {
@@ -172,10 +192,10 @@ impl TreeView {
             .selected
             .as_ref()
             .and_then(|id| self.tree.worktree_for(id));
-        if let Some((path, openable)) = target {
+        if let Some((path, presence)) = target {
             cx.emit(OpenRequested {
                 path: path.to_path_buf(),
-                openable,
+                presence,
                 role,
             });
         }
@@ -298,11 +318,11 @@ impl TreeView {
                 .child(single_line(label.clone())),
             RowKind::Worktree {
                 display,
-                is_main,
-                detached_at,
-                openable,
+                presence,
+                badges,
                 ..
             } => base
+                .when(*presence == Presence::Unavailable, |d| d.opacity(0.5))
                 .text_color(theme::worktree_text())
                 .child(
                     icon(icons::ELBOW, 14.)
@@ -327,14 +347,21 @@ impl TreeView {
                         )
                         .child(div().flex_none().child(display.name.clone())),
                 )
-                .when(*is_main, |d| d.child(badge("main worktree")))
-                .when_some(detached_at.as_ref(), |d, sha| {
-                    d.child(badge(format!("detached @ {sha}")))
+                .children(badges.iter().enumerate().map(|(i, b)| badge(i, b)))
+                .when(*presence == Presence::Missing, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .font_family(theme::SANS)
+                            .text_size(px(11.))
+                            .text_color(theme::faint())
+                            .child("run git worktree prune"),
+                    )
                 })
                 .when(selected, |d| {
                     d.child(div().flex_1())
-                        .child(self.open_button(ix, *openable, cx))
-                        .child(self.terminal_button(ix, *openable, cx))
+                        .child(self.open_button(ix, *presence, cx))
+                        .child(self.terminal_button(ix, *presence, cx))
                 }),
             RowKind::DetachedSection => unreachable!(),
         }
@@ -345,16 +372,16 @@ impl TreeView {
 
 impl TreeView {
     /// Inline "Open in <editor>" on the selected worktree row; disabled when missing.
-    fn open_button(&self, ix: usize, openable: bool, cx: &mut Context<Self>) -> AnyElement {
+    fn open_button(&self, ix: usize, presence: Presence, cx: &mut Context<Self>) -> AnyElement {
+        let openable = presence.is_openable();
         let editor = crate::launcher::target_name(Role::Editor, cx);
         let label: SharedString = match &editor {
             Some(name) => format!("Open in {name}").into(),
             None => "Open in editor".into(),
         };
-        let tip: SharedString = if openable {
-            format!("{label} (↵)").into()
-        } else {
-            "Folder is missing; run git worktree prune".into()
+        let tip: SharedString = match presence.reason() {
+            None => format!("{label} (↵)").into(),
+            Some(reason) => format!("Can't open: {reason}").into(),
         };
         div()
             .id(("open-editor", ix))
@@ -394,14 +421,14 @@ impl TreeView {
 
 impl TreeView {
     /// Inline icon button "Open in <terminal>" next to the editor button.
-    fn terminal_button(&self, ix: usize, openable: bool, cx: &mut Context<Self>) -> AnyElement {
-        let tip: SharedString = if openable {
-            match crate::launcher::target_name(Role::Terminal, cx) {
+    fn terminal_button(&self, ix: usize, presence: Presence, cx: &mut Context<Self>) -> AnyElement {
+        let openable = presence.is_openable();
+        let tip: SharedString = match presence.reason() {
+            None => match crate::launcher::target_name(Role::Terminal, cx) {
                 Some(name) => format!("Open in {name} (⌘↵)").into(),
                 None => "Open in terminal (⌘↵)".into(),
-            }
-        } else {
-            "Folder is missing; run git worktree prune".into()
+            },
+            Some(reason) => format!("Can't open: {reason}").into(),
         };
         div()
             .id(("open-terminal", ix))
@@ -439,19 +466,34 @@ fn single_line(text: String) -> gpui_kit::Div {
         .child(text)
 }
 
-fn badge(text: impl Into<SharedString>) -> impl IntoElement {
+/// Worded state badge; color only reinforces the words. Tooltip gives the long form.
+fn badge(i: usize, b: &Badge) -> impl IntoElement {
+    let (bg, fg) = match b {
+        Badge::Changed(_) => (theme::accent_bg(), theme::accent()),
+        Badge::Missing | Badge::UpstreamGone(_) | Badge::StatusFailed(_) => {
+            (theme::warn_bg(), theme::warn_text())
+        }
+        _ => (theme::border(), theme::text_soft()),
+    };
+    let tip: SharedString = b.description().into();
     div()
+        .id(("badge", i))
         .flex_none()
         .px(px(7.))
         .h(px(18.))
         .flex()
         .items_center()
+        .gap(px(4.))
         .rounded(px(9.))
-        .bg(theme::border())
-        .text_color(theme::text_soft())
+        .bg(bg)
+        .text_color(fg)
         .font_family(theme::SANS)
         .text_size(px(11.))
-        .child(text.into())
+        .when(*b == Badge::Locked, |d| {
+            d.child(icon(icons::LOCK, 11.).text_color(fg))
+        })
+        .child(b.label())
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
 }
 
 fn legend_item(icon_el: impl IntoElement, label: &'static str) -> impl IntoElement {
@@ -587,6 +629,8 @@ pub(crate) mod tests {
             is_main,
             locked: false,
             prunable: false,
+            presence: Presence::Present,
+            status: None,
         }
     }
 

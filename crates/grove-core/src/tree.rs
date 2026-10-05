@@ -8,7 +8,8 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::snapshot::{RepoSnapshot, Worktree};
+use crate::badge::Badge;
+use crate::snapshot::{Presence, RepoSnapshot, Worktree};
 
 /// Stable identity of a row, for selection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -39,10 +40,10 @@ pub enum RowKind {
         display: DisplayPath,
         is_main: bool,
         locked: bool,
-        /// False when git reports the folder gone (deleted or on an unmounted drive).
-        openable: bool,
+        presence: Presence,
         /// Short (7 char) SHA when detached.
         detached_at: Option<String>,
+        badges: Vec<Badge>,
     },
     DetachedSection,
 }
@@ -70,8 +71,8 @@ impl Tree {
     }
 
     /// The worktree a row opens: itself, or a branch's first worktree (main first).
-    /// Returns its path and whether it can be opened.
-    pub fn worktree_for(&self, id: &RowId) -> Option<(&Path, bool)> {
+    /// Returns its path and whether its folder is there to open.
+    pub fn worktree_for(&self, id: &RowId) -> Option<(&Path, Presence)> {
         let ix = self.index_of(id)?;
         let row = match &self.rows[ix].kind {
             RowKind::Worktree { .. } => &self.rows[ix],
@@ -82,7 +83,7 @@ impl Tree {
             _ => return None,
         };
         match &row.kind {
-            RowKind::Worktree { path, openable, .. } => Some((path.as_path(), *openable)),
+            RowKind::Worktree { path, presence, .. } => Some((path.as_path(), *presence)),
             _ => None,
         }
     }
@@ -261,12 +262,13 @@ fn worktree_row(wt: &Worktree, depth: usize, parent: Option<RowId>, home: Option
             display: DisplayPath::new(&wt.path, home),
             is_main: wt.is_main,
             locked: wt.locked,
-            openable: !wt.prunable,
+            presence: wt.presence,
             detached_at: wt
                 .branch
                 .is_none()
                 .then(|| wt.head.as_deref().map(|h| h[..h.len().min(7)].to_string()))
                 .flatten(),
+            badges: wt.badges(),
         },
     }
 }

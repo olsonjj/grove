@@ -3,9 +3,10 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::discovery::{RepoRef, discover};
-use crate::git::{self, GitError};
+use crate::git::{self, GitError, WorktreeStatus};
 
 const MAX_PARALLEL_REPOS: usize = 8;
+const MAX_PARALLEL_READS: usize = 8;
 
 /// Everything Grove knows about the code directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,34 @@ pub struct Snapshot {
 impl Snapshot {
     pub fn repo(&self, name: &str) -> Option<&RepoSnapshot> {
         self.repos.iter().find(|r| r.repo.name == name)
+    }
+
+    fn worktrees(&self) -> impl Iterator<Item = &Worktree> {
+        self.repos.iter().flat_map(|r| &r.worktrees)
+    }
+
+    /// Worktrees whose status can be read (folder present).
+    pub fn status_targets(&self) -> Vec<PathBuf> {
+        self.worktrees()
+            .filter(|w| w.presence == Presence::Present)
+            .map(|w| w.path.clone())
+            .collect()
+    }
+
+    /// Stores a status read for the worktree at `path`; false if no such worktree.
+    pub fn set_status(&mut self, path: &Path, status: Result<WorktreeStatus, GitError>) -> bool {
+        let found = self
+            .repos
+            .iter_mut()
+            .flat_map(|r| &mut r.worktrees)
+            .find(|w| w.path == path);
+        match found {
+            Some(w) => {
+                w.status = Some(status);
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -51,6 +80,73 @@ pub struct Worktree {
     pub is_main: bool,
     pub locked: bool,
     pub prunable: bool,
+    pub presence: Presence,
+    /// `None` until read (and never for a folder that isn't present).
+    pub status: Option<Result<WorktreeStatus, GitError>>,
+}
+
+/// Whether a worktree's folder is on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    Present,
+    /// Folder deleted; git keeps the entry until `git worktree prune`.
+    Missing,
+    /// On a volume that isn't mounted.
+    Unavailable,
+}
+
+impl Presence {
+    pub fn of(path: &Path) -> Self {
+        presence_in(path, Path::new("/Volumes"))
+    }
+
+    pub fn is_openable(self) -> bool {
+        self == Self::Present
+    }
+
+    /// Why it can't be opened.
+    pub fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Present => None,
+            Self::Missing => Some("folder is missing (run git worktree prune)"),
+            Self::Unavailable => Some("its drive isn't mounted"),
+        }
+    }
+}
+
+/// Missing unless the path sits under `<volumes>/<name>` and that volume is gone.
+fn presence_in(path: &Path, volumes: &Path) -> Presence {
+    if path.exists() {
+        return Presence::Present;
+    }
+    let volume = path
+        .strip_prefix(volumes)
+        .ok()
+        .and_then(|rest| rest.components().next());
+    match volume {
+        Some(name) if !volumes.join(name).exists() => Presence::Unavailable,
+        _ => Presence::Missing,
+    }
+}
+
+/// Reads each path's status, at most `MAX_PARALLEL_READS` at a time, handing each result to
+/// `each` as it lands. Blocking; run off the UI thread.
+pub fn read_statuses(
+    paths: &[PathBuf],
+    each: impl Fn(&Path, Result<WorktreeStatus, GitError>) + Sync,
+) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    thread::scope(|s| {
+        for _ in 0..MAX_PARALLEL_READS.min(paths.len()) {
+            s.spawn(|| {
+                while let Some(path) =
+                    paths.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
+                    each(path, git::read_worktree_status(path));
+                }
+            });
+        }
+    });
 }
 
 /// Builds a fresh snapshot: discovery plus each repo's worktrees (including ones outside
@@ -110,6 +206,8 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
                 .filter(|(_, e)| !e.bare)
                 .map(|(i, e)| Worktree {
                     is_main: i == 0,
+                    presence: Presence::of(&e.path),
+                    status: None,
                     path: e.path,
                     branch: e.branch,
                     head: e.head,
@@ -156,8 +254,62 @@ impl SnapshotStore {
         self.snapshot.clone()
     }
 
-    /// Rescans the same code directory (blocking).
+    /// Rescans the same code directory (blocking). Statuses start unread.
     pub fn refresh_all(&mut self) {
         self.snapshot = Arc::new(scan(&self.snapshot.code_dir));
+    }
+
+    /// Reads every present worktree's status, in parallel (blocking).
+    pub fn refresh_statuses(&mut self) {
+        let results = std::sync::Mutex::new(Vec::new());
+        read_statuses(&self.snapshot.status_targets(), |path, status| {
+            results
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((path.to_path_buf(), status));
+        });
+        let snapshot = Arc::make_mut(&mut self.snapshot);
+        for (path, status) in results.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            snapshot.set_status(&path, status);
+        }
+    }
+
+    /// Re-checks one worktree's folder and rereads its status (blocking); false if unknown.
+    pub fn refresh_worktree(&mut self, path: &Path) -> bool {
+        let snapshot = Arc::make_mut(&mut self.snapshot);
+        let Some(wt) = snapshot
+            .repos
+            .iter_mut()
+            .flat_map(|r| &mut r.worktrees)
+            .find(|w| w.path == path)
+        else {
+            return false;
+        };
+        wt.presence = Presence::of(path);
+        wt.status = wt
+            .presence
+            .is_openable()
+            .then(|| git::read_worktree_status(path));
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presence_tells_missing_from_unmounted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let volumes = tmp.path().join("Volumes");
+        std::fs::create_dir_all(volumes.join("ext/code/api")).unwrap();
+        let at = |p: &str| presence_in(&volumes.join(p), &volumes);
+        assert_eq!(at("ext/code/api"), Presence::Present);
+        assert_eq!(at("ext/code/gone"), Presence::Missing);
+        assert_eq!(at("unplugged/code/api"), Presence::Unavailable);
+        assert_eq!(
+            presence_in(&tmp.path().join("deleted"), &volumes),
+            Presence::Missing
+        );
     }
 }

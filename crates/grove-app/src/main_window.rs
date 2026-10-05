@@ -26,7 +26,7 @@ struct MainWindow {
     status: Option<Status>,
     /// Bumped per open so a slow earlier launch can't overwrite a newer status.
     open_seq: u64,
-    _subs: [Subscription; 2],
+    _subs: [Subscription; 3],
 }
 
 /// The saved repo if it still exists, else the first.
@@ -51,12 +51,13 @@ impl MainWindow {
         let open = cx.subscribe(&tree, |this, _, ev: &OpenRequested, cx| {
             this.open(ev, cx);
         });
+        let library = cx.observe_global::<shell::Library>(|this, cx| this.sync_repo(cx));
         window.focus(&tree.focus_handle(cx), cx);
         let mut this = Self {
             tree,
             status: None,
             open_seq: 0,
-            _subs: [collapse, open],
+            _subs: [collapse, open, library],
         };
         this.show_repo(selected_repo(cx), cx);
         if std::env::var_os("GROVE_DEV_OPEN").is_some() {
@@ -78,6 +79,20 @@ impl MainWindow {
             tree.update(cx, |tree, cx| tree.dev_open_first(cx));
         })
         .detach();
+    }
+
+    /// Pushes fresher snapshot data for the shown repo into the tree.
+    fn sync_repo(&mut self, cx: &mut Context<Self>) {
+        if !cx.has_global::<shell::Library>() {
+            return;
+        }
+        let name = self.tree.read(cx).repo_name().map(str::to_string);
+        let repo = name
+            .as_deref()
+            .and_then(|n| shell::library(cx).snapshot.repo(n))
+            .cloned();
+        self.tree.update(cx, |tree, cx| tree.update_repo(repo, cx));
+        cx.notify();
     }
 
     fn show_repo(&mut self, name: Option<String>, cx: &mut Context<Self>) {
@@ -108,11 +123,8 @@ impl MainWindow {
     fn open(&mut self, req: &OpenRequested, cx: &mut Context<Self>) {
         self.open_seq += 1;
         let seq = self.open_seq;
-        if !req.openable {
-            let text = format!(
-                "Can't open {}: folder is missing (run git worktree prune)",
-                tilde(&req.path)
-            );
+        if let Some(reason) = req.presence.reason() {
+            let text = format!("Can't open {}: {reason}", tilde(&req.path));
             return self.set_status(text, true, false, cx);
         }
         match launcher::open(req.role, &req.path, cx) {
@@ -375,8 +387,9 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Point, TestAppContext};
     use grove_core::{
-        Editor, Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Permission, RowId, RowKind,
-        Settings, SettingsFile, Snapshot, TargetKind, Terminal, TerminalOpensIn,
+        Editor, Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Permission, Presence,
+        RowId, RowKind, Settings, SettingsFile, Snapshot, TargetKind, Terminal, TerminalOpensIn,
+        Upstream, WorktreeStatus,
     };
     use tempfile::TempDir;
 
@@ -676,13 +689,77 @@ mod tests {
         );
     }
 
+    fn row_badges(cx: &mut TestAppContext, main: &Entity<MainWindow>, path: &str) -> Vec<String> {
+        main.read_with(cx, |m, cx| {
+            m.tree
+                .read(cx)
+                .tree()
+                .rows
+                .iter()
+                .find_map(|r| match &r.kind {
+                    RowKind::Worktree {
+                        path: p, badges, ..
+                    } if p == Path::new(path) => Some(badges.iter().map(|b| b.label()).collect()),
+                    _ => None,
+                })
+                .unwrap()
+        })
+    }
+
+    #[gpui_kit::test]
+    fn status_reads_landing_update_badges_and_keep_selection(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["down", "down", "down", "down"]);
+        let before = main.read_with(cx, |m, cx| m.tree.read(cx).selected().cloned());
+        assert_eq!(before, Some(RowId::Worktree("/c/wt/api-x".into())));
+        assert!(row_badges(cx, &main, "/c/wt/api-x").is_empty());
+
+        cx.update(|cx| {
+            let snapshot = Arc::make_mut(&mut cx.global_mut::<Library>().snapshot);
+            snapshot.set_status(
+                Path::new("/c/wt/api-x"),
+                Ok(WorktreeStatus {
+                    changed: 3,
+                    upstream: Upstream::Tracking {
+                        name: "origin/feature/x".into(),
+                        ahead: 2,
+                        behind: 1,
+                    },
+                }),
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(row_badges(cx, &main, "/c/wt/api-x"), ["3 changed", "↑2 ↓1"]);
+        let after = main.read_with(cx, |m, cx| m.tree.read(cx).selected().cloned());
+        assert_eq!(after, before);
+    }
+
+    #[gpui_kit::test]
+    fn unavailable_worktree_cannot_be_opened(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[1].presence = Presence::Unavailable;
+        let (w, main) = launch_repo(cx, &file, repo);
+        assert_eq!(row_badges(cx, &main, "/c/wt/api-x"), ["unavailable"]);
+        keys(cx, w, &["down", "down", "down", "down", "enter"]);
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Can't open /c/wt/api-x: its drive isn't mounted"
+        );
+    }
+
     #[gpui_kit::test]
     fn missing_worktree_cannot_be_opened(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let mut repo = canned();
-        repo.worktrees[1].prunable = true; // /c/wt/api-x
+        repo.worktrees[1].presence = Presence::Missing; // /c/wt/api-x
         let (w, main) = launch_repo(cx, &file, repo);
 
         // feature/x branch, then its worktree; Enter and the button both refuse.
@@ -842,7 +919,7 @@ mod tests {
         let file = settings_file(&tmp, Settings::default());
         let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let mut repo = canned();
-        repo.worktrees[1].prunable = true; // /c/wt/api-x
+        repo.worktrees[1].presence = Presence::Missing; // /c/wt/api-x
         let (w, main) = launch_repo(cx, &file, repo);
         let has_button = |cx: &mut TestAppContext, ix: usize| has(cx, w, "open-terminal", ix);
         assert!(!(0..10).any(|ix| has_button(cx, ix)));
