@@ -185,6 +185,7 @@ Core is a headless library with no GPUI dependency. The app binary is a thin GPU
 - Recents: last 10, persisted.
 - Minimum git 2.20.
 - Repo shown by folder name; parent folder added only when names clash.
+- Tree order: main worktree's branch first, then prefix folders and plain branches mixed in one alphabetical list.
 - Terminal/iTerm2 tabs need macOS Automation permission; if denied, fall back to opening a new window via `open -a` and show a status-line hint.
 
 ### Build order

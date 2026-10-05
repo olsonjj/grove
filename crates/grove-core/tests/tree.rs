@@ -180,6 +180,7 @@ fn main_worktree_branch_sorts_first() {
     add_worktree(&repo, &f.code().join("zed-b"), "Beta");
     add_worktree(&repo, &f.code().join("zed-a"), "alpha");
     add_worktree(&repo, &f.code().join("zed-m"), "main-ish");
+    add_worktree(&repo, &f.code().join("zed-f"), "feat/x");
     let tree = tree_of(&f.scan(), "zed", &[]);
     let branches: Vec<_> = tree
         .rows
@@ -189,7 +190,9 @@ fn main_worktree_branch_sorts_first() {
             _ => None,
         })
         .collect();
-    assert_eq!(branches, ["zzz", "alpha", "Beta", "main-ish"]);
+    assert_eq!(branches, ["zzz", "alpha", "Beta", "feat/x", "main-ish"]);
+    // Folders sort among plain branches, not before them.
+    assert!(matches!(&tree.rows[6].kind, RowKind::Folder { prefix, .. } if prefix == "feat/"));
 }
 
 #[test]

@@ -21,7 +21,7 @@
 
 - Core: `RepoSnapshot::tree(collapsed) -> Tree` (visible rows) and `navigate(tree, selected, key) -> NavEffect` in `grove-core/src/tree.rs`, both pure. App `tree_view.rs` renders and dispatches keys only.
 - Prefix folders group by **first segment** (`feature/auth/x` → `feature/` › `auth/x`), as in the prototype. Count = checked-out branches inside.
-- Order: main worktree's branch first (full name, even if it has a `/`), then prefix folders, then plain branches, each case-insensitive alphabetical. Folders-before-plain follows the prototype (`chore-deps` after `release/`); revisit with the sort-order open question.
+- Order: main worktree's branch first (full name, even if it has a `/`), then prefix folders and plain branches in one case-insensitive alphabetical list (`chore-deps` before `feature/`). Decided 2026-10-04, differs from prototype.
 - → on an open folder or a branch steps to its first child; ← on a child steps to its parent. Collapsing a folder that holds the selection moves selection to the folder.
 - Collapse state: `Settings::collapsed[repo]` = sorted prefixes (`"feature/"`); repos with nothing collapsed are dropped from the map.
 - Icons: prototype SVGs embedded via our own `AssetSource` (`icons.rs`), falling back to GPUI Kit's bundle.

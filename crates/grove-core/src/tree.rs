@@ -183,17 +183,26 @@ fn build(worktrees: &[Worktree], collapsed: &[String], home: Option<&Path>) -> T
         push_branch(&mut tree, main, main, 0, None);
     }
 
-    let mut folders: Vec<_> = folders.into_iter().collect();
-    folders.sort_by(|a, b| by_name(a.0, b.0));
-    for (prefix, mut names) in folders {
-        let is_collapsed = collapsed.iter().any(|c| c == prefix);
-        let id = RowId::Folder(prefix.to_string());
+    // Folders and plain branches share one alphabetical list.
+    let mut entries: Vec<(&str, Option<Vec<&str>>)> = folders
+        .into_iter()
+        .map(|(prefix, names)| (prefix, Some(names)))
+        .chain(plain.into_iter().map(|name| (name, None)))
+        .collect();
+    entries.sort_by(|a, b| by_name(a.0, b.0));
+    for (key, names) in entries {
+        let Some(mut names) = names else {
+            push_branch(&mut tree, key, key, 0, None);
+            continue;
+        };
+        let is_collapsed = collapsed.iter().any(|c| c == key);
+        let id = RowId::Folder(key.to_string());
         tree.rows.push(Row {
             id: id.clone(),
             depth: 0,
             parent: None,
             kind: RowKind::Folder {
-                prefix: prefix.to_string(),
+                prefix: key.to_string(),
                 count: names.len(),
                 collapsed: is_collapsed,
             },
@@ -203,13 +212,8 @@ fn build(worktrees: &[Worktree], collapsed: &[String], home: Option<&Path>) -> T
         }
         names.sort_by(|a, b| by_name(a, b));
         for name in names {
-            push_branch(&mut tree, name, &name[prefix.len()..], 1, Some(id.clone()));
+            push_branch(&mut tree, name, &name[key.len()..], 1, Some(id.clone()));
         }
-    }
-
-    plain.sort_by(|a, b| by_name(a, b));
-    for name in plain {
-        push_branch(&mut tree, name, name, 0, None);
     }
 
     if !detached.is_empty() {
