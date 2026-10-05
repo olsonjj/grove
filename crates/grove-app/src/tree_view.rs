@@ -447,6 +447,7 @@ pub(crate) mod tests {
     /// main, feature/{x,y}, fix/z, one detached.
     pub(crate) fn canned() -> RepoSnapshot {
         RepoSnapshot {
+            display_name: "api".into(),
             repo: RepoRef {
                 name: "api".into(),
                 path: "/c/api".into(),

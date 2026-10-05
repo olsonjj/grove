@@ -39,7 +39,23 @@ fn nested_org_repo() {
     let f = Fixture::new();
     init_repo(&f.code().join("acme/web"));
     init_repo(&f.code().join("tools"));
-    assert_eq!(summary(&f.scan()), pairs(&[("acme/web", 1), ("tools", 1)]));
+    assert_eq!(summary(&f.scan()), pairs(&[("tools", 1), ("acme/web", 1)]));
+}
+
+#[test]
+fn display_names_add_parent_only_on_clash() {
+    let f = Fixture::new();
+    init_repo(&f.code().join("acme/web"));
+    init_repo(&f.code().join("personal/web"));
+    init_repo(&f.code().join("acme/api"));
+    init_repo(&f.code().join("Tools"));
+    let names: Vec<_> = f
+        .scan()
+        .repos
+        .iter()
+        .map(|r| r.display_name.clone())
+        .collect();
+    assert_eq!(names, ["acme/web", "api", "personal/web", "Tools"]);
 }
 
 #[test]

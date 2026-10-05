@@ -94,7 +94,7 @@ impl Render for MainWindow {
                     window.focus(&this.tree.focus_handle(cx), cx);
                     cx.notify();
                 }))
-                .child(theme::mono(repo.name().to_string()).truncate())
+                .child(theme::mono(repo.display_name.clone()).truncate())
                 .child(
                     div()
                         .flex_none()

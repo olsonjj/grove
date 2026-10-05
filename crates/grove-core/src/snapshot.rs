@@ -24,6 +24,8 @@ impl Snapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoSnapshot {
     pub repo: RepoRef,
+    /// Folder name, or the code-dir-relative path when another repo shares it.
+    pub display_name: String,
     /// Main worktree first (normal repos), then linked worktrees in git's order.
     /// Bare repos have only linked worktrees.
     pub worktrees: Vec<Worktree>,
@@ -70,11 +72,33 @@ pub fn scan(code_dir: &Path) -> Snapshot {
             repos.extend(handles.into_iter().filter_map(|h| h.join().ok()));
         });
     }
+    set_display_names(&mut repos);
     Snapshot {
         code_dir: code_dir.to_path_buf(),
         code_dir_exists,
         repos,
     }
+}
+
+fn set_display_names(repos: &mut [RepoSnapshot]) {
+    let short = |r: &RepoSnapshot| {
+        r.repo
+            .name
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    };
+    let shorts: Vec<String> = repos.iter().map(short).collect();
+    for (repo, s) in repos.iter_mut().zip(&shorts) {
+        let clash = shorts.iter().filter(|o| *o == s).count() > 1;
+        repo.display_name = if clash {
+            repo.repo.name.clone()
+        } else {
+            s.clone()
+        };
+    }
+    repos.sort_by_cached_key(|r| (r.display_name.to_lowercase(), r.repo.name.clone()));
 }
 
 fn read_repo(repo: RepoRef) -> RepoSnapshot {
@@ -95,12 +119,14 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
                 })
                 .collect();
             RepoSnapshot {
+                display_name: String::new(),
                 repo,
                 worktrees,
                 error: None,
             }
         }
         Err(e) => RepoSnapshot {
+            display_name: String::new(),
             repo,
             worktrees: Vec::new(),
             error: Some(e),

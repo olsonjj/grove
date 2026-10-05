@@ -303,7 +303,7 @@ impl Setup {
                                         .rounded(px(8.))
                                         .bg(rgb_card())
                                         .child(
-                                            theme::mono(r.name().to_string())
+                                            theme::mono(r.display_name.clone())
                                                 .min_w_0()
                                                 .truncate()
                                                 .text_size(px(13.)),

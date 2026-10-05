@@ -22,7 +22,7 @@
 
 - Min git 2.20: covers `worktree list --porcelain` (2.7), `status --porcelain=v2` (2.11), `GIT_OPTIONAL_LOCKS` (2.15); every Xcode CLT/Homebrew git on macOS 14+ is newer.
 - PATH: `$SHELL -l -c` (5 s timeout), fallback = inherited PATH + /opt/homebrew/bin, /usr/local/bin, system dirs. Under `env -i HOME=$HOME` the log shows the login-shell PATH (with /opt/homebrew/bin before /usr/bin) and git resolved through it. No Homebrew git on this machine; verified instead with a stand-in git in a dir added only via `ZDOTDIR/.zprofile`, launched under `env -i` — Grove resolved that git.
-- Repo names are paths relative to the code dir (`org/repo`), `.git` suffix dropped; a `repo/.bare` layout is named `repo`.
+- Repo id = path relative to the code dir (`org/repo`), `.git` suffix dropped; a `repo/.bare` layout is named `repo`. Shown as the bare folder name, with the parent folder added only when two repos share a name (`acme/web`, `personal/web`); sidebar sorted by shown name.
 - A linked worktree whose repo is outside the code dir is skipped (spec 9: repos outside the folder are dropped).
 - Dev env vars: `GROVE_SETTINGS_PATH` (settings file), `GROVE_CODE_DIR` (open setup as if this folder was just picked), `GROVE_GIT` (git binary override, used to simulate missing/old git).
 - Closing the setup window before Continue quits Grove (nothing else can bring it back). Not checked by eye.
