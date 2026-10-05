@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::env::{ShellEnv, resolved_env};
 use crate::process;
-use crate::settings::Settings;
+use crate::settings::{Settings, TerminalOpensIn};
 
 const SPOTLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const BUNDLE_ID_ATTR: &str = "kMDItemCFBundleIdentifier";
@@ -124,6 +124,14 @@ pub enum Terminal {
 }
 
 impl Terminal {
+    /// Terminal.app tabs need Accessibility (⌘T keystroke), so it defaults to windows.
+    pub fn default_opens_in(self) -> TerminalOpensIn {
+        match self {
+            Terminal::Terminal => TerminalOpensIn::Window,
+            _ => TerminalOpensIn::Tab,
+        }
+    }
+
     /// Detection order; Terminal.app ships with macOS, so it's the usual default.
     pub const ALL: [Terminal; 5] = [
         Terminal::Terminal,

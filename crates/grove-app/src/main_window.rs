@@ -699,15 +699,18 @@ mod tests {
         assert!(s.error);
     }
 
-    /// The Terminal.app tab script that `cd`s into `path`.
-    fn terminal_tab(launch: &[String], path: &str) {
+    /// The Terminal.app script (window by default) that `cd`s into `path`.
+    fn terminal_window(launch: &[String], path: &str) {
         assert_eq!(launch[0], "osascript");
         assert!(
             launch[1].contains(&format!("do script \"cd '{path}'\"")),
             "{}",
             launch[1]
         );
-        assert!(launch[1].contains(r#"keystroke "t" using command down"#));
+        assert!(
+            !launch[1].contains("keystroke"),
+            "Terminal.app defaults to windows"
+        );
     }
 
     #[gpui_kit::test]
@@ -721,7 +724,7 @@ mod tests {
         keys(cx, w, &["cmd-enter"]);
         let got = launches.lock().unwrap().clone();
         assert_eq!(got.len(), 1);
-        terminal_tab(&got[0], "/c/api");
+        terminal_window(&got[0], "/c/api");
         let s = status(cx, &main).unwrap();
         assert_eq!(s.text, "Opening /c/api in Terminal…");
         assert!(!s.error);
@@ -734,8 +737,8 @@ mod tests {
         );
         let got = launches.lock().unwrap().clone();
         assert_eq!(got.len(), 3);
-        terminal_tab(&got[1], "/c/wt/api-x");
-        terminal_tab(&got[2], "/c/wt/api-x");
+        terminal_window(&got[1], "/c/wt/api-x");
+        terminal_window(&got[2], "/c/wt/api-x");
         assert_eq!(
             status(cx, &main).unwrap().text,
             "Opening /c/wt/api-x in Terminal…"
@@ -755,7 +758,7 @@ mod tests {
             &tmp,
             Settings {
                 default_terminal: Some("warp".into()),
-                terminal_opens_in: TerminalOpensIn::Window,
+                terminal_opens_in: Some(TerminalOpensIn::Window),
                 ..Default::default()
             },
         );
@@ -854,7 +857,7 @@ mod tests {
         cx.run_until_parked();
         let got = launches.lock().unwrap().clone();
         assert_eq!(got.len(), 1);
-        terminal_tab(&got[0], "/c/api");
+        terminal_window(&got[0], "/c/api");
         assert_eq!(
             status(cx, &main).unwrap().text,
             "Opening /c/api in Terminal…"

@@ -64,7 +64,10 @@ pub fn plan(target: &OpenTarget, worktree: &Path, settings: &Settings) -> Launch
             spawn(program, args, worktree)
         }
         TargetKind::Terminal(terminal) => {
-            terminal_plan(terminal, target, worktree, settings.terminal_opens_in)
+            let opens_in = settings
+                .terminal_opens_in
+                .unwrap_or(terminal.default_opens_in());
+            terminal_plan(terminal, target, worktree, opens_in)
         }
     }
 }
@@ -737,9 +740,26 @@ mod tests {
 
     fn opens_in(o: TerminalOpensIn) -> Settings {
         Settings {
-            terminal_opens_in: o,
+            terminal_opens_in: Some(o),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn unset_opens_in_uses_window_for_terminal_app_and_tab_elsewhere() {
+        let dir = Path::new("/w");
+        let unset = Settings::default();
+        let LaunchPlan::AppleScript { script, .. } =
+            plan(&term(Terminal::Terminal, None, None), dir, &unset)
+        else {
+            panic!("Terminal.app plans AppleScript");
+        };
+        assert!(!script.contains("keystroke"), "window mode sends no ⌘T");
+        let LaunchPlan::Spawn { args, .. } = plan(&term(Terminal::Warp, None, None), dir, &unset)
+        else {
+            panic!("Warp plans a spawn");
+        };
+        assert!(args.iter().any(|a| a.to_string_lossy().contains("new_tab")));
     }
 
     /// (path, shell-quoted `cd` as an AppleScript literal, Warp `path=` value)
@@ -1011,7 +1031,7 @@ mod tests {
     fn terminal_tab_refuses_to_send_cmd_t_elsewhere() {
         let t = term(Terminal::Terminal, None, None);
         let LaunchPlan::AppleScript { script, .. } =
-            plan(&t, Path::new("/c"), &Settings::default())
+            plan(&t, Path::new("/c"), &opens_in(TerminalOpensIn::Tab))
         else {
             panic!()
         };

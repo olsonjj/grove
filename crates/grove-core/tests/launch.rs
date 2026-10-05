@@ -256,7 +256,7 @@ fn kitty_cli_plan_reaches_stub_with_directory() {
     let targets = detect_in(&env, &[], false);
     let settings = Settings {
         default_terminal: Some("kitty".into()),
-        terminal_opens_in: TerminalOpensIn::Tab,
+        terminal_opens_in: Some(TerminalOpensIn::Tab),
         ..Default::default()
     };
     let kitty = default_terminal(&settings, &targets).unwrap();

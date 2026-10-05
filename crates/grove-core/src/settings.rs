@@ -11,7 +11,9 @@ pub struct Settings {
     pub code_dir: Option<PathBuf>,
     pub default_editor: Option<String>,
     pub default_terminal: Option<String>,
-    pub terminal_opens_in: TerminalOpensIn,
+    /// `None` = per-terminal default (see `Terminal::default_opens_in`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal_opens_in: Option<TerminalOpensIn>,
     pub custom_commands: Vec<CustomCommand>,
     pub show_menu_bar_icon: bool,
     pub background_fetch: bool,
@@ -29,7 +31,7 @@ impl Default for Settings {
             code_dir: None,
             default_editor: None,
             default_terminal: None,
-            terminal_opens_in: TerminalOpensIn::Tab,
+            terminal_opens_in: None,
             custom_commands: Vec::new(),
             show_menu_bar_icon: true,
             background_fetch: false,
@@ -63,10 +65,9 @@ impl Settings {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalOpensIn {
-    #[default]
     Tab,
     Window,
 }
