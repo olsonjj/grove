@@ -21,13 +21,11 @@ pub enum PlatformEvent {
 }
 
 fn main() {
-    macos::force_accessory_activation_policy();
     gpui_kit::application()
         .with_assets(icons::Assets)
         .with_quit_mode(QuitMode::Explicit)
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
-            macos::set_accessory_activation_policy();
             macos::use_dark_appearance();
             cx.on_window_closed(|cx, id| {
                 if shell::is_running(cx) {

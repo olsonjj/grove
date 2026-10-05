@@ -112,7 +112,6 @@ pub struct Setup {
 
 impl Setup {
     fn choose_folder(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
-        // Accessory app: activate so the panel comes to the front.
         cx.activate(true);
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,

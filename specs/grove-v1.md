@@ -134,7 +134,7 @@ Audience: two developers. No distribution, pricing, onboarding for strangers, or
 
 ### App lifecycle
 
-82. As a developer, I want Grove to run as a menu bar app with no Dock icon, so that it stays out of the way.
+82. As a developer, I want Grove to run as a normal app with a Dock icon plus its menu bar icon, so that it behaves like any other Mac app.
 83. As a developer, I want Grove to launch at login (on by default, toggle in settings), so that ⌥⌘K always works.
 84. As a developer, I want closing the main window to keep Grove running, and Quit only from the popover footer or ⌘Q, so that shortcuts don't die when I close a window.
 85. As a developer, I want ⌥⌘G to bring up the main window from anywhere, so that I can reach it with the menu bar icon off.
@@ -153,7 +153,7 @@ Audience: two developers. No distribution, pricing, onboarding for strangers, or
 
 - Rust, GPUI via GPUI Kit (`gpui-kit` from crates.io, pinned exact version). macOS 14+, Apple silicon and Intel.
 - Built with Cargo, bundled as an ad-hoc-signed, non-sandboxed `.app` for the two of us. No notarization, no updater.
-- Accessory activation policy (no Dock icon). Launch at login via the macOS login-item API (SMAppService).
+- Regular activation policy (Dock icon, ⌘Tab, app menu). Launch at login via the macOS login-item API (SMAppService).
 - Dark theme only in v1.
 
 ### Modules
@@ -174,7 +174,7 @@ Core is a headless library with no GPUI dependency. The app binary is a thin GPU
 
 ### Decisions made in review (not yet in the PRD)
 
-- Menu-bar-only accessory app, launch at login on by default.
+- Regular app with Dock icon plus menu bar icon (simpler than accessory; GPUI forces Regular anyway). Launch at login on by default.
 - Discovery depth 2.
 - Fetch all uses `--prune`.
 - `GIT_OPTIONAL_LOCKS=0` on every git call.
