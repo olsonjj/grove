@@ -89,8 +89,8 @@ impl Worktree {
                 None => {}
                 Some(Err(e)) => out.push(Badge::StatusFailed(e.to_string())),
                 Some(Ok(status)) => {
-                    if status.changed > 0 {
-                        out.push(Badge::Changed(status.changed));
+                    if status.changed() > 0 {
+                        out.push(Badge::Changed(status.changed()));
                     }
                     match &status.upstream {
                         Upstream::Tracking {

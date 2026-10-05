@@ -10,7 +10,8 @@ use gpui_kit::{
     Styled, TestSupportExt, Window, div, px, rgb,
 };
 use grove_core::{
-    Badge, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind, Tree, navigate,
+    Badge, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind, TargetKind, Tree,
+    navigate,
 };
 
 use crate::icons::{self, icon};
@@ -24,12 +25,14 @@ pub struct CollapseChanged {
     pub collapsed: bool,
 }
 
-/// Enter / ⌘Enter or an inline button asked to open a worktree in the editor / terminal.
+/// Enter / ⌘Enter or an open button asked to open a worktree in the editor / terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenRequested {
     pub path: PathBuf,
     pub presence: Presence,
     pub role: Role,
+    /// One-off app from a ▾ menu; `None` uses the default for `role`.
+    pub target: Option<TargetKind>,
 }
 
 pub struct TreeView {
@@ -66,12 +69,15 @@ impl TreeView {
         self.repo.as_ref().map(|r| r.name())
     }
 
+    pub fn repo(&self) -> Option<&RepoSnapshot> {
+        self.repo.as_ref()
+    }
+
     #[cfg(test)]
     pub fn tree(&self) -> &Tree {
         &self.tree
     }
 
-    #[cfg(test)]
     pub fn selected(&self) -> Option<&RowId> {
         self.selected.as_ref()
     }
@@ -197,6 +203,7 @@ impl TreeView {
                 path: path.to_path_buf(),
                 presence,
                 role,
+                target: None,
             });
         }
     }
@@ -547,7 +554,8 @@ impl Render for TreeView {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .flex_1()
-            .min_w_0()
+            // Room for the selected row's inline buttons; the details pane gives way first.
+            .min_w(px(480.))
             .h_full()
             .flex()
             .flex_col()

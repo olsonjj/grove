@@ -8,6 +8,7 @@ use gpui_kit::{
 };
 use grove_core::Presence;
 
+use crate::details_view::{self, DetailsView};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
 
@@ -24,10 +25,11 @@ pub struct Status {
 
 struct MainWindow {
     tree: Entity<TreeView>,
+    details: Entity<DetailsView>,
     status: Option<Status>,
-    /// Bumped per open so a slow earlier launch can't overwrite a newer status.
+    /// Bumped per open or notice so a slow earlier launch can't overwrite a newer status.
     open_seq: u64,
-    _subs: [Subscription; 3],
+    _subs: [Subscription; 5],
 }
 
 /// The saved repo if it still exists, else the first.
@@ -52,13 +54,22 @@ impl MainWindow {
         let open = cx.subscribe(&tree, |this, _, ev: &OpenRequested, cx| {
             this.open(ev, cx);
         });
+        let details = cx.new(|cx| DetailsView::new(tree.clone(), cx));
+        let details_open = cx.subscribe(&details, |this, _, ev: &OpenRequested, cx| {
+            this.open(ev, cx);
+        });
+        let notice = cx.subscribe(&details, |this, _, ev: &details_view::Notice, cx| {
+            this.open_seq += 1;
+            this.set_status(ev.text.clone(), ev.error, false, cx);
+        });
         let library = cx.observe_global::<shell::Library>(|this, cx| this.sync_repo(cx));
         window.focus(&tree.focus_handle(cx), cx);
         let mut this = Self {
             tree,
+            details,
             status: None,
             open_seq: 0,
-            _subs: [collapse, open, library],
+            _subs: [collapse, open, details_open, notice, library],
         };
         this.show_repo(selected_repo(cx), cx);
         if std::env::var_os("GROVE_DEV_OPEN").is_some() {
@@ -136,7 +147,7 @@ impl MainWindow {
             let text = format!("Can't open {}: {reason}", tilde(&req.path));
             return self.set_status(text, true, false, cx);
         }
-        match launcher::open(req.role, &req.path, cx) {
+        match launcher::open(req.role, req.target, &req.path, cx) {
             Err(e) => self.set_status(e.message, true, e.settings, cx),
             Ok(opening) => {
                 self.set_status(opening.message, false, false, cx);
@@ -329,7 +340,14 @@ impl Render for MainWindow {
                 .child("No repos")
                 .into_any_element()
         } else {
-            self.tree.clone().into_any_element()
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .child(self.tree.clone())
+                .child(self.details.clone())
+                .into_any_element()
         };
 
         div()
@@ -355,13 +373,16 @@ pub fn tilde(path: &Path) -> String {
     grove_core::tilde(path, grove_core::home_dir().as_deref())
 }
 
+const MIN_SIZE: gpui_kit::Size<gpui_kit::Pixels> = size(px(1000.), px(560.));
+
 pub fn open(cx: &mut App) -> Option<AnyWindowHandle> {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
-            size(px(960.), px(640.)),
+            size(px(1180.), px(720.)),
             cx,
         ))),
+        window_min_size: Some(MIN_SIZE),
         titlebar: Some(TitlebarOptions {
             title: Some("Grove".into()),
             ..Default::default()
@@ -396,9 +417,9 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Point, TestAppContext};
     use grove_core::{
-        Editor, Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Permission, Presence,
-        RowId, RowKind, Settings, SettingsFile, Snapshot, SnapshotStore, TargetKind, Terminal,
-        TerminalOpensIn, Upstream, WorktreeStatus,
+        Change, ChangedFile, Editor, Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome,
+        Permission, Presence, RowId, RowKind, Settings, SettingsFile, Snapshot, SnapshotStore,
+        TargetKind, Terminal, TerminalOpensIn, Upstream, WorktreeStatus,
     };
     use tempfile::TempDir;
 
@@ -419,6 +440,15 @@ mod tests {
         file: &SettingsFile,
         repo: grove_core::RepoSnapshot,
     ) -> (AnyWindowHandle, Entity<MainWindow>) {
+        launch_at(cx, file, repo, size(px(1180.), px(720.)))
+    }
+
+    fn launch_at(
+        cx: &mut TestAppContext,
+        file: &SettingsFile,
+        repo: grove_core::RepoSnapshot,
+        window: gpui_kit::Size<gpui_kit::Pixels>,
+    ) -> (AnyWindowHandle, Entity<MainWindow>) {
         let settings = file.load().unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
@@ -435,7 +465,7 @@ mod tests {
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: Point::default(),
-                    size: size(px(960.), px(640.)),
+                    size: window,
                 })),
                 ..Default::default()
             };
@@ -546,6 +576,7 @@ mod tests {
                     crate::launcher::finished(result.clone())
                 }),
                 presence: Arc::new(|_| Presence::Present),
+                reveal: Arc::new(|path, _| eprintln!("[test] reveal {}", path.display())),
             })
         });
         launches
@@ -745,7 +776,7 @@ mod tests {
                 store.status_reads().generation(),
                 Path::new("/c/wt/api-x"),
                 Ok(WorktreeStatus {
-                    changed: 3,
+                    files: changed_files(3),
                     upstream: Upstream::Tracking {
                         name: "origin/feature/x".into(),
                         ahead: 2,
@@ -1030,6 +1061,35 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn inline_buttons_fit_at_min_window_size(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[1].status = Some(Ok(WorktreeStatus {
+            files: changed_files(12),
+            upstream: Upstream::Tracking {
+                name: "origin/feature/x".into(),
+                ahead: 12,
+                behind: 30,
+            },
+        }));
+        let (w, _) = launch_at(cx, &file, repo, MIN_SIZE);
+        keys(cx, w, &["down"; 4]);
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            let row = window.find(("tree-row", 4usize)).bounds();
+            let details = window.find("details").bounds();
+            let editor = window.find(("open-editor", 4usize)).bounds();
+            let terminal = window.find(("open-terminal", 4usize)).bounds();
+            assert!(editor.left() >= row.left());
+            assert!(terminal.right() <= row.right());
+            assert!(terminal.right() <= details.left());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn default_app_names_follow_detection_order(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
@@ -1105,5 +1165,310 @@ mod tests {
             "Opened /c/api in a new Terminal window (new tab failed: Terminal didn't come to the front)"
         );
         assert!(s.error);
+    }
+
+    fn changed_files(n: usize) -> Vec<ChangedFile> {
+        (0..n)
+            .map(|i| ChangedFile {
+                change: Change::Modified,
+                path: format!("f{i}.txt"),
+                from: None,
+            })
+            .collect()
+    }
+
+    fn click(cx: &mut TestAppContext, w: AnyWindowHandle, id: impl Into<gpui_kit::ElementId>) {
+        let id = id.into();
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    fn found(cx: &mut TestAppContext, w: AnyWindowHandle, id: &'static str) -> bool {
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    }
+
+    /// The details pane's title and kind line.
+    fn details(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> (String, String) {
+        main.read_with(cx, |m, cx| {
+            let d = m.details.read(cx).details().cloned().unwrap();
+            (d.title, d.kind)
+        })
+    }
+
+    fn pair(title: &str, kind: &str) -> (String, String) {
+        (title.into(), kind.into())
+    }
+
+    #[gpui_kit::test]
+    fn details_show_name_and_kind_for_branch_and_worktree(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        assert!(found(cx, w, "details-kind"));
+        assert_eq!(details(cx, &main), pair("main", "Branch · has worktree"));
+        keys(cx, w, &["down"]);
+        assert_eq!(details(cx, &main), pair("api", "Worktree · main worktree"));
+        keys(cx, w, &["down", "down"]);
+        assert_eq!(
+            details(cx, &main),
+            pair("feature/x", "Branch · has worktree")
+        );
+        keys(cx, w, &["down"]);
+        assert_eq!(
+            details(cx, &main),
+            pair("api-x", "Worktree · linked worktree")
+        );
+        keys(cx, w, &["down"; 9]);
+        assert_eq!(
+            details(cx, &main),
+            pair("bisect", "Worktree · detached HEAD")
+        );
+    }
+
+    #[gpui_kit::test]
+    fn details_show_upstream_sync_and_changed_files(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[0].status = Some(Ok(WorktreeStatus {
+            files: changed_files(2),
+            upstream: Upstream::Tracking {
+                name: "origin/main".into(),
+                ahead: 2,
+                behind: 1,
+            },
+        }));
+        let (w, main) = launch_repo(cx, &file, repo);
+        let fields = main.read_with(cx, |m, cx| m.details.read(cx).status_fields());
+        assert_eq!(
+            fields,
+            [
+                ("Branch", "main".to_string()),
+                ("Upstream", "origin/main".into()),
+                ("Sync", "2 ahead, 1 behind".into()),
+                ("Working tree", "2 changed files".into()),
+            ]
+        );
+        assert!(has(cx, w, "changed-file", 0));
+        assert!(has(cx, w, "changed-file", 1));
+        assert!(!has(cx, w, "changed-file", 2));
+        keys(cx, w, &["down", "down", "down", "down"]);
+        assert!(!has(cx, w, "changed-file", 0));
+    }
+
+    #[gpui_kit::test]
+    fn menu_open_uses_chosen_app_once_without_changing_default(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+
+        click(cx, w, "details-menu-editor");
+        assert!(found(cx, w, "editor-menu"));
+        click(cx, w, ("editor-choice", 1usize));
+        assert_eq!(
+            *launches.lock().unwrap(),
+            [vec!["/fake/bin/zed", "--new", "/c/api"]]
+        );
+        assert_eq!(status(cx, &main).unwrap().text, "Opening /c/api in Zed…");
+        assert!(!found(cx, w, "editor-menu"));
+
+        // The default is untouched: the primary button and Enter still use VS Code.
+        click(cx, w, "details-open-editor");
+        keys(cx, w, &["enter"]);
+        assert_eq!(
+            launches.lock().unwrap()[1..],
+            [code("/c/api"), code("/c/api")]
+        );
+        assert_eq!(
+            cx.update(|cx| shell::library(cx).settings.default_editor.clone()),
+            None
+        );
+        assert_eq!(file.load().unwrap().default_editor, None);
+
+        click(cx, w, "details-menu-terminal");
+        click(cx, w, ("terminal-choice", 1usize));
+        assert_eq!(
+            launches.lock().unwrap()[3],
+            ["/usr/bin/open", "warp://action/new_tab?path=/c/api"]
+        );
+        click(cx, w, "details-open-terminal");
+        terminal_window(&launches.lock().unwrap()[4], "/c/api");
+        assert_eq!(file.load().unwrap().default_terminal, None);
+    }
+
+    #[gpui_kit::test]
+    fn uninstalled_default_falls_back_to_menu(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                default_editor: Some("cursor".into()),
+                ..Default::default()
+            },
+        );
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        click(cx, w, "details-open-editor");
+        assert!(launches.lock().unwrap().is_empty());
+        assert!(status(cx, &main).unwrap().settings);
+        assert!(found(cx, w, "editor-menu"));
+        click(cx, w, ("editor-choice", 0usize));
+        assert_eq!(*launches.lock().unwrap(), [code("/c/api")]);
+    }
+
+    #[gpui_kit::test]
+    fn copy_cd_and_path_copy_shell_quoted_command_and_raw_path(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[1].path = "/c/wt/it's here".into();
+        let (w, main) = launch_repo(cx, &file, repo);
+        keys(cx, w, &["down", "down", "down", "down"]);
+        let clipboard = |cx: &mut TestAppContext| cx.read_from_clipboard().and_then(|c| c.text());
+
+        click(cx, w, "details-copy-cd");
+        assert_eq!(clipboard(cx).as_deref(), Some(r"cd '/c/wt/it'\''s here'"));
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Copied cd command for /c/wt/it's here"
+        );
+
+        click(cx, w, "details-copy-path");
+        assert_eq!(clipboard(cx).as_deref(), Some("/c/wt/it's here"));
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Copied path /c/wt/it's here"
+        );
+
+        click(cx, w, "details-reveal");
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Revealed /c/wt/it's here in Finder"
+        );
+    }
+
+    /// Selects `/c/wt/api-x` with `presence` and tries every open control in the pane.
+    fn try_details_opens(cx: &mut TestAppContext, presence: Presence) -> (Launches, Status) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        fake_presence(cx, "/c/wt/api-x", presence);
+        let mut repo = canned();
+        repo.worktrees[1].presence = presence;
+        let (w, main) = launch_repo(cx, &file, repo);
+        keys(cx, w, &["down", "down", "down", "down"]);
+        for id in [
+            "details-open-editor",
+            "details-menu-editor",
+            "details-open-terminal",
+            "details-menu-terminal",
+        ] {
+            click(cx, w, id);
+        }
+        assert!(!found(cx, w, "editor-menu") && !found(cx, w, "terminal-menu"));
+        click(cx, w, "details-reveal");
+        (launches, status(cx, &main).unwrap())
+    }
+
+    #[gpui_kit::test]
+    fn details_open_disabled_for_missing_worktree(cx: &mut TestAppContext) {
+        let (launches, s) = try_details_opens(cx, Presence::Missing);
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(
+            s.text,
+            "Can't reveal /c/wt/api-x: folder is missing (run git worktree prune)"
+        );
+        assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn details_open_disabled_for_unavailable_worktree(cx: &mut TestAppContext) {
+        let (launches, s) = try_details_opens(cx, Presence::Unavailable);
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(s.text, "Can't reveal /c/wt/api-x: its drive isn't mounted");
+    }
+
+    #[gpui_kit::test]
+    fn details_open_refused_when_folder_vanished_after_scan(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["down", "down", "down", "down"]);
+        fake_presence(cx, "/c/wt/api-x", Presence::Missing);
+        click(cx, w, "details-menu-editor");
+        click(cx, w, ("editor-choice", 1usize));
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+        );
+        // The refusal rechecked presence, so the pane now shows it disabled.
+        click(cx, w, "details-open-editor");
+        assert!(launches.lock().unwrap().is_empty());
+        assert_eq!(row_badges(cx, &main, "/c/wt/api-x"), ["missing"]);
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=T", "-c", "user.email=t@t.invalid"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn details_list_last_three_commits_in_background(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let repo_dir = tmp.path().join("api");
+        std::fs::create_dir(&repo_dir).unwrap();
+        git(&repo_dir, &["init", "-q"]);
+        for m in ["one", "two", "three", "four"] {
+            git(&repo_dir, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        let mut repo = canned();
+        repo.worktrees[0].path = repo_dir;
+        let (w, main) = launch_repo(cx, &file, repo);
+        cx.run_until_parked();
+        assert!((0..3).all(|i| has(cx, w, "commit", i)));
+        assert!(!has(cx, w, "commit", 3));
+        // A linked worktree that isn't a repo shows the error instead of stale commits.
+        keys(cx, w, &["down", "down", "down", "down"]);
+        let err = main.read_with(cx, |m, cx| match m.details.read(cx).commits() {
+            Some(Err(e)) => e.to_string(),
+            other => panic!("expected an error, got {other:?}"),
+        });
+        assert!(
+            err.starts_with("git log -3") && err.contains("failed:"),
+            "{err}"
+        );
+        assert!(!has(cx, w, "commit", 0));
     }
 }

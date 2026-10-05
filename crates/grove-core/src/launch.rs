@@ -264,7 +264,7 @@ tell application id "com.mitchellh.ghostty"
 end tell"#;
 
 /// POSIX single-quoted shell word: `it's` → `'it'\''s'`.
-fn shell_quote(path: &Path) -> String {
+pub(crate) fn shell_quote(path: &Path) -> String {
     format!("'{}'", path.to_string_lossy().replace('\'', r"'\''"))
 }
 

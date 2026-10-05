@@ -1,6 +1,7 @@
 //! Headless core: no GPUI. The app is a thin shell over this.
 
 mod badge;
+mod details;
 mod discovery;
 mod env;
 pub mod git;
@@ -12,9 +13,12 @@ mod targets;
 mod tree;
 
 pub use badge::Badge;
+pub use details::{Details, cd_command, relative_time, unix_now};
 pub use discovery::{RepoRef, discover};
 pub use env::{PathSource, ShellEnv, resolved_env};
-pub use git::{Upstream, WorktreeStatus, read_worktree_status};
+pub use git::{
+    Change, ChangedFile, Commit, Upstream, WorktreeStatus, read_worktree_status, recent_commits,
+};
 pub use launch::{
     Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, execute, execute_with, plan,
 };

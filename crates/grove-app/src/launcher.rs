@@ -1,5 +1,5 @@
 //! Detected open targets plus the executor that runs launch plans. Tests swap the executor
-//! so nothing really spawns, and the presence check so fake paths count as present.
+//! so nothing really spawns, the presence check so fake paths count as present, and reveal.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ pub type LaunchResult = Result<Outcome, LaunchError>;
 /// Starts a plan and returns where its result will arrive.
 pub type Executor = Arc<dyn Fn(LaunchPlan) -> Receiver<LaunchResult> + Send + Sync>;
 pub type PresenceCheck = Arc<dyn Fn(&Path) -> Presence + Send + Sync>;
+pub type Reveal = Arc<dyn Fn(&Path, &App) + Send + Sync>;
 
 /// A receiver that already holds `result` (for executors that finish synchronously).
 #[cfg(test)]
@@ -32,6 +33,8 @@ pub struct Launcher {
     pub targets: Option<Vec<OpenTarget>>,
     pub executor: Executor,
     pub presence: PresenceCheck,
+    /// Shows a folder in Finder.
+    pub reveal: Reveal,
 }
 
 impl Global for Launcher {}
@@ -42,6 +45,7 @@ pub fn install(cx: &mut App) {
         targets: None,
         executor: threaded_executor(),
         presence: Arc::new(Presence::of),
+        reveal: Arc::new(|path, cx| cx.reveal_path(path)),
     });
     cx.spawn(async move |cx| {
         let targets = cx.background_spawn(async { grove_core::detect() }).await;
@@ -80,18 +84,46 @@ pub fn presence(worktree: &Path, cx: &App) -> Presence {
     }
 }
 
-/// Name of the app Enter (editor) or ⌘Enter (terminal) opens with, if there is one.
-pub fn target_name(role: Role, cx: &App) -> Option<String> {
-    target(role, cx).ok().map(|t| t.name().to_string())
+/// Reveals `path` in Finder.
+pub fn reveal(path: &Path, cx: &App) {
+    match cx.try_global::<Launcher>() {
+        Some(l) => (l.reveal)(path, cx),
+        None => cx.reveal_path(path),
+    }
 }
 
-fn target(role: Role, cx: &App) -> Result<&OpenTarget, String> {
+/// Name of the app Enter (editor) or ⌘Enter (terminal) opens with, if there is one.
+pub fn target_name(role: Role, cx: &App) -> Option<String> {
+    target(role, None, cx).ok().map(|t| t.name().to_string())
+}
+
+/// Every detected app for `role`, in detection order (the ▾ menu).
+pub fn targets_for(role: Role, cx: &App) -> Vec<TargetKind> {
+    cx.try_global::<Launcher>()
+        .and_then(|l| l.targets.as_deref())
+        .unwrap_or_default()
+        .iter()
+        .filter(|t| t.role() == role)
+        .map(|t| t.kind)
+        .collect()
+}
+
+/// `chosen` if given (a one-off pick from the ▾ menu), else the default for `role`.
+fn target(role: Role, chosen: Option<TargetKind>, cx: &App) -> Result<&OpenTarget, String> {
     let launcher = cx.try_global::<Launcher>().ok_or("Launcher not ready")?;
     let targets = launcher
         .targets
         .as_deref()
         .ok_or("Still looking for apps… try again in a moment")?;
-    default_target(role, &shell::library(cx).settings, targets).map_err(|e| e.to_string())
+    match chosen {
+        Some(kind) => targets
+            .iter()
+            .find(|t| t.kind == kind)
+            .ok_or_else(|| format!("{} isn't installed anymore", kind.name())),
+        None => {
+            default_target(role, &shell::library(cx).settings, targets).map_err(|e| e.to_string())
+        }
+    }
 }
 
 /// A launch in flight: the confirmation to show now and the task that finishes it.
@@ -118,10 +150,15 @@ pub struct OpenError {
     pub settings: bool,
 }
 
-/// Starts opening `worktree` in the default app for `role`; the launch runs off the main
-/// thread.
-pub fn open(role: Role, worktree: &Path, cx: &mut App) -> Result<Opening, OpenError> {
-    let target = target(role, cx).map_err(|message| OpenError {
+/// Starts opening `worktree` in `chosen`, else the default app for `role`; the launch runs
+/// off the main thread. A one-off choice never changes the default.
+pub fn open(
+    role: Role,
+    chosen: Option<TargetKind>,
+    worktree: &Path,
+    cx: &mut App,
+) -> Result<Opening, OpenError> {
+    let target = target(role, chosen, cx).map_err(|message| OpenError {
         message,
         settings: true,
     })?;

@@ -47,6 +47,13 @@ pub fn link() -> Rgba {
 pub fn accent() -> Rgba {
     rgb(0xf0a847)
 }
+pub fn accent_hover() -> Rgba {
+    rgb(0xe2993a)
+}
+/// Divider between the halves of an accent split button.
+pub fn on_accent_divider() -> Rgba {
+    rgb(0xb87a2c)
+}
 pub fn accent_bg() -> Rgba {
     rgb(0x2e2414)
 }
@@ -115,7 +122,7 @@ pub fn button(
             .bg(accent())
             .text_color(on_accent())
             .font_weight(FontWeight::SEMIBOLD)
-            .hover(|s| s.bg(rgb(0xe2993a))),
+            .hover(|s| s.bg(accent_hover())),
         (ButtonKind::Primary, false) => base
             .bg(rgb(0x2a2f38))
             .text_color(faint())

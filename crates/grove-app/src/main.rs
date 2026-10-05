@@ -1,3 +1,4 @@
+mod details_view;
 mod hotkeys;
 mod icons;
 mod launcher;

@@ -6,11 +6,11 @@
 
 **Status:** ready-for-agent
 
-- [ ] Name and kind for branch and worktree selections
-- [ ] Path with Copy path
-- [ ] Primary Open in editor and secondary Open in terminal, each with ▾ listing all detected apps; choice applies to this open only
-- [ ] Reveal in Finder; Copy cd command copies a shell-quoted `cd`
-- [ ] Upstream, sync ("2 ahead, 1 behind"), working tree status
-- [ ] Changed files with M, A, D, ?? codes when present
-- [ ] Last 3 commits: short SHA, message, relative time
-- [ ] Open buttons disabled for missing/unavailable worktrees
+- [x] Name and kind for branch and worktree selections
+- [x] Path with Copy path
+- [x] Primary Open in editor and secondary Open in terminal, each with ▾ listing all detected apps; choice applies to this open only
+- [x] Reveal in Finder; Copy cd command copies a shell-quoted `cd`
+- [x] Upstream, sync ("2 ahead, 1 behind"), working tree status
+- [x] Changed files with M, A, D, ?? codes when present
+- [x] Last 3 commits: short SHA, message, relative time
+- [x] Open buttons disabled for missing/unavailable worktrees
