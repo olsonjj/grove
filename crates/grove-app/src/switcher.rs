@@ -17,7 +17,7 @@ use grove_core::{Badge, DisplayPath, Hit, Presence, Role, home_dir, search};
 
 use crate::icons::{self, icon};
 use crate::launcher::{self, Notice};
-use crate::main_window::{Status, tilde};
+use crate::main_window::tilde;
 use crate::shell::{self, REOPEN_GUARD};
 use crate::windows::{close_on_deactivate, panel_options};
 use crate::{macos, theme};
@@ -264,7 +264,7 @@ impl Switcher {
 
     /// Shows `notice` here and in the main window's status bar, which outlives the switcher.
     fn show(&mut self, notice: Notice, settings: bool, cx: &mut Context<Self>) {
-        post(&notice, settings, cx);
+        notice.post(settings, cx);
         // Seen here; a main window opened later shouldn't replay it.
         shell::notice_shown(cx);
         self.status = Some(notice);
@@ -299,28 +299,16 @@ impl Switcher {
         };
         self.launching = Some(opening.message.clone());
         let notice = Notice {
-            text: opening.message,
+            text: opening.message.clone(),
             warn: false,
         };
         self.show(notice, false, cx);
-        let (follow_up, window) = (opening.follow_up, self.window);
+        let window = self.window;
         cx.spawn(async move |this, cx| {
-            let notice = match opening.done.await {
-                Ok(outcome) => {
-                    eprintln!("[grove] launch: {outcome:?}");
-                    follow_up(&outcome)
-                }
-                Err(e) => {
-                    eprintln!("[grove] launch failed: {e}");
-                    Some(Notice {
-                        text: e.to_string(),
-                        warn: true,
-                    })
-                }
-            };
+            let notice = opening.finish().await;
             cx.update(|cx| {
                 if let Some(n) = &notice {
-                    post(n, false, cx);
+                    n.post(false, cx);
                 }
                 let warn = notice.as_ref().is_some_and(|n| n.warn);
                 let current = this.update(cx, |this, cx| {
@@ -371,15 +359,6 @@ impl Switcher {
         self.select(ix, cx);
         self.open(Role::Editor, cx);
     }
-}
-
-fn post(notice: &Notice, settings: bool, cx: &mut App) {
-    let status = Status {
-        text: notice.text.clone(),
-        error: notice.warn,
-        settings,
-    };
-    shell::post(status, cx);
 }
 
 impl Switcher {
@@ -712,37 +691,26 @@ mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Keystroke, PlatformInput, Point, TestAppContext, WindowBounds};
     use grove_core::{
-        Change, ChangedFile, LaunchError, Outcome, RepoSnapshot, Settings, SettingsFile, Snapshot,
-        SnapshotStore, Upstream, WorktreeStatus,
+        Change, ChangedFile, LaunchError, Outcome, RepoSnapshot, Settings, SettingsFile, Upstream,
+        WorktreeStatus,
     };
     use tempfile::TempDir;
 
     use super::*;
-    use crate::main_window::tests::{
-        code, fake_launcher, fake_presence, settings_file, terminal_window,
-    };
+    use crate::main_window::Status;
     use crate::shell::Library;
-    use crate::tree_view::tests::canned;
+    use crate::test_support::{
+        canned, code, fake_launcher, fake_presence, set_library, settings_file, terminal_window,
+    };
 
     fn open_switcher(
         cx: &mut TestAppContext,
         file: &SettingsFile,
         repo: RepoSnapshot,
     ) -> (AnyWindowHandle, Entity<Switcher>) {
-        let settings = file.load().unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            cx.set_global(Library {
-                settings_file: file.clone(),
-                settings,
-                store: SnapshotStore::from_snapshot(Snapshot {
-                    code_dir: PathBuf::from("/c"),
-                    code_dir_exists: true,
-                    repos: vec![repo],
-                    last_fetch: None,
-                }),
-                saves: Default::default(),
-            });
+            set_library(file, vec![repo], cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: Point::default(),

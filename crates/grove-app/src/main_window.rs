@@ -204,25 +204,14 @@ impl MainWindow {
         match launcher::open_worktree(&req.path, req.presence, req.role, req.target, cx) {
             Err(e) => self.set_status(e.message, true, e.settings, cx),
             Ok(opening) => {
-                self.set_status(opening.message, false, false, cx);
-                let follow_up = opening.follow_up;
+                self.set_status(opening.message.clone(), false, false, cx);
                 cx.spawn(async move |this, cx| {
-                    let (text, warn) = match opening.done.await {
-                        Ok(outcome) => {
-                            eprintln!("[grove] launch: {outcome:?}");
-                            match follow_up(&outcome) {
-                                Some(n) => (n.text, n.warn),
-                                None => return,
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("[grove] launch failed: {e}");
-                            (e.to_string(), true)
-                        }
+                    let Some(n) = opening.finish().await else {
+                        return;
                     };
                     let _ = this.update(cx, |this, cx| {
                         if this.open_seq == seq {
-                            this.set_status(text, warn, false, cx);
+                            this.set_status(n.text, n.warn, false, cx);
                         }
                     });
                 })
@@ -578,26 +567,24 @@ fn open_with(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::path::PathBuf;
-    use std::sync::Arc;
-
-    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Point, TestAppContext};
     use grove_core::{
-        Change, ChangedFile, Editor, Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome,
-        Permission, Presence, RowId, RowKind, Settings, SettingsFile, Snapshot, SnapshotStore,
-        TargetKind, Terminal, TerminalOpensIn, Upstream, WorktreeStatus,
+        Change, ChangedFile, Fallback, LaunchError, Outcome, Permission, Presence, RowId, RowKind,
+        Settings, SettingsFile, Snapshot, SnapshotStore, TerminalOpensIn, Upstream, WorktreeStatus,
     };
     use tempfile::TempDir;
 
     use super::*;
-    use crate::launcher::Launcher;
     use crate::shell::Library;
-    use crate::tree_view::tests::canned;
+    use crate::test_support::{
+        Launches, canned, code, fake_launcher, fake_presence, set_library, settings_file,
+        terminal_window,
+    };
 
     fn launch(
         cx: &mut TestAppContext,
@@ -620,20 +607,9 @@ pub(crate) mod tests {
         repo: grove_core::RepoSnapshot,
         window: gpui_kit::Size<gpui_kit::Pixels>,
     ) -> (AnyWindowHandle, Entity<MainWindow>) {
-        let settings = file.load().unwrap();
         cx.update(|cx| {
             gpui_kit::init(cx);
-            cx.set_global(Library {
-                settings_file: file.clone(),
-                settings,
-                store: SnapshotStore::from_snapshot(Snapshot {
-                    code_dir: PathBuf::from("/c"),
-                    code_dir_exists: true,
-                    repos: vec![repo],
-                    last_fetch: None,
-                }),
-                saves: Default::default(),
-            });
+            set_library(file, vec![repo], cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
                     origin: Point::default(),
@@ -705,71 +681,6 @@ pub(crate) mod tests {
         assert!(!folder_collapsed(cx, &main, "fix/"));
     }
 
-    pub(crate) type Launches = Arc<Mutex<Vec<Vec<String>>>>;
-
-    /// Fake launcher with VS Code and Zed CLIs, Terminal, Warp and Ghostty; records each plan instead
-    /// of running it (a spawn as its argv, AppleScript as `["osascript", script]`) and
-    /// returns `result`.
-    pub(crate) fn fake_launcher(
-        cx: &mut TestAppContext,
-        result: Result<Outcome, LaunchError>,
-    ) -> Launches {
-        let launches: Launches = Default::default();
-        let sink = launches.clone();
-        let editor = |e: Editor| OpenTarget {
-            kind: TargetKind::Editor(e),
-            app: None,
-            cli: Some(format!("/fake/bin/{}", e.cli_name()).into()),
-        };
-        let terminal = |t: Terminal, app: &str| OpenTarget {
-            kind: TargetKind::Terminal(t),
-            app: Some(app.into()),
-            cli: None,
-        };
-        cx.update(|cx| {
-            cx.set_global(Launcher {
-                targets: Some(vec![
-                    editor(Editor::VsCode),
-                    editor(Editor::Zed),
-                    terminal(
-                        Terminal::Terminal,
-                        "/System/Applications/Utilities/Terminal.app",
-                    ),
-                    terminal(Terminal::Warp, "/Applications/Warp.app"),
-                    terminal(Terminal::Ghostty, "/Applications/Ghostty.app"),
-                ]),
-                executor: Arc::new(move |plan| {
-                    let recorded = match plan {
-                        LaunchPlan::Spawn { program, args, .. } => {
-                            std::iter::once(program.display().to_string())
-                                .chain(args.iter().map(|a| a.to_string_lossy().into_owned()))
-                                .collect()
-                        }
-                        LaunchPlan::AppleScript { script, .. } => vec!["osascript".into(), script],
-                    };
-                    sink.lock().unwrap().push(recorded);
-                    crate::launcher::finished(result.clone())
-                }),
-                presence: Arc::new(|_| Presence::Present),
-                reveal: Arc::new(|path, _| eprintln!("[test] reveal {}", path.display())),
-            })
-        });
-        launches
-    }
-
-    /// Makes the fake presence check report `presence` for `path`, Present elsewhere.
-    pub(crate) fn fake_presence(cx: &mut TestAppContext, path: &'static str, presence: Presence) {
-        cx.update(|cx| {
-            cx.global_mut::<Launcher>().presence = Arc::new(move |p| {
-                if p == Path::new(path) {
-                    presence
-                } else {
-                    Presence::Present
-                }
-            })
-        });
-    }
-
     fn keys(cx: &mut TestAppContext, w: AnyWindowHandle, keys: &[&str]) {
         cx.update_window(w, |_, window, cx| {
             window.render_frame(cx);
@@ -791,16 +702,6 @@ pub(crate) mod tests {
 
     fn status(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> Option<Status> {
         main.read_with(cx, |m, _| m.status.clone())
-    }
-
-    pub(crate) fn settings_file(tmp: &TempDir, settings: Settings) -> SettingsFile {
-        let file = SettingsFile::new(tmp.path().join("settings.json"));
-        file.save(&settings).unwrap();
-        file
-    }
-
-    pub(crate) fn code(path: &str) -> Vec<String> {
-        vec!["/fake/bin/code".into(), "--new-window".into(), path.into()]
     }
 
     #[gpui_kit::test]
@@ -1052,20 +953,6 @@ pub(crate) mod tests {
         assert_eq!(wt.presence, Presence::Present);
         // The fake path isn't a repo, so the reread lands as a failure, not unread.
         assert!(matches!(wt.status, Some(Err(_))));
-    }
-
-    /// The Terminal.app script (window by default) that `cd`s into `path`.
-    pub(crate) fn terminal_window(launch: &[String], path: &str) {
-        assert_eq!(launch[0], "osascript");
-        assert!(
-            launch[1].contains(&format!("do script \"cd '{path}'\"")),
-            "{}",
-            launch[1]
-        );
-        assert!(
-            !launch[1].contains("keystroke"),
-            "Terminal.app defaults to windows"
-        );
     }
 
     #[gpui_kit::test]

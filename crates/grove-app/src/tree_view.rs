@@ -615,53 +615,17 @@ impl Render for TreeView {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::cell::RefCell;
-    use std::path::PathBuf;
     use std::rc::Rc;
 
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AppContext, Bounds, Entity, Point, TestAppContext, WindowBounds, WindowOptions, size,
     };
-    use grove_core::{RepoRef, Worktree};
 
     use super::*;
-
-    fn wt(path: &str, branch: Option<&str>, is_main: bool) -> Worktree {
-        Worktree {
-            path: PathBuf::from(path),
-            branch: branch.map(str::to_string),
-            head: Some("a1f3c9e5d2".into()),
-            detached: branch.is_none(),
-            is_main,
-            locked: false,
-            presence: Presence::Present,
-            status: None,
-        }
-    }
-
-    /// main, feature/{x,y}, fix/z, one detached.
-    pub(crate) fn canned() -> RepoSnapshot {
-        RepoSnapshot {
-            display_name: "api".into(),
-            repo: RepoRef {
-                name: "api".into(),
-                path: "/c/api".into(),
-                git_dir: "/c/api/.git".into(),
-                bare: false,
-            },
-            worktrees: vec![
-                wt("/c/api", Some("main"), true),
-                wt("/c/wt/api-x", Some("feature/x"), false),
-                wt("/c/wt/api-y", Some("feature/y"), false),
-                wt("/c/wt/api-z", Some("fix/z"), false),
-                wt("/c/wt/bisect", None, false),
-            ],
-            error: None,
-            fetch_error: None,
-        }
-    }
+    use crate::test_support::{canned, wt};
 
     fn branch(name: &str) -> Option<RowId> {
         Some(RowId::Branch(name.into()))

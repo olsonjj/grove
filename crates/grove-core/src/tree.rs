@@ -289,7 +289,7 @@ fn worktree_row(
 }
 
 /// Case-insensitive, ties broken by exact bytes so order is total.
-fn by_name(a: &str, b: &str) -> Ordering {
+pub(crate) fn by_name(a: &str, b: &str) -> Ordering {
     a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b))
 }
 

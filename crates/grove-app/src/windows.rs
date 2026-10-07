@@ -1,13 +1,11 @@
 use std::time::Instant;
 
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext, Bounds, Context, DisplayId, IntoElement, ParentElement,
-    Render, Styled, Window, WindowBounds, WindowKind, WindowOptions, div, point, px, rgb, size,
+    App, AppContext, Bounds, Context, DisplayId, IntoElement, Render, Window, WindowBounds,
+    WindowKind, WindowOptions, div, point, px, size,
 };
 
-use crate::{shell, status_item::Anchor};
-
-const POPOVER_SIZE: (f32, f32) = (360., 480.);
+use crate::shell;
 
 /// `bounds` are relative to `display`, the primary one if `None`.
 pub fn panel_options(
@@ -40,35 +38,13 @@ pub fn close_on_deactivate<V: 'static>(window: &mut Window, cx: &mut Context<V>)
     .detach();
 }
 
-struct Popover;
+/// Draws nothing; the warm-up window's view.
+struct Blank;
 
-impl Render for Popover {
+impl Render for Blank {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
-            .size_full()
-            .bg(rgb(0x1e1f22))
-            .text_color(rgb(0x9da0a6))
-            .p_3()
-            .child("Grove popover (empty)")
     }
-}
-
-pub fn open_popover(anchor: Anchor, cx: &mut App) -> Option<AnyWindowHandle> {
-    let (w, h) = POPOVER_SIZE;
-    let x = (anchor.x + anchor.width / 2. - w / 2.).max(8.);
-    let y = anchor.y + anchor.height + 4.;
-    let bounds = Bounds::new(point(px(x), px(y)), size(px(w), px(h)));
-    eprintln!("[grove] popover open: anchor={anchor:?} bounds={bounds:?}");
-    let result = gpui_kit::open_window(panel_options(bounds, None), cx, |window, cx| {
-        cx.new(|cx| {
-            close_on_deactivate(window, cx);
-            Popover
-        })
-    });
-    result
-        .map(|(handle, _)| handle)
-        .inspect_err(|e| eprintln!("[grove] popover: {e:#}"))
-        .ok()
 }
 
 pub fn ms(since: Instant) -> f64 {
@@ -85,7 +61,7 @@ pub fn warm_up(cx: &mut App) {
         show: false,
         ..panel_options(bounds, None)
     };
-    if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| Popover)) {
+    if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| Blank)) {
         shell::close(handle, cx);
     }
     eprintln!("[grove] renderer warm-up {:.1} ms", ms(start));

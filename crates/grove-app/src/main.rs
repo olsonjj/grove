@@ -4,10 +4,13 @@ mod icons;
 mod launcher;
 mod macos;
 mod main_window;
+mod popover;
 mod setup;
 mod shell;
 mod status_item;
 mod switcher;
+#[cfg(test)]
+mod test_support;
 mod theme;
 mod tree_view;
 mod windows;
@@ -35,7 +38,7 @@ fn main() {
                     shell::on_window_closed(cx, id);
                 } else {
                     // Setup closed before finishing: nothing else can bring Grove back.
-                    cx.quit();
+                    shell::quit(cx);
                 }
             })
             .detach();

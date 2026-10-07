@@ -98,7 +98,7 @@ impl Presence {
         self == Self::Present
     }
 
-    /// Why it can't be opened.
+    /// Why it can't be opened. The one wording for missing/unavailable everywhere.
     pub fn reason(self) -> Option<&'static str> {
         match self {
             Self::Present => None,

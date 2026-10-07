@@ -12,4 +12,4 @@
 - [ ] No state shown by color alone
 - [ ] Switcher appears within 100 ms of ⌥⌘K
 - [ ] Idle CPU near zero with all repos watched
-- [ ] Manual checklist written and passed: hotkeys from other apps, popover placement on multiple displays, login item, Automation fallback, no network traffic beyond fetch
+- [ ] Manual checklist written and passed: hotkeys from other apps, popover placement on multiple displays (secondary left/right, mixed DPI), popover refresh-on-show, login item, Automation fallback, no network traffic beyond fetch

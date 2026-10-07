@@ -3,13 +3,15 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, 
 
 use crate::{PlatformEvent, macos};
 
-/// Status item frame in logical points, origin at the menu-bar screen's top-left.
+/// Status item frame in global logical points, origin at the primary screen's top-left.
 #[derive(Clone, Copy, Debug)]
 pub struct Anchor {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// The screen whose menu bar was clicked.
+    pub screen: Option<macos::Screen>,
 }
 
 pub fn install(tx: Sender<PlatformEvent>) -> tray_icon::Result<TrayIcon> {
@@ -21,12 +23,15 @@ pub fn install(tx: Sender<PlatformEvent>) -> tray_icon::Result<TrayIcon> {
             ..
         } = event
         {
-            let scale = macos::primary_screen_scale();
+            // The mouse is on the clicked menu bar; `rect` is in that screen's pixels.
+            let screen = macos::screen_under_mouse();
+            let scale = screen.map_or(2.0, |s| s.scale);
             let anchor = Anchor {
                 x: (rect.position.x / scale) as f32,
                 y: (rect.position.y / scale) as f32,
                 width: (rect.size.width as f64 / scale) as f32,
                 height: (rect.size.height as f64 / scale) as f32,
+                screen,
             };
             let _ = tx.try_send(PlatformEvent::StatusItemClicked { anchor });
         }

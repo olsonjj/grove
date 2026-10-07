@@ -52,8 +52,8 @@ impl Badge {
         match self {
             Self::MainWorktree => "The repo's original clone".into(),
             Self::Detached(sha) => format!("HEAD detached at {sha}"),
-            Self::Missing => "Folder was deleted; run git worktree prune to clean up".into(),
-            Self::Unavailable => "Its drive isn't mounted".into(),
+            Self::Missing => capitalized(Presence::Missing.reason().unwrap_or_default()),
+            Self::Unavailable => capitalized(Presence::Unavailable.reason().unwrap_or_default()),
             Self::Changed(1) => "1 uncommitted change".into(),
             Self::Changed(n) => format!("{n} uncommitted changes"),
             Self::Sync {
@@ -72,6 +72,13 @@ impl Badge {
             Self::Stale(e) => format!("Last fetch failed, so sync state may be out of date: {e}"),
         }
     }
+}
+
+fn capitalized(s: &str) -> String {
+    let mut chars = s.chars();
+    chars
+        .next()
+        .map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }
 
 impl RepoSnapshot {

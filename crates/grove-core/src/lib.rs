@@ -7,6 +7,7 @@ mod discovery;
 mod env;
 pub mod git;
 mod launch;
+mod menu;
 mod process;
 mod search;
 mod settings;
@@ -27,6 +28,7 @@ pub use git::{
 pub use launch::{
     Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, execute, execute_with, plan,
 };
+pub use menu::{MenuGroup, MenuRow, StateLine, menu};
 pub use search::{Hit, Matches, search};
 pub use settings::{CustomCommand, MAX_RECENTS, Settings, SettingsFile, TerminalOpensIn};
 pub use snapshot::{

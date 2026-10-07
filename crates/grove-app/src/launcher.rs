@@ -143,6 +143,37 @@ pub struct Notice {
     pub warn: bool,
 }
 
+impl Notice {
+    /// Posts this to the main window's status bar, which outlives the switcher and popover.
+    pub fn post(&self, settings: bool, cx: &mut App) {
+        let status = crate::main_window::Status {
+            text: self.text.clone(),
+            error: self.warn,
+            settings,
+        };
+        shell::post(status, cx);
+    }
+}
+
+impl Opening {
+    /// Waits for the launch: what to show in place of `message`, if there's more to say.
+    pub async fn finish(self) -> Option<Notice> {
+        match self.done.await {
+            Ok(outcome) => {
+                eprintln!("[grove] launch: {outcome:?}");
+                (self.follow_up)(&outcome)
+            }
+            Err(e) => {
+                eprintln!("[grove] launch failed: {e}");
+                Some(Notice {
+                    text: e.to_string(),
+                    warn: true,
+                })
+            }
+        }
+    }
+}
+
 /// Why an open couldn't start, for the status bar.
 pub struct OpenError {
     pub message: String,

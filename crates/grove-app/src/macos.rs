@@ -32,24 +32,40 @@ pub fn activate(app: &NSRunningApplication) {
     app.activateWithOptions(NSApplicationActivationOptions::empty());
 }
 
-/// Backing scale of the menu-bar screen (status item coordinates are physical pixels on it).
-pub fn primary_screen_scale() -> f64 {
-    NSScreen::screens(mtm())
-        .firstObject()
-        .map(|s| s.backingScaleFactor())
-        .unwrap_or(2.0)
+/// A screen in global points with a top-left origin (GPUI's and the status item's space).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Screen {
+    /// CGDirectDisplayID (GPUI's `DisplayId`).
+    pub id: u64,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub scale: f64,
 }
 
-/// The display the mouse is on, as its CGDirectDisplayID (GPUI's `DisplayId`). `None` off
-/// the main thread.
-pub fn display_under_mouse() -> Option<u64> {
+/// The screen the mouse is on. `None` off the main thread.
+pub fn screen_under_mouse() -> Option<Screen> {
     let screens = NSScreen::screens(MainThreadMarker::new()?);
     let frames: Vec<NSRect> = screens.iter().map(|s| s.frame()).collect();
-    let screen = screens.objectAtIndex(screen_at(&frames, NSEvent::mouseLocation())?);
+    let ix = screen_at(&frames, NSEvent::mouseLocation())?;
+    let screen = screens.objectAtIndex(ix);
     let number = screen
         .deviceDescription()
         .objectForKey(ns_string!("NSScreenNumber"))?;
-    Some(number.downcast::<NSNumber>().ok()?.unsignedIntegerValue() as u64)
+    let (f, primary_h) = (frames[ix], frames[0].size.height);
+    Some(Screen {
+        id: number.downcast::<NSNumber>().ok()?.unsignedIntegerValue() as u64,
+        x: f.origin.x,
+        // AppKit's y runs up from the primary screen's bottom.
+        y: primary_h - f.origin.y - f.size.height,
+        width: f.size.width,
+        scale: screen.backingScaleFactor(),
+    })
+}
+
+/// The display the mouse is on, as its CGDirectDisplayID. `None` off the main thread.
+pub fn display_under_mouse() -> Option<u64> {
+    screen_under_mouse().map(|s| s.id)
 }
 
 /// The first of `frames` containing `point`, both in AppKit's global coordinates.

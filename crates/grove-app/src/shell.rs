@@ -13,7 +13,7 @@ use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
 
-use crate::{PlatformEvent, hotkeys, macos, main_window, status_item, switcher, windows};
+use crate::{PlatformEvent, hotkeys, macos, main_window, popover, status_item, switcher, windows};
 
 /// A status-item click that arrives right after the popover closed on deactivation is the
 /// same click that deactivated it; ignore it so the click toggles instead of reopening.
@@ -404,6 +404,20 @@ pub fn toggle_switcher(cx: &mut App) {
     }
 }
 
+/// Open Grove and ⌥⌘G: brings up the main window, opening it if it's closed.
+pub fn show_main(cx: &mut App) {
+    if is_running(cx) {
+        handle(PlatformEvent::ShowMain, cx);
+    } else {
+        main_window::open(cx);
+    }
+}
+
+/// Settings…: shows the main window until the settings window exists (ticket 13).
+pub fn open_settings(cx: &mut App) {
+    show_main(cx);
+}
+
 fn save_settings(cx: &mut App) {
     let library = cx.global_mut::<Library>();
     let (file, settings) = (library.settings_file.clone(), library.settings.clone());
@@ -413,7 +427,40 @@ fn save_settings(cx: &mut App) {
     });
 }
 
+/// Quit, Grove's only way out: first writes what's still pending, since background saves
+/// and the debounced cache die with the process.
+pub fn quit(cx: &mut App) {
+    if cx.has_global::<Library>() {
+        let library = cx.global_mut::<Library>();
+        let (file, settings) = (library.settings_file.clone(), library.settings.clone());
+        if let Some(ticket) = library.saves.unwritten() {
+            ticket.write_now(|| {
+                file.save(&settings).inspect_err(|e| {
+                    eprintln!("[grove] saving settings to {}: {e}", file.path().display())
+                })
+            });
+        }
+    }
+    if cx.try_global::<Live>().is_some_and(|l| l.cache_pending) {
+        let snapshot = library(cx).store.snapshot().clone();
+        let live = cx.global_mut::<Live>();
+        let cache = live.cache.clone();
+        live.cache_saves.issue().write_now(|| {
+            cache
+                .save(&snapshot)
+                .inspect_err(|e| eprintln!("[grove] caching to {}: {e}", cache.path().display()))
+        });
+    }
+    cx.quit();
+}
+
 impl Saves {
+    /// A ticket for a final write if an issued one hasn't landed (in flight or failed).
+    fn unwritten(&mut self) -> Option<SaveTicket> {
+        let written = *self.written.lock().unwrap_or_else(|e| e.into_inner());
+        (written < self.issued).then(|| self.issue())
+    }
+
     fn issue(&mut self) -> SaveTicket {
         self.issued += 1;
         SaveTicket {
@@ -439,6 +486,14 @@ impl SaveTicket {
         })
         .detach();
     }
+
+    /// Writes on this thread, after any in-flight write (it holds the lock while writing).
+    fn write_now(self, write: impl FnOnce() -> io::Result<()>) {
+        let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+        if *written <= self.generation && write().is_ok() {
+            *written = self.generation;
+        }
+    }
 }
 
 pub fn handle(event: PlatformEvent, cx: &mut App) {
@@ -451,7 +506,7 @@ pub fn handle(event: PlatformEvent, cx: &mut App) {
                 .popover_closed_at
                 .is_none_or(|t| t.elapsed() > REOPEN_GUARD)
             {
-                let handle = windows::open_popover(anchor, cx);
+                let handle = popover::open(anchor, cx);
                 cx.global_mut::<Shell>().popover = handle;
                 refresh_all(cx);
             }

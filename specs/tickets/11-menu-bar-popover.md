@@ -6,10 +6,11 @@
 
 **Status:** ready-for-agent
 
-- [ ] Worktrees grouped by repo; one-line state ("3 changed · ↑2 ↓1", "main worktree · clean", "detached @ a1f3c9e")
-- [ ] Uncommitted changes in accent color plus words
-- [ ] Editor and terminal buttons per row, accessible labels naming branch and app
-- [ ] Most recently opened worktree highlighted
-- [ ] Header: Search, Fetch all. Footer: Open Grove, Settings…, Quit
-- [ ] Confirmation line after action; popover auto-closes after short delay
-- [ ] Refreshes when shown
+- [x] Worktrees grouped by repo; one-line state ("3 changed · ↑2 ↓1", "main worktree · clean", "detached @ a1f3c9e")
+- [x] Uncommitted changes in accent color plus words
+- [x] Editor and terminal buttons per row, accessible labels naming branch and app
+- [x] Most recently opened worktree highlighted
+- [x] Header: Search, Fetch all. Footer: Open Grove, Settings…, Quit
+  - Fetch all keeps the popover open to show refreshed counts
+- [x] Confirmation line after action; popover auto-closes after short delay
+- [x] Refreshes when shown

@@ -455,7 +455,7 @@ impl Setup {
                         "quit",
                         "Quit",
                         ButtonKind::Secondary,
-                        Some(|_: &ClickEvent, _: &mut Window, cx: &mut App| cx.quit()),
+                        Some(|_: &ClickEvent, _: &mut Window, cx: &mut App| shell::quit(cx)),
                     ))
                     .child(button(
                         "recheck",
@@ -545,6 +545,6 @@ fn open(setup: Setup, cx: &mut App) {
     cx.activate(true);
     if let Err(e) = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| setup)) {
         eprintln!("[grove] setup window: {e:#}");
-        cx.quit();
+        shell::quit(cx);
     }
 }
