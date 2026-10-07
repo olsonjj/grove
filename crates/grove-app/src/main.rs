@@ -7,6 +7,7 @@ mod main_window;
 mod setup;
 mod shell;
 mod status_item;
+mod switcher;
 mod theme;
 mod tree_view;
 mod windows;

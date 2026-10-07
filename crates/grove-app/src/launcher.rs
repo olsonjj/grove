@@ -150,9 +150,39 @@ pub struct OpenError {
     pub settings: bool,
 }
 
+/// Opens `worktree` unless its folder is gone, rechecking presence first: `scanned` was read
+/// at scan time and the folder may have gone or come back since. Every open from any
+/// surface comes through here, so each one is recorded to recents.
+pub fn open_worktree(
+    worktree: &Path,
+    scanned: Presence,
+    role: Role,
+    chosen: Option<TargetKind>,
+    cx: &mut App,
+) -> Result<Opening, OpenError> {
+    let now = presence(worktree, cx);
+    if now != scanned {
+        cx.global_mut::<shell::Library>()
+            .store
+            .set_presence(worktree, now);
+        if now == Presence::Present {
+            shell::read_status(worktree, cx);
+        }
+    }
+    if let Some(reason) = now.reason() {
+        return Err(OpenError {
+            message: format!("Can't open {}: {reason}", tilde(worktree)),
+            settings: false,
+        });
+    }
+    let opening = open(role, chosen, worktree, cx)?;
+    shell::record_open(worktree, cx);
+    Ok(opening)
+}
+
 /// Starts opening `worktree` in `chosen`, else the default app for `role`; the launch runs
 /// off the main thread. A one-off choice never changes the default.
-pub fn open(
+fn open(
     role: Role,
     chosen: Option<TargetKind>,
     worktree: &Path,

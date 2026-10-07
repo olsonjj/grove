@@ -15,11 +15,6 @@ pub fn install(tx: Sender<PlatformEvent>) -> global_hotkey::Result<GlobalHotKeyM
 
     GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
         let at = Instant::now();
-        eprintln!(
-            "[grove] hotkey event id={} state={:?}",
-            event.id(),
-            event.state()
-        );
         if event.state() != HotKeyState::Pressed {
             return;
         }

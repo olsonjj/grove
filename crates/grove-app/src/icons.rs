@@ -13,6 +13,7 @@ pub const CHEVRON_RIGHT: &str = "grove/chevron-right.svg";
 pub const EDITOR: &str = "grove/editor.svg";
 pub const TERMINAL: &str = "grove/terminal.svg";
 pub const LOCK: &str = "grove/lock.svg";
+pub const SEARCH: &str = "grove/search.svg";
 
 const ICONS: &[(&str, &str)] = &[
     (
@@ -46,6 +47,10 @@ const ICONS: &[(&str, &str)] = &[
     (
         LOCK,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>"#,
+    ),
+    (
+        SEARCH,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>"#,
     ),
 ];
 

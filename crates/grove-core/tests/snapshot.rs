@@ -4,7 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, scan};
+use grove_core::{
+    MAX_RECENTS, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, scan,
+};
 use tempfile::TempDir;
 
 /// (repo name, worktree count) pairs.
@@ -205,6 +207,23 @@ fn collapse_state_per_repo() {
     s.set_collapsed("api", "feature/", false);
     s.set_collapsed("api", "fix/", false);
     assert!(s.collapsed.is_empty());
+}
+
+#[test]
+fn record_open_moves_to_front_and_keeps_last_ten() {
+    let mut s = Settings::default();
+    for i in 0..12 {
+        assert!(s.record_open(&PathBuf::from(format!("/w/{i}"))));
+    }
+    assert_eq!(s.recents.len(), MAX_RECENTS);
+    assert_eq!(s.recents[0], PathBuf::from("/w/11"));
+    assert_eq!(s.recents[9], PathBuf::from("/w/2"));
+
+    assert!(!s.record_open(&PathBuf::from("/w/11")));
+    assert!(s.record_open(&PathBuf::from("/w/5")));
+    assert_eq!(s.recents[0], PathBuf::from("/w/5"));
+    assert_eq!(s.recents.iter().filter(|p| p.ends_with("5")).count(), 1);
+    assert_eq!(s.recents.len(), MAX_RECENTS);
 }
 
 #[test]

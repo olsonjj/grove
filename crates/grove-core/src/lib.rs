@@ -8,6 +8,7 @@ mod env;
 pub mod git;
 mod launch;
 mod process;
+mod search;
 mod settings;
 mod snapshot;
 mod targets;
@@ -26,7 +27,8 @@ pub use git::{
 pub use launch::{
     Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, execute, execute_with, plan,
 };
-pub use settings::{CustomCommand, Settings, SettingsFile, TerminalOpensIn};
+pub use search::{Hit, Matches, search};
+pub use settings::{CustomCommand, MAX_RECENTS, Settings, SettingsFile, TerminalOpensIn};
 pub use snapshot::{
     FetchRead, FetchReport, FetchResult, Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead,
     ScanResult, Snapshot, SnapshotStore, StatusReads, StatusResult, Worktree, scan,

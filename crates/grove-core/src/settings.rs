@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub const MAX_RECENTS: usize = 10;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -18,7 +20,7 @@ pub struct Settings {
     pub show_menu_bar_icon: bool,
     pub background_fetch: bool,
     pub launch_at_login: bool,
-    /// Most recent first, at most 10.
+    /// Opened worktrees, most recent first, at most `MAX_RECENTS`.
     pub recents: Vec<PathBuf>,
     /// Repo name → collapsed prefix folders.
     pub collapsed: BTreeMap<String, Vec<String>>,
@@ -62,6 +64,17 @@ impl Settings {
             self.collapsed.remove(repo);
         }
         had != collapsed
+    }
+
+    /// Moves `worktree` to the front of recents. Returns whether anything changed.
+    pub fn record_open(&mut self, worktree: &Path) -> bool {
+        if self.recents.first().is_some_and(|p| p == worktree) {
+            return false;
+        }
+        self.recents.retain(|p| p != worktree);
+        self.recents.insert(0, worktree.to_path_buf());
+        self.recents.truncate(MAX_RECENTS);
+        true
     }
 }
 

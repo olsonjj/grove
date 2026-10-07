@@ -13,16 +13,18 @@ use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
 
-use crate::{PlatformEvent, hotkeys, macos, main_window, status_item, windows};
+use crate::{PlatformEvent, hotkeys, macos, main_window, status_item, switcher, windows};
 
 /// A status-item click that arrives right after the popover closed on deactivation is the
 /// same click that deactivated it; ignore it so the click toggles instead of reopening.
-const REOPEN_GUARD: Duration = Duration::from_millis(300);
+pub(crate) const REOPEN_GUARD: Duration = Duration::from_millis(300);
 /// Window shows and activations within this of the last full refresh don't start another;
 /// the watcher covers the gap.
 const RESCAN_GUARD: Duration = Duration::from_secs(2);
 /// Snapshot changes are written to the cache at most this often.
 const CACHE_DELAY: Duration = Duration::from_secs(2);
+/// A notice posted while no window could show it is shown by the next one within this.
+const NOTICE_FRESH: Duration = Duration::from_secs(60);
 const BACKGROUND_FETCH: Duration = Duration::from_secs(15 * 60);
 
 /// Settings and snapshot the windows render from. A global of its own so windows don't
@@ -55,6 +57,41 @@ pub struct Fetcher {
 
 impl Global for Fetcher {}
 
+/// Lines for the main window's status bar from windows that may close before their launch
+/// finishes (switcher, popover).
+#[derive(Default)]
+pub struct Notices {
+    /// Bumped per post, so windows show each once.
+    pub posted: u64,
+    pub last: Option<main_window::Status>,
+    pub posted_at: Option<Instant>,
+    /// `last` has been on screen.
+    pub shown: bool,
+}
+
+impl Global for Notices {}
+
+pub fn post(status: main_window::Status, cx: &mut App) {
+    let notices = cx.default_global::<Notices>();
+    notices.posted += 1;
+    notices.last = Some(status);
+    notices.posted_at = Some(Instant::now());
+    notices.shown = false;
+}
+
+/// The last notice, if no window showed it and it's still news.
+pub fn unseen_notice(cx: &App) -> Option<main_window::Status> {
+    let notices = cx.try_global::<Notices>()?;
+    let fresh = notices
+        .posted_at
+        .is_some_and(|t| t.elapsed() < NOTICE_FRESH);
+    notices.last.clone().filter(|_| fresh && !notices.shown)
+}
+
+pub fn notice_shown(cx: &mut App) {
+    cx.default_global::<Notices>().shown = true;
+}
+
 /// Keeps the snapshot fresh: the watcher, full refreshes, and the on-disk cache.
 struct Live {
     /// Snapshots for the watcher to follow; `None` if it couldn't start.
@@ -73,7 +110,6 @@ struct Shell {
     _hotkeys: Option<GlobalHotKeyManager>,
     popover: Option<AnyWindowHandle>,
     popover_closed_at: Option<Instant>,
-    switcher: Option<AnyWindowHandle>,
     main: Option<AnyWindowHandle>,
     prev_app: Option<Retained<NSRunningApplication>>,
 }
@@ -115,7 +151,6 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
         _hotkeys: hotkeys,
         popover: None,
         popover_closed_at: None,
-        switcher: None,
         main: None,
         prev_app: None,
     });
@@ -352,6 +387,23 @@ pub fn set_collapsed(repo: &str, prefix: &str, collapsed: bool, cx: &mut App) {
     }
 }
 
+/// Puts `worktree` first in recents (the switcher's empty search) and saves.
+pub fn record_open(worktree: &Path, cx: &mut App) {
+    if cx.global_mut::<Library>().settings.record_open(worktree) {
+        save_settings(cx);
+    }
+}
+
+/// ⌘K and Jump to…: the same switcher as ⌥⌘K.
+pub fn toggle_switcher(cx: &mut App) {
+    let at = Instant::now();
+    if is_running(cx) {
+        handle(PlatformEvent::ToggleSwitcher { at }, cx);
+    } else {
+        switcher::toggle(at, cx);
+    }
+}
+
 fn save_settings(cx: &mut App) {
     let library = cx.global_mut::<Library>();
     let (file, settings) = (library.settings_file.clone(), library.settings.clone());
@@ -405,19 +457,10 @@ pub fn handle(event: PlatformEvent, cx: &mut App) {
             }
         }
         PlatformEvent::ToggleSwitcher { at } => {
-            if let Some(switcher) = cx.global::<Shell>().switcher {
-                close(switcher, cx);
-                return;
-            }
             let prev = macos::frontmost_other_app();
-            eprintln!(
-                "[grove] switcher: previous frontmost app = {:?}",
-                prev.as_deref().map(macos::app_name)
-            );
-            let handle = windows::open_switcher(at, cx);
-            let shell = cx.global_mut::<Shell>();
-            shell.prev_app = prev;
-            shell.switcher = handle;
+            if switcher::toggle(at, cx) {
+                cx.global_mut::<Shell>().prev_app = prev;
+            }
         }
         PlatformEvent::ShowMain => {
             refresh_all(cx);
@@ -438,36 +481,25 @@ pub fn close(window: AnyWindowHandle, cx: &mut App) {
 }
 
 pub fn on_window_closed(cx: &mut App, id: WindowId) {
-    let shell = cx.global_mut::<Shell>();
     let is = |h: Option<AnyWindowHandle>| h.is_some_and(|h| h.window_id() == id);
+    let switcher = switcher::closed(id, cx);
+    let shell = cx.global_mut::<Shell>();
     if is(shell.popover) {
         shell.popover = None;
         shell.popover_closed_at = Some(Instant::now());
         eprintln!("[grove] popover closed");
     } else if is(shell.main) {
         shell.main = None;
-    } else if is(shell.switcher) {
-        shell.switcher = None;
+    } else if let Some(dismissed) = switcher {
         let prev = shell.prev_app.take();
-        // The switcher is a non-activating panel, so the previous app normally keeps
-        // focus on its own; only hand it back if Grove got activated meanwhile.
-        if macos::is_app_active()
+        // The switcher is a non-activating panel, so the previous app normally keeps focus
+        // on its own; hand it back if Grove got activated meanwhile. Not after a click
+        // elsewhere: that click chose what's frontmost.
+        if dismissed
+            && macos::is_app_active()
             && let Some(prev) = &prev
         {
             macos::activate(prev);
         }
-        eprintln!("[grove] switcher closed");
-        cx.spawn(async move |cx| {
-            cx.background_executor()
-                .timer(Duration::from_millis(250))
-                .await;
-            let front = objc2_app_kit::NSWorkspace::sharedWorkspace().frontmostApplication();
-            eprintln!(
-                "[grove] after switcher close: frontmost app = {:?} (expected {:?})",
-                front.as_deref().map(macos::app_name),
-                prev.as_deref().map(macos::app_name)
-            );
-        })
-        .detach();
     }
 }

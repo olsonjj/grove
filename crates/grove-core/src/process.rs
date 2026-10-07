@@ -98,26 +98,31 @@ fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<String>
 mod tests {
     use super::*;
 
-    #[test]
-    fn timeout_kills_grandchildren() {
+    /// Runs a shell that backgrounds `sleep 30` under `timeout`; the grandchild's pid, if the
+    /// shell got to write it before being killed.
+    fn spawn_grandchild(timeout: Duration) -> Option<libc::pid_t> {
         let tmp = tempfile::TempDir::new().unwrap();
         let pid_file = tmp.path().join("pid");
         let mut cmd = Command::new("/bin/sh");
+        // Renamed into place so a kill mid-write can't leave a partial pid.
         cmd.arg("-c")
-            .arg("sleep 30 & echo $! > \"$1\"; wait")
+            .arg("sleep 30 & echo $! > \"$1.tmp\" && mv \"$1.tmp\" \"$1\"; wait")
             .arg("sh")
             .arg(&pid_file);
         let started = Instant::now();
-        assert!(matches!(
-            run(cmd, Duration::from_millis(300)),
-            Err(RunError::Timeout)
-        ));
-        assert!(started.elapsed() < Duration::from_secs(5));
-        let pid: libc::pid_t = std::fs::read_to_string(&pid_file)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
+        assert!(matches!(run(cmd, timeout), Err(RunError::Timeout)));
+        assert!(started.elapsed() < timeout + Duration::from_secs(5));
+        std::fs::read_to_string(&pid_file).ok()?.trim().parse().ok()
+    }
+
+    #[test]
+    fn timeout_kills_grandchildren() {
+        // Under load the shell may not reach the pid write before the deadline; that run
+        // proves nothing, so retry with longer timeouts.
+        let pid = [300, 1000, 3000]
+            .into_iter()
+            .find_map(|ms| spawn_grandchild(Duration::from_millis(ms)))
+            .expect("shell never wrote the grandchild's pid");
         let deadline = Instant::now() + Duration::from_secs(2);
         // SAFETY: signal 0 only checks the pid exists.
         while unsafe { libc::kill(pid, 0) } == 0 {

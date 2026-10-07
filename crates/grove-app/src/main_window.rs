@@ -3,17 +3,17 @@ use std::path::Path;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
-    Subscription, TestSupportExt, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions,
-    div, px, size,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
+    StatefulInteractiveElement, Styled, Subscription, TestSupportExt, TitlebarOptions, Window,
+    WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
-use grove_core::{Presence, RepoSnapshot};
+use grove_core::RepoSnapshot;
 
 use crate::details_view::{self, DetailsView};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
 
-const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Editor   ⌘↵ Terminal";
+const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Editor   ⌘↵ Terminal   ⌘K Jump to";
 /// Keeps "Last fetch … ago" current.
 const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -34,7 +34,9 @@ struct MainWindow {
     open_seq: u64,
     /// The last Fetch all report shown (`Fetcher::finished`).
     fetch_seen: u64,
-    _subs: [Subscription; 7],
+    /// The last `Notices::posted` shown.
+    notices_seen: u64,
+    _subs: [Subscription; 8],
 }
 
 /// The saved repo if it still exists, else the first.
@@ -69,18 +71,25 @@ impl MainWindow {
         });
         let library = cx.observe_global::<shell::Library>(|this, cx| this.sync_repo(cx));
         let fetcher = cx.observe_global::<shell::Fetcher>(|this, cx| this.fetch_changed(cx));
+        let notices = cx.observe_global::<shell::Notices>(|this, cx| this.notice_posted(cx));
         let activation = cx.observe_window_activation(window, |_, window, cx| {
             if window.is_window_active() {
                 shell::refresh_all(cx);
             }
         });
         window.focus(&tree.focus_handle(cx), cx);
+        // E.g. a switcher launch's follow-up that landed while no main window was open.
+        let status = shell::unseen_notice(cx);
+        if status.is_some() {
+            shell::notice_shown(cx);
+        }
         let mut this = Self {
             tree,
             details,
-            status: None,
+            status,
             open_seq: 0,
             fetch_seen: cx.try_global::<shell::Fetcher>().map_or(0, |f| f.finished),
+            notices_seen: cx.try_global::<shell::Notices>().map_or(0, |n| n.posted),
             _subs: [
                 collapse,
                 open,
@@ -88,6 +97,7 @@ impl MainWindow {
                 notice,
                 library,
                 fetcher,
+                notices,
                 activation,
             ],
         };
@@ -149,6 +159,20 @@ impl MainWindow {
         self.set_status(text, error, false, cx);
     }
 
+    fn notice_posted(&mut self, cx: &mut Context<Self>) {
+        let notices = cx.global::<shell::Notices>();
+        if notices.posted == self.notices_seen {
+            return;
+        }
+        self.notices_seen = notices.posted;
+        if let Some(status) = notices.last.clone() {
+            shell::notice_shown(cx);
+            self.open_seq += 1;
+            self.status = Some(status);
+            cx.notify();
+        }
+    }
+
     fn show_repo(&mut self, name: Option<String>, cx: &mut Context<Self>) {
         let library = shell::library(cx);
         let repo = name
@@ -177,21 +201,7 @@ impl MainWindow {
     fn open(&mut self, req: &OpenRequested, cx: &mut Context<Self>) {
         self.open_seq += 1;
         let seq = self.open_seq;
-        // Presence was read at scan time; the folder may have gone or come back since.
-        let presence = launcher::presence(&req.path, cx);
-        if presence != req.presence {
-            cx.global_mut::<shell::Library>()
-                .store
-                .set_presence(&req.path, presence);
-            if presence == Presence::Present {
-                shell::read_status(&req.path, cx);
-            }
-        }
-        if let Some(reason) = presence.reason() {
-            let text = format!("Can't open {}: {reason}", tilde(&req.path));
-            return self.set_status(text, true, false, cx);
-        }
-        match launcher::open(req.role, req.target, &req.path, cx) {
+        match launcher::open_worktree(&req.path, req.presence, req.role, req.target, cx) {
             Err(e) => self.set_status(e.message, true, e.settings, cx),
             Ok(opening) => {
                 self.set_status(opening.message, false, false, cx);
@@ -246,6 +256,36 @@ impl MainWindow {
                 },
             )
             .test_support();
+        let jump = div()
+            .id("jump-to")
+            .flex_none()
+            .h(px(32.))
+            .px(px(10.))
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .bg(theme::raised())
+            .text_size(px(13.))
+            .text_color(theme::text_soft())
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::border()))
+            .on_click(|_, _, cx| shell::toggle_switcher(cx))
+            .child("Jump to…")
+            .child(
+                div()
+                    .px(px(5.))
+                    .rounded(px(4.))
+                    .border_1()
+                    .border_color(theme::border_strong())
+                    .font_family(theme::MONO)
+                    .text_size(px(11.))
+                    .text_color(theme::muted())
+                    .child("⌘K"),
+            )
+            .test_support();
         div()
             .flex_none()
             .h(px(52.))
@@ -270,6 +310,7 @@ impl MainWindow {
                         .text_size(px(13.)),
                 )
             })
+            .child(jump)
             .child(div().ml_auto().flex_none().child(fetch))
             .into_any_element()
     }
@@ -461,6 +502,13 @@ impl Render for MainWindow {
         };
 
         div()
+            .on_key_down(cx.listener(|_, ev: &KeyDownEvent, _, cx| {
+                let ks = &ev.keystroke;
+                if ks.key == "k" && ks.modifiers == gpui_kit::Modifiers::command() {
+                    shell::toggle_switcher(cx);
+                    cx.stop_propagation();
+                }
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -530,11 +578,12 @@ fn open_with(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
     use std::sync::Mutex;
+    use std::time::{Duration, Instant};
 
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Point, TestAppContext};
@@ -656,12 +705,15 @@ mod tests {
         assert!(!folder_collapsed(cx, &main, "fix/"));
     }
 
-    type Launches = Arc<Mutex<Vec<Vec<String>>>>;
+    pub(crate) type Launches = Arc<Mutex<Vec<Vec<String>>>>;
 
     /// Fake launcher with VS Code and Zed CLIs, Terminal, Warp and Ghostty; records each plan instead
     /// of running it (a spawn as its argv, AppleScript as `["osascript", script]`) and
     /// returns `result`.
-    fn fake_launcher(cx: &mut TestAppContext, result: Result<Outcome, LaunchError>) -> Launches {
+    pub(crate) fn fake_launcher(
+        cx: &mut TestAppContext,
+        result: Result<Outcome, LaunchError>,
+    ) -> Launches {
         let launches: Launches = Default::default();
         let sink = launches.clone();
         let editor = |e: Editor| OpenTarget {
@@ -706,7 +758,7 @@ mod tests {
     }
 
     /// Makes the fake presence check report `presence` for `path`, Present elsewhere.
-    fn fake_presence(cx: &mut TestAppContext, path: &'static str, presence: Presence) {
+    pub(crate) fn fake_presence(cx: &mut TestAppContext, path: &'static str, presence: Presence) {
         cx.update(|cx| {
             cx.global_mut::<Launcher>().presence = Arc::new(move |p| {
                 if p == Path::new(path) {
@@ -741,13 +793,13 @@ mod tests {
         main.read_with(cx, |m, _| m.status.clone())
     }
 
-    fn settings_file(tmp: &TempDir, settings: Settings) -> SettingsFile {
+    pub(crate) fn settings_file(tmp: &TempDir, settings: Settings) -> SettingsFile {
         let file = SettingsFile::new(tmp.path().join("settings.json"));
         file.save(&settings).unwrap();
         file
     }
 
-    fn code(path: &str) -> Vec<String> {
+    pub(crate) fn code(path: &str) -> Vec<String> {
         vec!["/fake/bin/code".into(), "--new-window".into(), path.into()]
     }
 
@@ -1003,7 +1055,7 @@ mod tests {
     }
 
     /// The Terminal.app script (window by default) that `cd`s into `path`.
-    fn terminal_window(launch: &[String], path: &str) {
+    pub(crate) fn terminal_window(launch: &[String], path: &str) {
         assert_eq!(launch[0], "osascript");
         assert!(
             launch[1].contains(&format!("do script \"cd '{path}'\"")),
@@ -1707,5 +1759,104 @@ mod tests {
         cx.executor().advance_clock(quarter_hour);
         cx.run_until_parked();
         assert_eq!(fetches(cx), 2);
+    }
+
+    fn switcher_open(cx: &mut TestAppContext) -> bool {
+        cx.update(|cx| crate::switcher::window(cx).is_some_and(|w| cx.windows().contains(&w)))
+    }
+
+    #[gpui_kit::test]
+    fn cmd_k_and_jump_to_open_the_switcher(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, _) = launch(cx, &file);
+        assert!(!switcher_open(cx));
+        keys(cx, w, &["cmd-k"]);
+        assert!(switcher_open(cx));
+        let switcher = cx.update(|cx| crate::switcher::window(cx).unwrap());
+        keys(cx, switcher, &["escape"]);
+        assert!(!switcher_open(cx));
+
+        click(cx, w, "jump-to");
+        assert!(switcher_open(cx));
+        // Again closes it: one switcher, toggled.
+        click(cx, w, "jump-to");
+        assert!(!switcher_open(cx));
+    }
+
+    #[gpui_kit::test]
+    fn switcher_launch_outcomes_reach_the_status_bar(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let fail = LaunchError::Exit {
+            program: "code".into(),
+            status: "exit status: 1".into(),
+            stderr: "bad option".into(),
+        };
+        fake_launcher(cx, Err(fail));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["cmd-k"]);
+        let switcher = cx.update(|cx| crate::switcher::window(cx).unwrap());
+        keys(cx, switcher, &["enter"]);
+        assert_eq!(
+            status(cx, &main),
+            Some(Status {
+                text: "code failed: bad option".into(),
+                error: true,
+                settings: false,
+            })
+        );
+    }
+
+    #[gpui_kit::test]
+    fn notice_posted_with_no_main_window_shows_when_one_opens(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let hint = Status {
+            text: "Allow Grove to control Terminal".into(),
+            error: true,
+            settings: false,
+        };
+        cx.update(|cx| shell::post(hint.clone(), cx));
+        let (_, main) = launch(cx, &file);
+        assert_eq!(status(cx, &main), Some(hint.clone()));
+        // Once shown, the next window doesn't repeat it.
+        let (_, again) = launch(cx, &file);
+        assert_eq!(status(cx, &again), None);
+
+        // Nor a stale one.
+        cx.update(|cx| {
+            shell::post(hint, cx);
+            let at = Instant::now()
+                .checked_sub(Duration::from_secs(120))
+                .unwrap();
+            cx.global_mut::<shell::Notices>().posted_at = Some(at);
+        });
+        let (_, late) = launch(cx, &file);
+        assert_eq!(status(cx, &late), None);
+    }
+
+    #[gpui_kit::test]
+    fn tree_and_details_opens_are_recorded_to_recents(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        fake_presence(cx, "/c/wt/api-y", Presence::Missing);
+        let (w, _) = launch(cx, &file);
+        let recents = || file.load().unwrap().recents;
+        keys(cx, w, &["enter"]);
+        assert_eq!(recents(), [PathBuf::from("/c/api")]);
+
+        keys(cx, w, &["down", "down", "down", "down"]);
+        click(cx, w, "details-open-terminal");
+        assert_eq!(
+            recents(),
+            [PathBuf::from("/c/wt/api-x"), PathBuf::from("/c/api")]
+        );
+
+        // A refused open isn't one.
+        keys(cx, w, &["down", "down", "enter"]);
+        assert_eq!(recents().len(), 2);
     }
 }
