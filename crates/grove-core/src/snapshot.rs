@@ -1,16 +1,20 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
+use serde::{Deserialize, Serialize};
+
 use crate::discovery::{RepoRef, discover};
 use crate::git::{self, GitError, WorktreeStatus};
+use crate::watch::Changes;
 
 const MAX_PARALLEL_REPOS: usize = 8;
 const MAX_PARALLEL_READS: usize = 8;
 
 /// Everything Grove knows about the code directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub code_dir: PathBuf,
     pub code_dir_exists: bool,
@@ -34,7 +38,7 @@ impl Snapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoSnapshot {
     pub repo: RepoRef,
     /// Folder name, or the code-dir-relative path when another repo shares it.
@@ -55,7 +59,7 @@ impl RepoSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: Option<String>,
@@ -69,7 +73,7 @@ pub struct Worktree {
 }
 
 /// Whether a worktree's folder is on disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Presence {
     Present,
     /// Folder deleted; git keeps the entry until `git worktree prune`.
@@ -114,16 +118,16 @@ fn presence_in(path: &Path, volumes: &Path) -> Presence {
 
 pub type StatusResult = Result<WorktreeStatus, GitError>;
 
-/// Status reads for every present worktree of one snapshot generation.
+/// Status reads for present worktrees, stamped when issued (see `SnapshotStore`).
 #[derive(Debug, Clone)]
 pub struct StatusReads {
-    generation: u64,
+    stamp: u64,
     paths: Vec<PathBuf>,
 }
 
 impl StatusReads {
-    pub fn generation(&self) -> u64 {
-        self.generation
+    pub fn stamp(&self) -> u64 {
+        self.stamp
     }
 
     /// Reads each status, at most `MAX_PARALLEL_READS` at a time, handing each result to
@@ -140,6 +144,81 @@ impl StatusReads {
             }
         });
     }
+
+    /// Runs every read, collecting the results (blocking).
+    fn collect(&self) -> HashMap<PathBuf, StatusResult> {
+        let results = Mutex::new(HashMap::with_capacity(self.paths.len()));
+        self.run(|path, status| {
+            results
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(path.to_path_buf(), status);
+        });
+        results.into_inner().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Fills in every present worktree's status (blocking).
+fn read_statuses<'a>(worktrees: impl Iterator<Item = &'a mut Worktree>) {
+    let mut worktrees: Vec<_> = worktrees.filter(|w| w.presence.is_openable()).collect();
+    let reads = StatusReads {
+        stamp: 0,
+        paths: worktrees.iter().map(|w| w.path.clone()).collect(),
+    };
+    let mut results = reads.collect();
+    for w in &mut worktrees {
+        w.status = results.remove(&w.path);
+    }
+}
+
+/// A full rescan of the code directory, statuses included.
+#[derive(Debug, Clone)]
+pub struct ScanRead {
+    stamp: u64,
+    code_dir: PathBuf,
+}
+
+impl ScanRead {
+    /// Blocking; run off the UI thread and hand the result to `SnapshotStore::apply_scan`.
+    pub fn run(self) -> ScanResult {
+        let mut snapshot = scan(&self.code_dir);
+        read_statuses(snapshot.repos.iter_mut().flat_map(|r| &mut r.worktrees));
+        ScanResult {
+            stamp: self.stamp,
+            snapshot,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ScanResult {
+    stamp: u64,
+    snapshot: Snapshot,
+}
+
+/// A reread of one repo's worktree list and every worktree's status.
+#[derive(Debug, Clone)]
+pub struct RepoRead {
+    stamp: u64,
+    repo: RepoRef,
+}
+
+impl RepoRead {
+    /// Blocking; run off the UI thread and hand the result to `SnapshotStore::apply_repo`.
+    pub fn run(self) -> RepoResult {
+        let mut repo = read_repo(self.repo);
+        read_statuses(repo.worktrees.iter_mut());
+        RepoResult {
+            stamp: self.stamp,
+            repo,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RepoResult {
+    stamp: u64,
+    repo: RepoSnapshot,
 }
 
 /// Builds a fresh snapshot: discovery plus each repo's worktrees (including ones outside
@@ -225,15 +304,24 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
 }
 
 /// Owns the current snapshot for one code directory.
+///
+/// Reads are stamped when issued and run off the store. One lands only if nothing issued
+/// later has already landed for the same repo or worktree, so a slow read can't overwrite
+/// fresher data; reads issued before a `replace` never land.
 #[derive(Debug, Clone)]
 pub struct SnapshotStore {
     snapshot: Arc<Snapshot>,
-    /// Bumped whenever the snapshot is replaced, so reads started on an older one are dropped.
-    generation: u64,
+    issued: u64,
+    /// Reads stamped at or below this were issued for a replaced snapshot.
+    floor: u64,
+    /// Stamp of the read each repo's worktree list came from, by git dir.
+    repo_stamps: HashMap<PathBuf, u64>,
+    /// Stamp of the read each worktree's status came from.
+    status_stamps: HashMap<PathBuf, u64>,
 }
 
 impl SnapshotStore {
-    /// Scans `code_dir` (blocking).
+    /// Scans `code_dir` (blocking). Statuses start unread.
     pub fn new(code_dir: &Path) -> Self {
         Self::from_snapshot(scan(code_dir))
     }
@@ -241,7 +329,10 @@ impl SnapshotStore {
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
         Self {
             snapshot: Arc::new(snapshot),
-            generation: 0,
+            issued: 0,
+            floor: 0,
+            repo_stamps: HashMap::new(),
+            status_stamps: HashMap::new(),
         }
     }
 
@@ -249,31 +340,155 @@ impl SnapshotStore {
         &self.snapshot
     }
 
-    /// Swaps in a new snapshot; status reads still in flight for the old one are dropped.
-    pub fn replace(&mut self, snapshot: Snapshot) {
-        self.snapshot = Arc::new(snapshot);
-        self.generation += 1;
+    fn stamp(&mut self) -> u64 {
+        self.issued += 1;
+        self.issued
     }
 
-    /// Rescans the same code directory (blocking). Statuses start unread.
+    /// Whether a read stamped `stamp` is older than the data it would overwrite.
+    fn is_stale(&self, stamp: u64, landed: Option<&u64>) -> bool {
+        stamp <= self.floor || landed.is_some_and(|&l| l > stamp)
+    }
+
+    /// Swaps in a new snapshot (e.g. another code directory); reads still in flight for the
+    /// old one are dropped.
+    pub fn replace(&mut self, snapshot: Snapshot) {
+        self.snapshot = Arc::new(snapshot);
+        self.floor = self.issued;
+        self.repo_stamps.clear();
+        self.status_stamps.clear();
+    }
+
+    /// A full rescan of the same code directory; run it off the UI thread and hand the
+    /// result to `apply_scan`.
+    pub fn scan_read(&mut self) -> ScanRead {
+        ScanRead {
+            stamp: self.stamp(),
+            code_dir: self.snapshot.code_dir.clone(),
+        }
+    }
+
+    /// Stores a rescan, keeping any repo or status that a later read already refreshed.
+    /// False if dropped.
+    pub fn apply_scan(&mut self, result: ScanResult) -> bool {
+        let ScanResult {
+            stamp,
+            mut snapshot,
+        } = result;
+        if stamp <= self.floor || snapshot.code_dir != self.snapshot.code_dir {
+            return false;
+        }
+        for repo in &mut snapshot.repos {
+            let git_dir = repo.repo.git_dir.clone();
+            let current = self
+                .snapshot
+                .repos
+                .iter()
+                .find(|r| r.repo.git_dir == git_dir);
+            if let Some(current) = current
+                && self.is_stale(stamp, self.repo_stamps.get(&git_dir))
+            {
+                let display_name = std::mem::take(&mut repo.display_name);
+                *repo = RepoSnapshot {
+                    display_name,
+                    ..current.clone()
+                };
+                continue;
+            }
+            self.merge_statuses(&mut repo.worktrees, stamp);
+            self.repo_stamps.insert(git_dir, stamp);
+        }
+        self.snapshot = Arc::new(snapshot);
+        true
+    }
+
+    /// Rescans the same code directory, statuses included (blocking).
     pub fn refresh_all(&mut self) {
-        self.replace(scan(&self.snapshot.code_dir));
+        let result = self.scan_read().run();
+        self.apply_scan(result);
+    }
+
+    /// A reread of the repo with this git dir, if it's known; run it off the UI thread and
+    /// hand the result to `apply_repo`.
+    pub fn repo_read(&mut self, git_dir: &Path) -> Option<RepoRead> {
+        let repo = self
+            .snapshot
+            .repos
+            .iter()
+            .find(|r| r.repo.git_dir == git_dir)?
+            .repo
+            .clone();
+        Some(RepoRead {
+            stamp: self.stamp(),
+            repo,
+        })
+    }
+
+    /// Stores a repo reread; true if it changed the snapshot, false if it didn't or was
+    /// dropped (stale, or the repo is gone).
+    pub fn apply_repo(&mut self, result: RepoResult) -> bool {
+        let RepoResult { stamp, mut repo } = result;
+        let git_dir = repo.repo.git_dir.clone();
+        if self.is_stale(stamp, self.repo_stamps.get(&git_dir)) {
+            return false;
+        }
+        let Some(i) = self
+            .snapshot
+            .repos
+            .iter()
+            .position(|r| r.repo.git_dir == git_dir)
+        else {
+            return false;
+        };
+        self.merge_statuses(&mut repo.worktrees, stamp);
+        repo.display_name = self.snapshot.repos[i].display_name.clone();
+        self.repo_stamps.insert(git_dir, stamp);
+        if self.snapshot.repos[i] == repo {
+            return false;
+        }
+        Arc::make_mut(&mut self.snapshot).repos[i] = repo;
+        true
+    }
+
+    /// Rereads one repo's worktrees and statuses (blocking); true if anything changed.
+    pub fn refresh_repo(&mut self, git_dir: &Path) -> bool {
+        match self.repo_read(git_dir) {
+            Some(read) => self.apply_repo(read.run()),
+            None => false,
+        }
+    }
+
+    /// Statuses read at `stamp` lose to ones from later reads already stored.
+    fn merge_statuses(&mut self, worktrees: &mut [Worktree], stamp: u64) {
+        for w in worktrees {
+            if self.is_stale(stamp, self.status_stamps.get(&w.path)) {
+                if w.presence.is_openable() {
+                    w.status = self
+                        .snapshot
+                        .worktrees()
+                        .find(|c| c.path == w.path)
+                        .and_then(|c| c.status.clone());
+                }
+            } else if w.status.is_some() {
+                self.status_stamps.insert(w.path.clone(), stamp);
+            }
+        }
     }
 
     /// Status reads for the current snapshot's present worktrees; run them off the UI
     /// thread and hand each result to `apply_status`.
-    pub fn status_reads(&self) -> StatusReads {
+    pub fn status_reads(&mut self) -> StatusReads {
         self.reads_where(|_| true)
     }
 
     /// Status read for one worktree, if it's known and present.
-    pub fn status_read(&self, path: &Path) -> StatusReads {
+    pub fn status_read(&mut self, path: &Path) -> StatusReads {
         self.reads_where(|w| w.path == path)
     }
 
-    fn reads_where(&self, keep: impl Fn(&Worktree) -> bool) -> StatusReads {
+    fn reads_where(&mut self, keep: impl Fn(&Worktree) -> bool) -> StatusReads {
         StatusReads {
-            generation: self.generation,
+            stamp: self.stamp(),
             paths: self
                 .snapshot
                 .worktrees()
@@ -283,19 +498,27 @@ impl SnapshotStore {
         }
     }
 
-    /// Stores a status read; false (dropped) if it's from a replaced snapshot, the worktree
-    /// is unknown, or its folder is no longer present.
-    pub fn apply_status(&mut self, generation: u64, path: &Path, status: StatusResult) -> bool {
-        if generation != self.generation {
+    /// Stores a status read; true if it changed the snapshot. False if unchanged, or
+    /// dropped: a later read already landed, it predates a `replace`, the worktree is
+    /// unknown, or its folder is no longer present.
+    pub fn apply_status(&mut self, stamp: u64, path: &Path, status: StatusResult) -> bool {
+        if self.is_stale(stamp, self.status_stamps.get(path)) {
             return false;
         }
-        match Arc::make_mut(&mut self.snapshot).worktree_mut(path) {
-            Some(w) if w.presence.is_openable() => {
-                w.status = Some(status);
-                true
-            }
-            _ => false,
+        let Some(current) = self.snapshot.worktrees().find(|w| w.path == path) else {
+            return false;
+        };
+        if !current.presence.is_openable() {
+            return false;
         }
+        self.status_stamps.insert(path.to_path_buf(), stamp);
+        if current.status.as_ref() == Some(&status) {
+            return false;
+        }
+        if let Some(w) = Arc::make_mut(&mut self.snapshot).worktree_mut(path) {
+            w.status = Some(status);
+        }
+        true
     }
 
     /// Records a fresh presence check; a folder that isn't present loses its status. False
@@ -318,15 +541,8 @@ impl SnapshotStore {
     /// Reads every present worktree's status, in parallel (blocking).
     pub fn refresh_statuses(&mut self) {
         let reads = self.status_reads();
-        let results = Mutex::new(Vec::new());
-        reads.run(|path, status| {
-            results
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push((path.to_path_buf(), status));
-        });
-        for (path, status) in results.into_inner().unwrap_or_else(PoisonError::into_inner) {
-            self.apply_status(reads.generation, &path, status);
+        for (path, status) in reads.collect() {
+            self.apply_status(reads.stamp, &path, status);
         }
     }
 
@@ -337,9 +553,21 @@ impl SnapshotStore {
             return false;
         }
         if presence.is_openable() {
-            self.apply_status(self.generation, path, git::read_worktree_status(path));
+            let stamp = self.stamp();
+            self.apply_status(stamp, path, git::read_worktree_status(path));
         }
         true
+    }
+
+    /// Applies a watcher batch (blocking): rereads each changed repo, then each changed
+    /// worktree.
+    pub fn refresh(&mut self, changes: &Changes) {
+        for git_dir in &changes.repos {
+            self.refresh_repo(git_dir);
+        }
+        for path in &changes.worktrees {
+            self.refresh_worktree(path);
+        }
     }
 }
 

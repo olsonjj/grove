@@ -115,12 +115,17 @@ impl SettingsFile {
 
     /// Atomic write (temp file + rename).
     pub fn save(&self, settings: &Settings) -> io::Result<()> {
-        if let Some(dir) = self.path.parent() {
-            fs::create_dir_all(dir)?;
-        }
         let json = serde_json::to_vec_pretty(settings).map_err(io::Error::other)?;
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, json)?;
-        fs::rename(&tmp, &self.path)
+        write_atomic(&self.path, &json)
     }
+}
+
+/// Writes via a temp file + rename so readers never see a partial file.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, bytes)?;
+    fs::rename(&tmp, path)
 }

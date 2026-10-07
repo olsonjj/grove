@@ -8,14 +8,17 @@ use gpui_kit::{
     Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::git::{self, GitError};
-use grove_core::{Settings, SettingsFile, Snapshot, SnapshotStore, resolved_env, scan};
+use grove_core::{
+    Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, resolved_env, scan,
+};
 
 use crate::main_window::tilde;
 use crate::shell::{self, Library};
 use crate::theme::{self, ButtonKind, button};
 
 enum Boot {
-    Ready(Library),
+    /// Whether the snapshot came from the cache.
+    Ready(Library, bool),
     Setup(Setup),
 }
 
@@ -24,7 +27,7 @@ pub fn launch(cx: &mut App) {
     cx.spawn(async move |cx| {
         let boot = cx.background_spawn(async { boot() }).await;
         cx.update(|cx| match boot {
-            Boot::Ready(library) => shell::start(library, cx),
+            Boot::Ready(library, cached) => shell::start(library, cached, cx),
             Boot::Setup(setup) => open(setup, cx),
         });
     })
@@ -65,6 +68,26 @@ fn boot() -> Boot {
     let Some(dir) = setup.settings.code_dir.clone() else {
         return Boot::Setup(setup);
     };
+    // A folder that's gone falls through to the scan, which sends it back to setup.
+    let cached = SnapshotCache::beside(&setup.settings_file)
+        .load(&dir)
+        .filter(|s| !s.repos.is_empty() && dir.is_dir());
+    if let Some(snapshot) = cached {
+        eprintln!(
+            "[grove] code dir {}: {} repos (cached)",
+            dir.display(),
+            snapshot.repos.len()
+        );
+        return Boot::Ready(
+            Library {
+                settings_file: setup.settings_file,
+                settings: setup.settings,
+                store: SnapshotStore::from_snapshot(snapshot),
+                saves: Default::default(),
+            },
+            true,
+        );
+    }
     let snapshot = scan(&dir);
     eprintln!(
         "[grove] code dir {} (exists: {}): {} repos",
@@ -77,12 +100,15 @@ fn boot() -> Boot {
         setup.scanned = Some(snapshot);
         return Boot::Setup(setup);
     }
-    Boot::Ready(Library {
-        settings_file: setup.settings_file,
-        settings: setup.settings,
-        store: SnapshotStore::from_snapshot(snapshot),
-        saves: Default::default(),
-    })
+    Boot::Ready(
+        Library {
+            settings_file: setup.settings_file,
+            settings: setup.settings,
+            store: SnapshotStore::from_snapshot(snapshot),
+            saves: Default::default(),
+        },
+        false,
+    )
 }
 
 fn check_git() -> Result<(), GitError> {
@@ -185,7 +211,7 @@ impl Setup {
             store: SnapshotStore::from_snapshot(snapshot),
             saves: Default::default(),
         };
-        shell::start(library, cx);
+        shell::start(library, false, cx);
         window.remove_window();
     }
 

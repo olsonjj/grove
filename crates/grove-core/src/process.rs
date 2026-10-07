@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,13 +16,34 @@ pub(crate) enum RunError {
 }
 
 /// Runs `cmd` to completion, killing it if it outlives `timeout`.
-pub(crate) fn run(mut cmd: Command, timeout: Duration) -> Result<Output, RunError> {
+pub(crate) fn run(cmd: Command, timeout: Duration) -> Result<Output, RunError> {
+    run_with_input(cmd, Vec::new(), timeout)
+}
+
+/// Like `run`, writing `input` to its stdin (closed when written).
+pub(crate) fn run_with_input(
+    mut cmd: Command,
+    input: Vec<u8>,
+    timeout: Duration,
+) -> Result<Output, RunError> {
+    let stdin = if input.is_empty() {
+        Stdio::null()
+    } else {
+        Stdio::piped()
+    };
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(RunError::Spawn)?;
+    if let Some(mut pipe) = child.stdin.take() {
+        // On its own thread so a child that fills stdout before reading all its input can't
+        // deadlock us.
+        thread::spawn(move || {
+            let _ = pipe.write_all(&input);
+        });
+    }
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
 

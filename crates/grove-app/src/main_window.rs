@@ -29,7 +29,7 @@ struct MainWindow {
     status: Option<Status>,
     /// Bumped per open or notice so a slow earlier launch can't overwrite a newer status.
     open_seq: u64,
-    _subs: [Subscription; 5],
+    _subs: [Subscription; 6],
 }
 
 /// The saved repo if it still exists, else the first.
@@ -63,13 +63,18 @@ impl MainWindow {
             this.set_status(ev.text.clone(), ev.error, false, cx);
         });
         let library = cx.observe_global::<shell::Library>(|this, cx| this.sync_repo(cx));
+        let activation = cx.observe_window_activation(window, |_, window, cx| {
+            if window.is_window_active() {
+                shell::refresh_all(cx);
+            }
+        });
         window.focus(&tree.focus_handle(cx), cx);
         let mut this = Self {
             tree,
             details,
             status: None,
             open_seq: 0,
-            _subs: [collapse, open, details_open, notice, library],
+            _subs: [collapse, open, details_open, notice, library, activation],
         };
         this.show_repo(selected_repo(cx), cx);
         if std::env::var_os("GROVE_DEV_OPEN").is_some() {
@@ -772,8 +777,9 @@ mod tests {
 
         cx.update(|cx| {
             let store = &mut cx.global_mut::<Library>().store;
+            let stamp = store.status_reads().stamp();
             store.apply_status(
-                store.status_reads().generation(),
+                stamp,
                 Path::new("/c/wt/api-x"),
                 Ok(WorktreeStatus {
                     files: changed_files(3),

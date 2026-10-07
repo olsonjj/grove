@@ -15,6 +15,7 @@ async-channel = "=2.5.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tempfile = "=3.27.0"
+notify = "=8.2.0"
 grove-core = { path = "crates/grove-core" }
 objc2 = "=0.6.4"
 objc2-foundation = "=0.3.2"

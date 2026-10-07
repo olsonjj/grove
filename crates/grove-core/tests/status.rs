@@ -247,14 +247,59 @@ fn reads_from_a_replaced_snapshot_are_dropped() {
     let api = init_repo(&f.code().join("api"));
     let mut store = SnapshotStore::new(&f.code());
     let stale = store.status_reads();
-    store.refresh_all();
+    store.replace(f.scan());
     let fresh = store.status_reads();
     let status = || grove_core::read_worktree_status(&api);
     let path = store.snapshot().repos[0].worktrees[0].path.clone();
-    assert!(!store.apply_status(stale.generation(), &path, status()));
+    assert!(!store.apply_status(stale.stamp(), &path, status()));
     assert!(store.snapshot().repos[0].worktrees[0].status.is_none());
-    assert!(store.apply_status(fresh.generation(), &path, status()));
+    assert!(store.apply_status(fresh.stamp(), &path, status()));
     assert!(store.snapshot().repos[0].worktrees[0].status.is_some());
+}
+
+#[test]
+fn slow_read_never_overwrites_a_later_one() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let mut store = SnapshotStore::new(&f.code());
+    let path = store.snapshot().repos[0].worktrees[0].path.clone();
+    let slow = store.status_reads();
+    let clean = grove_core::read_worktree_status(&api);
+
+    fs::write(api.join("new.txt"), "n").unwrap();
+    assert!(store.refresh_worktree(&path));
+    assert!(!store.apply_status(slow.stamp(), &path, clean));
+    assert_eq!(
+        badges(store.snapshot(), "api"),
+        ["main worktree", "1 changed", "local only"]
+    );
+}
+
+#[test]
+fn rescan_keeps_repos_refreshed_after_it_started() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let mut store = SnapshotStore::new(&f.code());
+    let scan = store.scan_read().run();
+
+    add_worktree(&api, &f.code().join("api-x"), "x");
+    let git_dir = store.snapshot().repos[0].repo.git_dir.clone();
+    assert!(store.refresh_repo(&git_dir));
+    assert!(store.apply_scan(scan));
+    assert_eq!(store.snapshot().repos[0].worktree_count(), 2);
+    assert_eq!(badges(store.snapshot(), "api-x"), ["local only"]);
+}
+
+#[test]
+fn refresh_all_reads_statuses_too() {
+    let f = Fixture::new();
+    init_repo(&f.code().join("api"));
+    let mut store = SnapshotStore::new(&f.code());
+    store.refresh_all();
+    assert_eq!(
+        badges(store.snapshot(), "api"),
+        ["main worktree", "local only"]
+    );
 }
 
 #[test]
@@ -272,7 +317,7 @@ fn presence_recheck_clears_status_and_blocks_late_reads() {
     fs::remove_dir_all(&wt).unwrap();
     assert!(store.set_presence(&path, Presence::of(&path)));
     assert_eq!(badges(store.snapshot(), "api-x"), ["missing"]);
-    assert!(!store.apply_status(reads.generation(), &path, late));
+    assert!(!store.apply_status(reads.stamp(), &path, late));
     assert!(worktree(store.snapshot(), "api-x").status.is_none());
     assert!(!store.set_presence(Path::new("/nowhere"), Presence::Missing));
 }

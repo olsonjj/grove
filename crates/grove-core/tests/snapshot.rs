@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{Settings, SettingsFile, Snapshot, scan};
+use grove_core::{Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, scan};
 use tempfile::TempDir;
 
 /// (repo name, worktree count) pairs.
@@ -205,4 +205,49 @@ fn collapse_state_per_repo() {
     s.set_collapsed("api", "feature/", false);
     s.set_collapsed("api", "fix/", false);
     assert!(s.collapsed.is_empty());
+}
+
+#[test]
+fn snapshot_cache_round_trips_with_statuses() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    add_worktree(&api, &f.outside("api-x"), "x");
+    fs::write(api.join("new.txt"), "n").unwrap();
+    let mut store = SnapshotStore::new(&f.code());
+    store.refresh_statuses();
+    let cache = SnapshotCache::beside(&SettingsFile::new(f.tmp.path().join("Grove/settings.json")));
+    assert_eq!(cache.path(), f.tmp.path().join("Grove/snapshot.json"));
+    cache.save(store.snapshot()).unwrap();
+    assert_eq!(
+        cache.load(&f.code()).as_ref(),
+        Some(store.snapshot().as_ref())
+    );
+}
+
+#[test]
+fn unusable_snapshot_cache_is_a_miss() {
+    let f = Fixture::new();
+    init_repo(&f.code().join("api"));
+    let cache = SnapshotCache::new(f.tmp.path().join("snapshot.json"));
+    assert!(cache.load(&f.code()).is_none(), "missing");
+
+    cache.save(&f.scan()).unwrap();
+    assert!(
+        cache.load(&f.tmp.path().join("other")).is_none(),
+        "other code dir"
+    );
+
+    let json = fs::read_to_string(cache.path()).unwrap();
+    fs::write(
+        cache.path(),
+        json.replacen(r#""version":1"#, r#""version":99"#, 1),
+    )
+    .unwrap();
+    assert!(cache.load(&f.code()).is_none(), "other version");
+
+    fs::write(cache.path(), &json[..json.len() / 2]).unwrap();
+    assert!(cache.load(&f.code()).is_none(), "corrupt");
+
+    fs::write(cache.path(), &json).unwrap();
+    assert!(cache.load(&f.code()).is_some());
 }

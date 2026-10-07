@@ -2,12 +2,14 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::git;
 
 const MAX_DEPTH: usize = 2;
 
 /// A repo found in the code directory.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RepoRef {
     /// Path relative to the code directory, e.g. `api` or `org/api` (`.git` suffix dropped).
     pub name: String,

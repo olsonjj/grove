@@ -1,10 +1,13 @@
+use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyManager;
 use gpui_kit::{AnyWindowHandle, App, AppContext, Global, WindowId};
-use grove_core::{Settings, SettingsFile, SnapshotStore, StatusReads};
+use grove_core::{
+    Changes, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, StatusReads, Watcher,
+};
 use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
@@ -14,6 +17,11 @@ use crate::{PlatformEvent, hotkeys, macos, main_window, status_item, windows};
 /// A status-item click that arrives right after the popover closed on deactivation is the
 /// same click that deactivated it; ignore it so the click toggles instead of reopening.
 const REOPEN_GUARD: Duration = Duration::from_millis(300);
+/// Window shows and activations within this of the last full refresh don't start another;
+/// the watcher covers the gap.
+const RESCAN_GUARD: Duration = Duration::from_secs(2);
+/// Snapshot changes are written to the cache at most this often.
+const CACHE_DELAY: Duration = Duration::from_secs(2);
 
 /// Settings and snapshot the windows render from. A global of its own so windows don't
 /// depend on the platform shell (tests set it alone).
@@ -26,13 +34,26 @@ pub struct Library {
 
 impl Global for Library {}
 
-/// Orders settings writes: saves run on background threads, so a newer one can finish
+/// Orders writes of one file (settings, cache): saves run on background threads, so a newer one can finish
 /// first; an older one arriving after it is dropped instead of overwriting it.
 #[derive(Default)]
 pub struct Saves {
     issued: u64,
     written: Arc<Mutex<u64>>,
 }
+
+/// Keeps the snapshot fresh: the watcher, full refreshes, and the on-disk cache.
+struct Live {
+    /// Snapshots for the watcher to follow; `None` if it couldn't start.
+    watch: Option<async_channel::Sender<Arc<Snapshot>>>,
+    cache: SnapshotCache,
+    cache_saves: Saves,
+    cache_pending: bool,
+    scanning: bool,
+    last_scan: Option<Instant>,
+}
+
+impl Global for Live {}
 
 struct Shell {
     _tray: Option<TrayIcon>,
@@ -46,9 +67,10 @@ struct Shell {
 
 impl Global for Shell {}
 
-/// Installs the status item and hotkeys and opens the main window. Only called once setup
-/// is complete, so a half-configured Grove has no menu bar icon or shortcuts.
-pub fn start(library: Library, cx: &mut App) {
+/// Installs the status item and hotkeys, starts watching, and opens the main window. Only
+/// called once setup is complete, so a half-configured Grove has no menu bar icon or
+/// shortcuts. A `cached` snapshot is shown as is while a full refresh runs.
+pub fn start(library: Library, cached: bool, cx: &mut App) {
     let (tx, rx) = async_channel::unbounded::<PlatformEvent>();
     // Either can fail, e.g. a second Grove can't take the same hotkeys; keep running.
     let tray = status_item::install(tx.clone())
@@ -57,8 +79,22 @@ pub fn start(library: Library, cx: &mut App) {
     let hotkeys = hotkeys::install(tx)
         .inspect_err(|e| eprintln!("[grove] global hotkeys unavailable: {e}"))
         .ok();
+    cx.set_global(Live {
+        watch: None,
+        cache: SnapshotCache::beside(&library.settings_file),
+        cache_saves: Saves::default(),
+        cache_pending: false,
+        scanning: false,
+        last_scan: None,
+    });
     cx.set_global(library);
-    read_statuses(cx);
+    if cached {
+        rescan(cx);
+    } else {
+        cx.global_mut::<Live>().last_scan = Some(Instant::now());
+        read_statuses(cx);
+    }
+    start_watching(cx);
     crate::launcher::install(cx);
     cx.set_global(Shell {
         _tray: tray,
@@ -91,18 +127,18 @@ pub fn library(cx: &App) -> &Library {
 /// snapshot as they land so badges fill in without blocking the UI. Results for a snapshot
 /// that's since been replaced are dropped.
 pub fn read_statuses(cx: &mut App) {
-    let reads = library(cx).store.status_reads();
+    let reads = cx.global_mut::<Library>().store.status_reads();
     run_reads(reads, cx);
 }
 
 /// Rereads one worktree's status in the background, e.g. after its folder came back.
 pub fn read_status(path: &Path, cx: &mut App) {
-    let reads = library(cx).store.status_read(path);
+    let reads = cx.global_mut::<Library>().store.status_read(path);
     run_reads(reads, cx);
 }
 
 fn run_reads(reads: StatusReads, cx: &mut App) {
-    let generation = reads.generation();
+    let stamp = reads.stamp();
     let (tx, rx) = async_channel::unbounded();
     cx.background_spawn(async move {
         reads.run(|path, status| {
@@ -118,11 +154,130 @@ fn run_reads(reads: StatusReads, cx: &mut App) {
             }
             cx.update(|cx| {
                 let store = &mut cx.global_mut::<Library>().store;
+                let mut changed = false;
                 for (path, status) in batch {
-                    store.apply_status(generation, &path, status);
+                    changed |= store.apply_status(stamp, &path, status);
+                }
+                if changed {
+                    save_cache_soon(cx);
                 }
             });
         }
+    })
+    .detach();
+}
+
+/// Full refresh (rescan plus every status) in the background, unless one is running or
+/// just ran. Shown data stays until the result swaps in.
+pub fn refresh_all(cx: &mut App) {
+    let Some(live) = cx.try_global::<Live>() else {
+        return;
+    };
+    if live.scanning || live.last_scan.is_some_and(|t| t.elapsed() < RESCAN_GUARD) {
+        return;
+    }
+    rescan(cx);
+}
+
+fn rescan(cx: &mut App) {
+    let live = cx.global_mut::<Live>();
+    live.scanning = true;
+    live.last_scan = Some(Instant::now());
+    let read = cx.global_mut::<Library>().store.scan_read();
+    cx.spawn(async move |cx| {
+        let result = cx.background_spawn(async move { read.run() }).await;
+        cx.update(|cx| {
+            cx.global_mut::<Live>().scanning = false;
+            if cx.global_mut::<Library>().store.apply_scan(result) {
+                snapshot_changed(cx);
+            }
+        });
+    })
+    .detach();
+}
+
+/// Starts the watcher off the UI thread; its batches come back here to be read in the
+/// background and applied.
+fn start_watching(cx: &mut App) {
+    let (changes_tx, changes_rx) = async_channel::unbounded::<Changes>();
+    let (watch_tx, watch_rx) = async_channel::unbounded::<Arc<Snapshot>>();
+    let first = library(cx).store.snapshot().clone();
+    cx.background_spawn(async move {
+        let watcher = Watcher::start(&first, move |changes| {
+            let _ = changes_tx.send_blocking(changes);
+        });
+        let watcher = match watcher {
+            Ok(w) => w,
+            Err(e) => return eprintln!("[grove] {e}"),
+        };
+        // One task, so watch-set updates apply in order; only the newest matters.
+        while let Ok(mut snapshot) = watch_rx.recv().await {
+            while let Ok(newer) = watch_rx.try_recv() {
+                snapshot = newer;
+            }
+            watcher.update(&snapshot);
+        }
+    })
+    .detach();
+    cx.global_mut::<Live>().watch = Some(watch_tx);
+    cx.spawn(async move |cx| {
+        while let Ok(changes) = changes_rx.recv().await {
+            cx.update(|cx| apply_changes(changes, cx));
+        }
+    })
+    .detach();
+}
+
+fn apply_changes(changes: Changes, cx: &mut App) {
+    for git_dir in &changes.repos {
+        let Some(read) = cx.global_mut::<Library>().store.repo_read(git_dir) else {
+            continue;
+        };
+        cx.spawn(async move |cx| {
+            let result = cx.background_spawn(async move { read.run() }).await;
+            cx.update(|cx| {
+                if cx.global_mut::<Library>().store.apply_repo(result) {
+                    snapshot_changed(cx);
+                }
+            });
+        })
+        .detach();
+    }
+    for path in &changes.worktrees {
+        read_status(path, cx);
+    }
+}
+
+/// After repos or worktrees may have come or gone: re-aim the watcher, update the cache.
+fn snapshot_changed(cx: &mut App) {
+    let snapshot = library(cx).store.snapshot().clone();
+    if let Some(watch) = &cx.global::<Live>().watch {
+        let _ = watch.try_send(snapshot);
+    }
+    save_cache_soon(cx);
+}
+
+fn save_cache_soon(cx: &mut App) {
+    let Some(live) = cx.try_global::<Live>() else {
+        return;
+    };
+    if live.cache_pending {
+        return;
+    }
+    cx.global_mut::<Live>().cache_pending = true;
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(CACHE_DELAY).await;
+        cx.update(|cx| {
+            cx.global_mut::<Live>().cache_pending = false;
+            let snapshot = library(cx).store.snapshot().clone();
+            let live = cx.global_mut::<Live>();
+            let cache = live.cache.clone();
+            live.cache_saves.issue().write(cx, move || {
+                cache.save(&snapshot).inspect_err(|e| {
+                    eprintln!("[grove] caching to {}: {e}", cache.path().display())
+                })
+            });
+        });
     })
     .detach();
 }
@@ -145,21 +300,39 @@ pub fn set_collapsed(repo: &str, prefix: &str, collapsed: bool, cx: &mut App) {
 
 fn save_settings(cx: &mut App) {
     let library = cx.global_mut::<Library>();
-    library.saves.issued += 1;
-    let generation = library.saves.issued;
-    let written = library.saves.written.clone();
     let (file, settings) = (library.settings_file.clone(), library.settings.clone());
-    cx.background_spawn(async move {
-        let mut written = written.lock().unwrap_or_else(|e| e.into_inner());
-        if *written > generation {
-            return;
+    library.saves.issue().write(cx, move || {
+        file.save(&settings)
+            .inspect_err(|e| eprintln!("[grove] saving settings to {}: {e}", file.path().display()))
+    });
+}
+
+impl Saves {
+    fn issue(&mut self) -> SaveTicket {
+        self.issued += 1;
+        SaveTicket {
+            generation: self.issued,
+            written: self.written.clone(),
         }
-        match file.save(&settings) {
-            Ok(()) => *written = generation,
-            Err(e) => eprintln!("[grove] saving settings to {}: {e}", file.path().display()),
-        }
-    })
-    .detach();
+    }
+}
+
+struct SaveTicket {
+    generation: u64,
+    written: Arc<Mutex<u64>>,
+}
+
+impl SaveTicket {
+    /// Runs `write` on a background thread, unless a later-issued write already finished.
+    fn write(self, cx: &App, write: impl FnOnce() -> io::Result<()> + Send + 'static) {
+        cx.background_spawn(async move {
+            let mut written = self.written.lock().unwrap_or_else(|e| e.into_inner());
+            if *written <= self.generation && write().is_ok() {
+                *written = self.generation;
+            }
+        })
+        .detach();
+    }
 }
 
 pub fn handle(event: PlatformEvent, cx: &mut App) {
@@ -174,6 +347,7 @@ pub fn handle(event: PlatformEvent, cx: &mut App) {
             {
                 let handle = windows::open_popover(anchor, cx);
                 cx.global_mut::<Shell>().popover = handle;
+                refresh_all(cx);
             }
         }
         PlatformEvent::ToggleSwitcher { at } => {
@@ -192,6 +366,7 @@ pub fn handle(event: PlatformEvent, cx: &mut App) {
             shell.switcher = handle;
         }
         PlatformEvent::ShowMain => {
+            refresh_all(cx);
             cx.activate(true);
             if let Some(main) = cx.global::<Shell>().main {
                 let _ = main.update(cx, |_, window, _| window.activate_window());

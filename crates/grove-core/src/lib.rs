@@ -1,6 +1,7 @@
 //! Headless core: no GPUI. The app is a thin shell over this.
 
 mod badge;
+mod cache;
 mod details;
 mod discovery;
 mod env;
@@ -11,8 +12,10 @@ mod settings;
 mod snapshot;
 mod targets;
 mod tree;
+mod watch;
 
 pub use badge::Badge;
+pub use cache::SnapshotCache;
 pub use details::{Details, cd_command, relative_time, unix_now};
 pub use discovery::{RepoRef, discover};
 pub use env::{PathSource, ShellEnv, resolved_env};
@@ -24,7 +27,8 @@ pub use launch::{
 };
 pub use settings::{CustomCommand, Settings, SettingsFile, TerminalOpensIn};
 pub use snapshot::{
-    Presence, RepoSnapshot, Snapshot, SnapshotStore, StatusReads, StatusResult, Worktree, scan,
+    Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead, ScanResult, Snapshot, SnapshotStore,
+    StatusReads, StatusResult, Worktree, scan,
 };
 pub use targets::{
     Editor, NoTarget, OpenTarget, Role, TargetKind, Terminal, default_editor, default_target,
@@ -33,3 +37,4 @@ pub use targets::{
 pub use tree::{
     DisplayPath, NavEffect, NavKey, Row, RowId, RowKind, Tree, home_dir, navigate, tilde,
 };
+pub use watch::{Changes, WatchError, Watcher};

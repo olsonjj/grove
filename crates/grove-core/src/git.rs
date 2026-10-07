@@ -1,9 +1,12 @@
 //! The only module that runs `git`.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
 
 use crate::env::resolved_env;
 use crate::process::{self, RunError};
@@ -20,7 +23,7 @@ pub const MIN_VERSION: GitVersion = GitVersion {
 const QUICK: Duration = Duration::from_secs(5);
 const READ: Duration = Duration::from_secs(15);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GitVersion {
     pub major: u32,
     pub minor: u32,
@@ -39,7 +42,7 @@ pub struct GitInfo {
     pub version: GitVersion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GitError {
     /// No usable `git` (not on PATH, or e.g. the /usr/bin/git shim without Xcode CLT).
     NotFound {
@@ -84,7 +87,7 @@ pub struct WorktreeEntry {
 }
 
 /// One worktree's `git status`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorktreeStatus {
     /// Paths `git status` lists (modified, staged, unmerged, untracked), in its order.
     pub files: Vec<ChangedFile>,
@@ -97,7 +100,7 @@ impl WorktreeStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangedFile {
     pub change: Change,
     /// Repo-relative; the new path for renames and copies.
@@ -107,7 +110,7 @@ pub struct ChangedFile {
 }
 
 /// One file's change, staged or not (staged wins when both).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
     Modified,
     Added,
@@ -158,7 +161,7 @@ pub struct Commit {
     pub time: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Upstream {
     /// No upstream configured, or HEAD is detached.
     None,
@@ -246,7 +249,40 @@ pub fn recent_commits(path: &Path) -> Result<Vec<Commit>, GitError> {
     Ok(parse_log(&out))
 }
 
+/// Which of `paths` (relative to `worktree`) git ignores, as `git status` would: tracked
+/// files are never ignored, and anything under an ignored folder is.
+pub fn ignored(worktree: &Path, paths: &[&Path]) -> Result<HashSet<PathBuf>, GitError> {
+    let mut input = Vec::new();
+    for p in paths {
+        input.extend_from_slice(p.as_os_str().as_encoded_bytes());
+        input.push(0);
+    }
+    // Exit 1 just means nothing matched.
+    let out = run_with(
+        Some(worktree),
+        &["check-ignore", "--stdin", "-z"],
+        input,
+        &[0, 1],
+        QUICK,
+    )?;
+    Ok(out
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
 fn run(dir: Option<&Path>, args: &[&str], timeout: Duration) -> Result<String, GitError> {
+    run_with(dir, args, Vec::new(), &[0], timeout)
+}
+
+fn run_with(
+    dir: Option<&Path>,
+    args: &[&str],
+    input: Vec<u8>,
+    ok_codes: &[i32],
+    timeout: Duration,
+) -> Result<String, GitError> {
     let joined = args.join(" ");
     let binary = binary().ok_or_else(|| GitError::NotFound {
         detail: "no git on PATH".into(),
@@ -258,8 +294,8 @@ fn run(dir: Option<&Path>, args: &[&str], timeout: Duration) -> Result<String, G
     cmd.args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0");
-    match process::run(cmd, timeout) {
-        Ok(out) if out.status.success() => Ok(out.stdout),
+    match process::run_with_input(cmd, input, timeout) {
+        Ok(out) if out.status.code().is_some_and(|c| ok_codes.contains(&c)) => Ok(out.stdout),
         Ok(out) => Err(GitError::Failed {
             args: joined,
             stderr: out.stderr,
