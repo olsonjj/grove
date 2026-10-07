@@ -2,17 +2,20 @@ use std::path::Path;
 
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement,
-    IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled, Subscription,
-    TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
+    AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement, Styled,
+    Subscription, TestSupportExt, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions,
+    div, px, size,
 };
-use grove_core::Presence;
+use grove_core::{Presence, RepoSnapshot};
 
 use crate::details_view::{self, DetailsView};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
 
 const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Editor   ⌘↵ Terminal";
+/// Keeps "Last fetch … ago" current.
+const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The status bar's confirmation or failure line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +32,9 @@ struct MainWindow {
     status: Option<Status>,
     /// Bumped per open or notice so a slow earlier launch can't overwrite a newer status.
     open_seq: u64,
-    _subs: [Subscription; 6],
+    /// The last Fetch all report shown (`Fetcher::finished`).
+    fetch_seen: u64,
+    _subs: [Subscription; 7],
 }
 
 /// The saved repo if it still exists, else the first.
@@ -63,6 +68,7 @@ impl MainWindow {
             this.set_status(ev.text.clone(), ev.error, false, cx);
         });
         let library = cx.observe_global::<shell::Library>(|this, cx| this.sync_repo(cx));
+        let fetcher = cx.observe_global::<shell::Fetcher>(|this, cx| this.fetch_changed(cx));
         let activation = cx.observe_window_activation(window, |_, window, cx| {
             if window.is_window_active() {
                 shell::refresh_all(cx);
@@ -74,8 +80,26 @@ impl MainWindow {
             details,
             status: None,
             open_seq: 0,
-            _subs: [collapse, open, details_open, notice, library, activation],
+            fetch_seen: cx.try_global::<shell::Fetcher>().map_or(0, |f| f.finished),
+            _subs: [
+                collapse,
+                open,
+                details_open,
+                notice,
+                library,
+                fetcher,
+                activation,
+            ],
         };
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(CLOCK_TICK).await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         this.show_repo(selected_repo(cx), cx);
         if std::env::var_os("GROVE_DEV_OPEN").is_some() {
             this.dev_open(cx);
@@ -108,6 +132,21 @@ impl MainWindow {
         let repo = name.as_deref().and_then(|n| snapshot.repo(n));
         self.tree.update(cx, |tree, cx| tree.update_repo(repo, cx));
         cx.notify();
+    }
+
+    /// Shows each finished Fetch all's outcome once.
+    fn fetch_changed(&mut self, cx: &mut Context<Self>) {
+        let fetcher = cx.global::<shell::Fetcher>();
+        if fetcher.finished == self.fetch_seen {
+            return cx.notify();
+        }
+        self.fetch_seen = fetcher.finished;
+        let Some(report) = &fetcher.report else {
+            return cx.notify();
+        };
+        let (text, error) = (report.message(), !report.failures.is_empty());
+        self.open_seq += 1;
+        self.set_status(text, error, false, cx);
     }
 
     fn show_repo(&mut self, name: Option<String>, cx: &mut Context<Self>) {
@@ -182,7 +221,60 @@ impl MainWindow {
         }
     }
 
-    fn status_bar(&self) -> impl IntoElement {
+    fn top_bar(&self, repo: Option<&RepoSnapshot>, cx: &mut Context<Self>) -> AnyElement {
+        let fetching = cx.try_global::<shell::Fetcher>().is_some_and(|f| f.running);
+        let fetch = div()
+            .id("fetch-all")
+            .h(px(32.))
+            .px(px(12.))
+            .flex()
+            .items_center()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .bg(theme::raised())
+            .text_size(px(13.))
+            .when_else(
+                fetching,
+                |d| d.text_color(theme::faint()).child("Fetching…"),
+                |d| {
+                    d.text_color(theme::text())
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::border()))
+                        .on_click(cx.listener(|_, _, _, cx| shell::fetch_all(cx)))
+                        .child("Fetch all")
+                },
+            )
+            .test_support();
+        div()
+            .flex_none()
+            .h(px(52.))
+            .px(px(16.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .border_b_1()
+            .border_color(theme::border())
+            .bg(theme::panel())
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Grove"),
+            )
+            .when_some(repo, |d, repo| {
+                d.child(div().text_color(theme::faint()).child("/")).child(
+                    theme::mono(repo.display_name.clone())
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.)),
+                )
+            })
+            .child(div().ml_auto().flex_none().child(fetch))
+            .into_any_element()
+    }
+
+    fn status_bar(&self, cx: &App) -> impl IntoElement {
         let line = match &self.status {
             Some(s) => div()
                 .flex()
@@ -223,7 +315,19 @@ impl MainWindow {
             .border_color(theme::border())
             .bg(theme::panel())
             .text_size(px(12.))
-            .child(line)
+            .child(
+                div()
+                    .flex()
+                    .min_w_0()
+                    .gap(px(16.))
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_color(theme::muted())
+                            .child(fetch_label(cx)),
+                    )
+                    .child(line),
+            )
             .child(
                 div()
                     .flex_none()
@@ -238,6 +342,7 @@ impl Render for MainWindow {
         let library = shell::library(cx);
         let snapshot = library.store.snapshot().clone();
         let selected = selected_repo(cx);
+        let top_bar = self.top_bar(selected.as_deref().and_then(|n| snapshot.repo(n)), cx);
 
         let rows = snapshot.repos.iter().enumerate().map(|(i, repo)| {
             let is_selected = selected.as_deref() == Some(repo.name());
@@ -361,6 +466,7 @@ impl Render for MainWindow {
             .flex_col()
             .bg(theme::bg())
             .text_color(theme::text())
+            .child(top_bar)
             .child(
                 div()
                     .flex_1()
@@ -369,7 +475,18 @@ impl Render for MainWindow {
                     .child(sidebar)
                     .child(content),
             )
-            .child(self.status_bar())
+            .child(self.status_bar(cx))
+    }
+}
+
+/// "Last fetch 3 minutes ago" or "Not fetched yet". The Fetch all button shows progress.
+fn fetch_label(cx: &App) -> String {
+    match shell::library(cx).store.snapshot().last_fetch {
+        Some(at) => format!(
+            "Last fetch {}",
+            grove_core::relative_time(at, grove_core::unix_now())
+        ),
+        None => "Not fetched yet".into(),
     }
 }
 
@@ -464,6 +581,7 @@ mod tests {
                     code_dir: PathBuf::from("/c"),
                     code_dir_exists: true,
                     repos: vec![repo],
+                    last_fetch: None,
                 }),
                 saves: Default::default(),
             });
@@ -1476,5 +1594,118 @@ mod tests {
             "{err}"
         );
         assert!(!has(cx, w, "commit", 0));
+    }
+
+    #[gpui_kit::test]
+    fn fetch_all_failure_shows_repo_and_error_and_marks_counts_stale(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        // `main` two behind `origin/main`, whose remote is unreachable.
+        let code = tmp.path().join("code");
+        let api = code.join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        git(&api, &["init", "-q"]);
+        for m in ["one", "two", "three"] {
+            git(&api, &["commit", "-q", "--allow-empty", "-m", m]);
+        }
+        let gone = tmp.path().join("gone.git");
+        git(&api, &["remote", "add", "origin", gone.to_str().unwrap()]);
+        git(&api, &["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        git(&api, &["branch", "-q", "-u", "origin/main"]);
+        git(&api, &["reset", "-q", "--hard", "HEAD~2"]);
+        let mut repo = grove_core::scan(&code).repos.remove(0);
+        let path = repo.worktrees[0].path.clone();
+        repo.worktrees[0].status = grove_core::read_worktree_status(&path).ok().map(Ok);
+        let (w, main) = launch_repo(cx, &file, repo);
+        assert_eq!(cx.update(|cx| fetch_label(cx)), "Not fetched yet");
+        let path = path.to_str().unwrap();
+        assert_eq!(row_badges(cx, &main, path), ["main worktree", "↓2"]);
+
+        click(cx, w, "fetch-all");
+
+        let s = status(cx, &main).unwrap();
+        assert!(s.text.starts_with("Fetch failed for api: "), "{}", s.text);
+        assert!(s.error);
+        assert_eq!(
+            row_badges(cx, &main, path),
+            ["main worktree", "↓2", "stale"]
+        );
+        // Nothing fetched, so no fetch time over the stale counts.
+        assert_eq!(cx.update(|cx| fetch_label(cx)), "Not fetched yet");
+    }
+
+    #[gpui_kit::test]
+    fn fetch_report_shows_once_in_status_line(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let (_, main) = launch(cx, &file);
+        cx.update(|cx| {
+            let fetcher = cx.default_global::<shell::Fetcher>();
+            fetcher.finished += 1;
+            fetcher.report = Some(grove_core::FetchReport {
+                fetched: 3,
+                failures: vec![],
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(
+            status(cx, &main).unwrap(),
+            Status {
+                text: "Fetched 3 repos".into(),
+                error: false,
+                settings: false,
+            }
+        );
+
+        // A later fetch starting doesn't repeat the old report.
+        main.update(cx, |m, _| m.status = None);
+        cx.update(|cx| cx.global_mut::<shell::Fetcher>().running = true);
+        cx.run_until_parked();
+        assert_eq!(status(cx, &main), None);
+        assert_eq!(cx.update(|cx| fetch_label(cx)), "Not fetched yet");
+    }
+
+    #[gpui_kit::test]
+    fn status_bar_shows_last_fetch_time(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        launch(cx, &file);
+        cx.update(|cx| {
+            let snapshot = Snapshot {
+                last_fetch: Some(grove_core::unix_now() - 180),
+                ..shell::library(cx).store.snapshot().as_ref().clone()
+            };
+            cx.global_mut::<Library>().store = SnapshotStore::from_snapshot(snapshot);
+        });
+        assert_eq!(cx.update(|cx| fetch_label(cx)), "Last fetch 3 minutes ago");
+    }
+
+    #[gpui_kit::test]
+    fn background_fetch_runs_every_15_minutes_only_when_on(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        launch(cx, &file);
+        cx.update(shell::start_background_fetch);
+        let fetches = |cx: &mut TestAppContext| {
+            cx.update(|cx| cx.try_global::<shell::Fetcher>().map_or(0, |f| f.finished))
+        };
+        let quarter_hour = std::time::Duration::from_secs(15 * 60);
+
+        cx.executor().advance_clock(quarter_hour);
+        cx.run_until_parked();
+        assert_eq!(fetches(cx), 0);
+
+        cx.update(|cx| cx.global_mut::<Library>().settings.background_fetch = true);
+        cx.executor()
+            .advance_clock(quarter_hour - std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(fetches(cx), 0);
+        cx.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        cx.run_until_parked();
+        assert_eq!(fetches(cx), 1);
+        cx.executor().advance_clock(quarter_hour);
+        cx.run_until_parked();
+        assert_eq!(fetches(cx), 2);
     }
 }

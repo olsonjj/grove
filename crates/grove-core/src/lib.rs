@@ -20,15 +20,16 @@ pub use details::{Details, cd_command, relative_time, unix_now};
 pub use discovery::{RepoRef, discover};
 pub use env::{PathSource, ShellEnv, resolved_env};
 pub use git::{
-    Change, ChangedFile, Commit, Upstream, WorktreeStatus, read_worktree_status, recent_commits,
+    Change, ChangedFile, Commit, GitError, Upstream, WorktreeStatus, read_worktree_status,
+    recent_commits,
 };
 pub use launch::{
     Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, execute, execute_with, plan,
 };
 pub use settings::{CustomCommand, Settings, SettingsFile, TerminalOpensIn};
 pub use snapshot::{
-    Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead, ScanResult, Snapshot, SnapshotStore,
-    StatusReads, StatusResult, Worktree, scan,
+    FetchRead, FetchReport, FetchResult, Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead,
+    ScanResult, Snapshot, SnapshotStore, StatusReads, StatusResult, Worktree, scan,
 };
 pub use targets::{
     Editor, NoTarget, OpenTarget, Role, TargetKind, Terminal, default_editor, default_target,

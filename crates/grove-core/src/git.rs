@@ -1,4 +1,4 @@
-//! The only module that runs `git`.
+//! The only module that runs `git`. Everything here is read-only except `fetch`.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -22,6 +22,8 @@ pub const MIN_VERSION: GitVersion = GitVersion {
 
 const QUICK: Duration = Duration::from_secs(5);
 const READ: Duration = Duration::from_secs(15);
+/// Generous: a first fetch of a big repo is slow, and it runs off the UI thread.
+const FETCH: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GitVersion {
@@ -72,6 +74,24 @@ impl fmt::Display for GitError {
 }
 
 impl std::error::Error for GitError {}
+
+impl GitError {
+    /// One line for a status bar: git's first `fatal:`/`error:` message, else its first line.
+    pub fn brief(&self) -> String {
+        let Self::Failed { stderr, .. } = self else {
+            return self.to_string();
+        };
+        let mut lines = stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+        let first = lines.clone().next();
+        lines
+            .find_map(|l| {
+                l.strip_prefix("fatal: ")
+                    .or_else(|| l.strip_prefix("error: "))
+            })
+            .or(first)
+            .map_or_else(|| self.to_string(), str::to_string)
+    }
+}
 
 /// One entry of `git worktree list --porcelain`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -229,6 +249,24 @@ pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
     )?;
     Ok(parse_status(&out))
 }
+
+/// `fetch --all --prune`: every remote, deleted remote branches pruned. Grove's only
+/// command that writes to a repo; auto maintenance and gc, which fetch would otherwise
+/// start, are off (config form, as `--no-auto-maintenance` needs git 2.29).
+pub fn fetch(repo: &Path) -> Result<(), GitError> {
+    run(Some(repo), FETCH_ARGS, FETCH).map(drop)
+}
+
+const FETCH_ARGS: &[&str] = &[
+    "-c",
+    "maintenance.auto=false",
+    "-c",
+    "gc.auto=0",
+    "fetch",
+    "--all",
+    "--prune",
+    "--quiet",
+];
 
 /// The last three commits on the worktree's HEAD, newest first; empty before the first commit.
 pub fn recent_commits(path: &Path) -> Result<Vec<Commit>, GitError> {
@@ -514,6 +552,28 @@ mod tests {
             ["A.", "AM", ".M", "M.", "MD", ".D", "D.", ".T"].map(code),
             ["A", "A", "M", "M", "M", "D", "D", "T"]
         );
+    }
+
+    #[test]
+    fn brief_error_picks_gits_reason() {
+        let failed = |stderr: &str| GitError::Failed {
+            args: "fetch --all --prune --quiet".into(),
+            stderr: stderr.into(),
+        };
+        let offline = "Fetching origin\nfatal: unable to access 'https://x/': Could not resolve host: x\nerror: could not fetch origin\n";
+        assert_eq!(
+            failed(offline).brief(),
+            "unable to access 'https://x/': Could not resolve host: x"
+        );
+        assert_eq!(failed("  odd output\n").brief(), "odd output");
+        assert_eq!(
+            failed("").brief(),
+            "git fetch --all --prune --quiet failed: "
+        );
+        let timeout = GitError::Timeout {
+            args: "fetch".into(),
+        };
+        assert_eq!(timeout.brief(), "git fetch timed out");
     }
 
     #[test]

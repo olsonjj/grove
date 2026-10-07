@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::badge::Badge;
+use crate::git::GitError;
 use crate::snapshot::{Presence, RepoSnapshot, Worktree};
 
 /// Stable identity of a row, for selection.
@@ -140,11 +141,21 @@ pub fn home_dir() -> Option<PathBuf> {
 impl RepoSnapshot {
     /// The checked-out tree; folders whose prefix is in `collapsed` hide their children.
     pub fn tree(&self, collapsed: &[String]) -> Tree {
-        build(&self.worktrees, collapsed, home_dir().as_deref())
+        build(
+            &self.worktrees,
+            collapsed,
+            home_dir().as_deref(),
+            self.fetch_error.as_ref(),
+        )
     }
 }
 
-fn build(worktrees: &[Worktree], collapsed: &[String], home: Option<&Path>) -> Tree {
+fn build(
+    worktrees: &[Worktree],
+    collapsed: &[String],
+    home: Option<&Path>,
+    fetch_error: Option<&GitError>,
+) -> Tree {
     let mut branches: BTreeMap<&str, Vec<&Worktree>> = BTreeMap::new();
     let mut detached = Vec::new();
     for wt in worktrees {
@@ -193,8 +204,13 @@ fn build(worktrees: &[Worktree], collapsed: &[String], home: Option<&Path>) -> T
         let mut wts = branches[name].clone();
         wts.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.path.cmp(&b.path)));
         for wt in wts {
-            tree.rows
-                .push(worktree_row(wt, depth + 1, Some(id.clone()), home));
+            tree.rows.push(worktree_row(
+                wt,
+                depth + 1,
+                Some(id.clone()),
+                home,
+                fetch_error,
+            ));
         }
     };
 
@@ -244,13 +260,19 @@ fn build(worktrees: &[Worktree], collapsed: &[String], home: Option<&Path>) -> T
             kind: RowKind::DetachedSection,
         });
         for wt in detached {
-            tree.rows.push(worktree_row(wt, 0, None, home));
+            tree.rows.push(worktree_row(wt, 0, None, home, fetch_error));
         }
     }
     tree
 }
 
-fn worktree_row(wt: &Worktree, depth: usize, parent: Option<RowId>, home: Option<&Path>) -> Row {
+fn worktree_row(
+    wt: &Worktree,
+    depth: usize,
+    parent: Option<RowId>,
+    home: Option<&Path>,
+    fetch_error: Option<&GitError>,
+) -> Row {
     Row {
         id: RowId::Worktree(wt.path.clone()),
         depth,
@@ -261,7 +283,7 @@ fn worktree_row(wt: &Worktree, depth: usize, parent: Option<RowId>, home: Option
             is_main: wt.is_main,
             locked: wt.locked,
             presence: wt.presence,
-            badges: wt.badges(),
+            badges: wt.badges_with(fetch_error),
         },
     }
 }

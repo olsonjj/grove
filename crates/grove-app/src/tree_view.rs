@@ -659,6 +659,7 @@ pub(crate) mod tests {
                 wt("/c/wt/bisect", None, false),
             ],
             error: None,
+            fetch_error: None,
         }
     }
 

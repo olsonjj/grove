@@ -1,7 +1,7 @@
 //! Worded worktree state badges. Every badge carries words, never color alone.
 
-use crate::git::Upstream;
-use crate::snapshot::{Presence, Worktree};
+use crate::git::{GitError, Upstream};
+use crate::snapshot::{Presence, RepoSnapshot, Worktree};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Badge {
@@ -22,6 +22,8 @@ pub enum Badge {
     Locked,
     /// `git status` failed or timed out.
     StatusFailed(String),
+    /// The repo's last fetch failed (the error), so sync state may be out of date.
+    Stale(String),
 }
 
 impl Badge {
@@ -41,6 +43,7 @@ impl Badge {
             Self::LocalOnly => "local only".into(),
             Self::Locked => "locked".into(),
             Self::StatusFailed(_) => "status failed".into(),
+            Self::Stale(_) => "stale".into(),
         }
     }
 
@@ -66,13 +69,21 @@ impl Badge {
             Self::LocalOnly => "No upstream branch".into(),
             Self::Locked => "Locked with git worktree lock".into(),
             Self::StatusFailed(e) => e.clone(),
+            Self::Stale(e) => format!("Last fetch failed, so sync state may be out of date: {e}"),
         }
     }
 }
 
+impl RepoSnapshot {
+    /// `wt`'s badges, plus "stale" after its sync state if this repo's last fetch failed.
+    pub fn badges(&self, wt: &Worktree) -> Vec<Badge> {
+        wt.badges_with(self.fetch_error.as_ref())
+    }
+}
+
 impl Worktree {
-    /// In display order: identity, presence, changes, sync, lock.
-    pub fn badges(&self) -> Vec<Badge> {
+    /// In display order: identity, presence, changes, sync, stale, lock.
+    pub(crate) fn badges_with(&self, fetch_error: Option<&GitError>) -> Vec<Badge> {
         let mut out = Vec::new();
         if self.is_main {
             out.push(Badge::MainWorktree);
@@ -106,6 +117,11 @@ impl Worktree {
                         Upstream::Gone { name } => out.push(Badge::UpstreamGone(name.clone())),
                         Upstream::None if self.branch.is_some() => out.push(Badge::LocalOnly),
                         Upstream::None => {}
+                    }
+                    if let Some(e) = fetch_error
+                        && !matches!(status.upstream, Upstream::None)
+                    {
+                        out.push(Badge::Stale(e.brief()));
                     }
                 }
             },

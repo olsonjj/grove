@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 use crate::settings::{SettingsFile, write_atomic};
 use crate::snapshot::Snapshot;
 
-/// Bump when `Snapshot`'s shape changes; other versions are ignored, not migrated.
+/// Bump when `Snapshot` changes incompatibly; other versions are ignored, not migrated.
+/// New `#[serde(default)]` fields are compatible.
 const VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]

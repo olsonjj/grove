@@ -6,10 +6,10 @@
 
 **Status:** ready-for-agent
 
-- [ ] Fetch all runs `fetch --all --prune` per repo, concurrently, without blocking the UI
-- [ ] Ahead/behind and upstream gone refresh after fetch
-- [ ] Status bar shows last fetch time
-- [ ] Failure (offline, auth) → status line with repo and error; counts kept and marked stale
-- [ ] Background fetch: off by default; when on, every 15 min
-- [ ] No other git write commands anywhere
-- [ ] Core test: branch deleted on local bare remote shows "upstream gone" after fetch
+- [x] Fetch all runs `fetch --all --prune` per repo, concurrently, without blocking the UI
+- [x] Ahead/behind and upstream gone refresh after fetch
+- [x] Status bar shows last fetch time
+- [x] Failure (offline, auth) → status line with repo and error; counts kept and marked stale
+- [x] Background fetch: off by default; when on, every 15 min
+- [x] No other git write commands anywhere
+- [x] Core test: branch deleted on local bare remote shows "upstream gone" after fetch

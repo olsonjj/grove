@@ -12,6 +12,7 @@ use crate::watch::Changes;
 
 const MAX_PARALLEL_REPOS: usize = 8;
 const MAX_PARALLEL_READS: usize = 8;
+const MAX_PARALLEL_FETCHES: usize = 8;
 
 /// Everything Grove knows about the code directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +20,9 @@ pub struct Snapshot {
     pub code_dir: PathBuf,
     pub code_dir_exists: bool,
     pub repos: Vec<RepoSnapshot>,
+    /// When the last Fetch all finished, Unix seconds.
+    #[serde(default)]
+    pub last_fetch: Option<i64>,
 }
 
 impl Snapshot {
@@ -47,6 +51,9 @@ pub struct RepoSnapshot {
     /// Bare repos have only linked worktrees.
     pub worktrees: Vec<Worktree>,
     pub error: Option<GitError>,
+    /// The last fetch failed, so ahead/behind and upstream gone are as of an earlier one.
+    #[serde(default)]
+    pub fetch_error: Option<GitError>,
 }
 
 impl RepoSnapshot {
@@ -221,6 +228,80 @@ pub struct RepoResult {
     repo: RepoSnapshot,
 }
 
+/// `fetch --all --prune` for every repo, then a reread of every status; see
+/// `SnapshotStore::fetch_read`.
+#[derive(Debug, Clone)]
+pub struct FetchRead {
+    stamp: u64,
+    repos: Vec<RepoRef>,
+    statuses: StatusReads,
+}
+
+impl FetchRead {
+    /// Fetches every repo, at most `MAX_PARALLEL_FETCHES` at a time, then rereads every
+    /// status. Blocking; run off the UI thread and hand the result to
+    /// `SnapshotStore::apply_fetch`.
+    pub fn run(self) -> FetchResult {
+        let next = AtomicUsize::new(0);
+        let results = Mutex::new(Vec::with_capacity(self.repos.len()));
+        thread::scope(|s| {
+            for _ in 0..MAX_PARALLEL_FETCHES.min(self.repos.len()) {
+                s.spawn(|| {
+                    while let Some(repo) = self.repos.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        let result = git::fetch(&repo.path);
+                        results
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .push((repo.git_dir.clone(), result));
+                    }
+                });
+            }
+        });
+        let finished_at = crate::details::unix_now();
+        FetchResult {
+            stamp: self.stamp,
+            finished_at,
+            results: results.into_inner().unwrap_or_else(PoisonError::into_inner),
+            status_stamp: self.statuses.stamp,
+            statuses: self.statuses.collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchResult {
+    stamp: u64,
+    finished_at: i64,
+    /// By git dir.
+    results: Vec<(PathBuf, Result<(), GitError>)>,
+    status_stamp: u64,
+    statuses: HashMap<PathBuf, StatusResult>,
+}
+
+/// How a Fetch all went, for the status line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchReport {
+    pub fetched: usize,
+    /// Display name and error, in sidebar order.
+    pub failures: Vec<(String, GitError)>,
+}
+
+impl FetchReport {
+    pub fn message(&self) -> String {
+        let repos = |n| if n == 1 { "repo" } else { "repos" };
+        match self.failures.as_slice() {
+            [] => format!("Fetched {} {}", self.fetched, repos(self.fetched)),
+            [(name, e)] => format!("Fetch failed for {name}: {}", e.brief()),
+            [(name, e), rest @ ..] => format!(
+                "Fetch failed for {name}: {} (and {} more {})",
+                e.brief(),
+                rest.len(),
+                repos(rest.len())
+            ),
+        }
+    }
+}
+
 /// Builds a fresh snapshot: discovery plus each repo's worktrees (including ones outside
 /// `code_dir`). Blocking; run off the UI thread.
 pub fn scan(code_dir: &Path) -> Snapshot {
@@ -245,6 +326,7 @@ pub fn scan(code_dir: &Path) -> Snapshot {
         code_dir: code_dir.to_path_buf(),
         code_dir_exists,
         repos,
+        last_fetch: None,
     }
 }
 
@@ -292,6 +374,7 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
                 repo,
                 worktrees,
                 error: None,
+                fetch_error: None,
             }
         }
         Err(e) => RepoSnapshot {
@@ -299,6 +382,7 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
             repo,
             worktrees: Vec::new(),
             error: Some(e),
+            fetch_error: None,
         },
     }
 }
@@ -395,9 +479,11 @@ impl SnapshotStore {
                 };
                 continue;
             }
+            repo.fetch_error = current.and_then(|c| c.fetch_error.clone());
             self.merge_statuses(&mut repo.worktrees, stamp);
             self.repo_stamps.insert(git_dir, stamp);
         }
+        snapshot.last_fetch = self.snapshot.last_fetch;
         self.snapshot = Arc::new(snapshot);
         true
     }
@@ -441,7 +527,9 @@ impl SnapshotStore {
             return false;
         };
         self.merge_statuses(&mut repo.worktrees, stamp);
-        repo.display_name = self.snapshot.repos[i].display_name.clone();
+        let current = &self.snapshot.repos[i];
+        repo.display_name = current.display_name.clone();
+        repo.fetch_error = current.fetch_error.clone();
         self.repo_stamps.insert(git_dir, stamp);
         if self.snapshot.repos[i] == repo {
             return false;
@@ -456,6 +544,62 @@ impl SnapshotStore {
             Some(read) => self.apply_repo(read.run()),
             None => false,
         }
+    }
+
+    /// `fetch --all --prune` for every repo, then every status for the new ahead/behind
+    /// and upstream gone; run it off the UI thread and hand the result to `apply_fetch`.
+    /// The status reads are stamped now, so ones issued during the fetch win; if one of
+    /// those predates the fetch's ref updates, the watcher's reread on `refs/` fixes it.
+    pub fn fetch_read(&mut self) -> FetchRead {
+        FetchRead {
+            stamp: self.stamp(),
+            repos: self.snapshot.repos.iter().map(|r| r.repo.clone()).collect(),
+            statuses: self.status_reads(),
+        }
+    }
+
+    /// Records each repo's fetch outcome, the reread statuses, and the fetch time if any repo
+    /// fetched. A failed repo keeps its last-known counts, marked stale until a fetch
+    /// succeeds. `None` if it
+    /// predates a `replace`.
+    pub fn apply_fetch(&mut self, result: FetchResult) -> Option<FetchReport> {
+        if result.stamp <= self.floor {
+            return None;
+        }
+        for (path, status) in result.statuses {
+            self.apply_status(result.status_stamp, &path, status);
+        }
+        let mut outcomes: HashMap<PathBuf, Result<(), GitError>> =
+            result.results.into_iter().collect();
+        let snapshot = Arc::make_mut(&mut self.snapshot);
+        let mut report = FetchReport {
+            fetched: 0,
+            failures: Vec::new(),
+        };
+        for repo in &mut snapshot.repos {
+            match outcomes.remove(&repo.repo.git_dir) {
+                Some(Ok(())) => {
+                    report.fetched += 1;
+                    repo.fetch_error = None;
+                }
+                Some(Err(e)) => {
+                    report.failures.push((repo.display_name.clone(), e.clone()));
+                    repo.fetch_error = Some(e);
+                }
+                // Discovered since the fetch started.
+                None => {}
+            }
+        }
+        if report.fetched > 0 {
+            snapshot.last_fetch = Some(result.finished_at);
+        }
+        Some(report)
+    }
+
+    /// Fetches every repo, then rereads every status (blocking).
+    pub fn fetch_all(&mut self) -> Option<FetchReport> {
+        let result = self.fetch_read().run();
+        self.apply_fetch(result)
     }
 
     /// Statuses read at `stamp` lose to ones from later reads already stored.

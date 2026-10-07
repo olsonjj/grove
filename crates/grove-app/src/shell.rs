@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use global_hotkey::GlobalHotKeyManager;
 use gpui_kit::{AnyWindowHandle, App, AppContext, Global, WindowId};
 use grove_core::{
-    Changes, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, StatusReads, Watcher,
+    Changes, FetchReport, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore,
+    StatusReads, Watcher,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
@@ -22,6 +23,7 @@ const REOPEN_GUARD: Duration = Duration::from_millis(300);
 const RESCAN_GUARD: Duration = Duration::from_secs(2);
 /// Snapshot changes are written to the cache at most this often.
 const CACHE_DELAY: Duration = Duration::from_secs(2);
+const BACKGROUND_FETCH: Duration = Duration::from_secs(15 * 60);
 
 /// Settings and snapshot the windows render from. A global of its own so windows don't
 /// depend on the platform shell (tests set it alone).
@@ -41,6 +43,17 @@ pub struct Saves {
     issued: u64,
     written: Arc<Mutex<u64>>,
 }
+
+/// Fetch all's progress and outcome, for the status bar.
+#[derive(Default)]
+pub struct Fetcher {
+    pub running: bool,
+    /// Bumped per finished fetch, so windows show each report once.
+    pub finished: u64,
+    pub report: Option<FetchReport>,
+}
+
+impl Global for Fetcher {}
 
 /// Keeps the snapshot fresh: the watcher, full refreshes, and the on-disk cache.
 struct Live {
@@ -95,6 +108,7 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
         read_statuses(cx);
     }
     start_watching(cx);
+    start_background_fetch(cx);
     crate::launcher::install(cx);
     cx.set_global(Shell {
         _tray: tray,
@@ -192,6 +206,46 @@ fn rescan(cx: &mut App) {
                 snapshot_changed(cx);
             }
         });
+    })
+    .detach();
+}
+
+/// `git fetch --all --prune` in every repo, concurrently and off the UI thread, then
+/// rereads every status for the new ahead/behind and upstream gone. No-op while one runs.
+pub fn fetch_all(cx: &mut App) {
+    if !cx.has_global::<Library>() || cx.default_global::<Fetcher>().running {
+        return;
+    }
+    cx.global_mut::<Fetcher>().running = true;
+    let read = cx.global_mut::<Library>().store.fetch_read();
+    cx.spawn(async move |cx| {
+        let result = cx.background_spawn(async move { read.run() }).await;
+        cx.update(|cx| {
+            let report = cx.global_mut::<Library>().store.apply_fetch(result);
+            let fetcher = cx.global_mut::<Fetcher>();
+            fetcher.running = false;
+            let Some(report) = report else {
+                return;
+            };
+            fetcher.finished += 1;
+            fetcher.report = Some(report);
+            save_cache_soon(cx);
+        });
+    })
+    .detach();
+}
+
+/// Fetch all every 15 minutes while background fetch is on in settings.
+pub(crate) fn start_background_fetch(cx: &mut App) {
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(BACKGROUND_FETCH).await;
+            cx.update(|cx| {
+                if library(cx).settings.background_fetch {
+                    fetch_all(cx);
+                }
+            });
+        }
     })
     .detach();
 }

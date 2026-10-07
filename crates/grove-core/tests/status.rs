@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{Presence, RowId, Snapshot, SnapshotStore, Worktree};
+use grove_core::{Badge, Presence, RowId, Snapshot, SnapshotStore, Worktree};
 
 /// Store over the fixture's code dir with every worktree's status read.
 fn read(f: &Fixture) -> Snapshot {
@@ -21,12 +21,14 @@ fn worktree<'a>(s: &'a Snapshot, folder: &str) -> &'a Worktree {
         .unwrap_or_else(|| panic!("no worktree {folder} in {s:#?}"))
 }
 
+fn badge_list(s: &Snapshot, folder: &str) -> Vec<Badge> {
+    let wt = worktree(s, folder);
+    let repo = s.repos.iter().find(|r| r.worktrees.contains(wt)).unwrap();
+    repo.badges(wt)
+}
+
 fn badges(s: &Snapshot, folder: &str) -> Vec<String> {
-    worktree(s, folder)
-        .badges()
-        .iter()
-        .map(|b| b.label())
-        .collect()
+    badge_list(s, folder).iter().map(|b| b.label()).collect()
 }
 
 fn commit(dir: &Path, msg: &str) {
@@ -96,7 +98,7 @@ fn ahead_and_behind_local_bare_remote() {
 
     let s = read(&f);
     assert_eq!(badges(&s, "api"), ["main worktree", "↑1 ↓2"]);
-    let sync = &worktree(&s, "api").badges()[1];
+    let sync = &badge_list(&s, "api")[1];
     assert_eq!(sync.description(), "1 ahead, 2 behind origin/main");
 }
 
@@ -131,7 +133,7 @@ fn fork_tracks_branch_on_another_remote() {
     let s = read(&f);
     assert_eq!(badges(&s, "api-fork"), ["↑2"]);
     assert_eq!(
-        worktree(&s, "api-fork").badges()[0].description(),
+        badge_list(&s, "api-fork")[0].description(),
         "2 ahead of upstream/trunk"
     );
 }
@@ -202,7 +204,11 @@ fn deleted_folder_is_missing_and_not_openable() {
     assert_eq!(w.presence, Presence::Missing);
     assert!(w.status.is_none(), "no git call on a missing folder");
     assert_eq!(badges(&s, "api-x"), ["missing"]);
-    assert!(w.badges()[0].description().contains("git worktree prune"));
+    assert!(
+        badge_list(&s, "api-x")[0]
+            .description()
+            .contains("git worktree prune")
+    );
     let tree = s.repos[0].tree(&[]);
     let (_, presence) = tree.worktree_for(&RowId::Branch("x".into())).unwrap();
     assert!(!presence.is_openable());

@@ -2956,6 +2956,7 @@ dependencies = [
 name = "grove-core"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "notify 8.2.0",
  "serde",
  "serde_json",
