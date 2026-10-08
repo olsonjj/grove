@@ -295,8 +295,9 @@ fn build(
     if !detached.is_empty() {
         detached.sort_by(|a, b| {
             let (ta, tb) = (activity_time(a, last_opened), activity_time(b, last_opened));
-            by_activity(sort, ta, tb)
-                .then(b.is_main.cmp(&a.is_main))
+            b.is_main
+                .cmp(&a.is_main)
+                .then(by_activity(sort, ta, tb))
                 .then(a.path.cmp(&b.path))
         });
         tree.rows.push(Row {

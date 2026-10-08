@@ -465,14 +465,7 @@ impl Popover {
 
     fn list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let library = shell::library(cx);
-        let groups = menu(
-            library.store.snapshot(),
-            &library.settings.pinned_repos,
-            &library.settings.last_opened,
-            library.settings.repo_sort,
-            library.settings.tree_sort,
-            &library.settings.recents,
-        );
+        let groups = menu(library.store.snapshot(), &library.settings);
         let app = |role, fallback: &str| {
             launcher::target_name(role, cx).unwrap_or_else(|| fallback.to_string())
         };

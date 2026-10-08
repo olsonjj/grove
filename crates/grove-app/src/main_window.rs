@@ -2921,7 +2921,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        fake_launcher(cx, Ok(Outcome::Opened));
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
         let mut repo = canned();
         repo.worktrees[2].head_time = Some(1_600_000_000); // feature/y
         repo.worktrees[3].head_time = Some(1_700_000_000); // fix/z
@@ -2950,13 +2950,21 @@ mod tests {
         // The repo sort is separate.
         assert_eq!(file.load().unwrap().repo_sort, SortMode::Recent);
 
-        // From the keyboard.
+        // From the keyboard; keys meant for the menu never reach the tree.
         tab_to(cx, w, "tree-sort");
+        keys(cx, w, &["down"]);
+        assert_eq!(selected(cx), y);
+        keys(cx, w, &["up"]);
+        assert_eq!(selected(cx), y);
         keys(cx, w, &["enter", "down", "enter"]);
         assert!(!found(cx, w, "tree-sort-menu"));
         assert_eq!(tree_branches(cx, &main), by_name);
         assert_eq!(selected(cx), y);
         assert_eq!(file.load().unwrap().tree_sort, SortMode::Name);
+        keys(cx, w, &["enter", "escape"]);
+        assert!(!found(cx, w, "tree-sort-menu"));
+        assert_eq!(selected(cx), y);
+        assert!(launches.lock().unwrap().is_empty());
     }
 
     #[gpui_kit::test]

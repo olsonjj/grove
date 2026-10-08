@@ -4,10 +4,10 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::badge::Badge;
-use crate::order::{activity_time, by_activity, repo_order};
-use crate::settings::{LastOpened, SortMode};
+use crate::order::repo_order;
+use crate::settings::Settings;
 use crate::snapshot::{Presence, RepoSnapshot, Snapshot, Worktree};
-use crate::tree::by_name;
+use crate::tree::RowKind;
 
 /// One repo's worktrees in the popover.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,44 +37,37 @@ pub struct StateLine {
     pub changed: Option<Range<usize>>,
 }
 
-/// Every repo with worktrees, in `repo_order` (`pinned` first, the rest by `repo_sort`).
-/// Within a repo: the main worktree, then branched worktrees, then detached ones, each by
-/// `tree_sort` (ties: branch name, or path when detached). `recents[0]` is marked
-/// `last_opened`.
-pub fn menu(
-    snapshot: &Snapshot,
-    pinned: &[PathBuf],
-    last_opened: &LastOpened,
-    repo_sort: SortMode,
-    tree_sort: SortMode,
-    recents: &[PathBuf],
-) -> Vec<MenuGroup> {
-    let last = recents.first().map(PathBuf::as_path);
-    repo_order(snapshot, pinned, last_opened, repo_sort)
-        .iter()
-        .filter(|r| !r.worktrees.is_empty())
-        .map(|repo| {
-            let mut wts: Vec<&Worktree> = repo.worktrees.iter().collect();
-            wts.sort_by(|a, b| {
-                b.is_main
-                    .cmp(&a.is_main)
-                    .then(a.branch.is_none().cmp(&b.branch.is_none()))
-                    .then_with(|| {
-                        let (ta, tb) =
-                            (activity_time(a, last_opened), activity_time(b, last_opened));
-                        by_activity(tree_sort, ta, tb)
-                    })
-                    .then_with(|| match (&a.branch, &b.branch) {
-                        (Some(x), Some(y)) => by_name(x, y),
-                        _ => a.path.cmp(&b.path),
-                    })
-            });
-            MenuGroup {
-                repo: repo.display_name.clone(),
-                rows: wts.into_iter().map(|wt| row(repo, wt, last)).collect(),
-            }
-        })
-        .collect()
+/// Every repo with worktrees, in `repo_order` (pinned first, the rest by `repo_sort`).
+/// Within a repo, worktrees are in the tree's order under `tree_sort`, folders expanded.
+/// `recents[0]` is marked `last_opened`.
+pub fn menu(snapshot: &Snapshot, settings: &Settings) -> Vec<MenuGroup> {
+    let last = settings.recents.first().map(PathBuf::as_path);
+    let last_opened = &settings.last_opened;
+    repo_order(
+        snapshot,
+        &settings.pinned_repos,
+        last_opened,
+        settings.repo_sort,
+    )
+    .iter()
+    .filter(|r| !r.worktrees.is_empty())
+    .map(|repo| {
+        let tree = repo.tree(&[], settings.tree_sort, last_opened);
+        let rows = tree
+            .rows
+            .iter()
+            .filter_map(|r| match &r.kind {
+                RowKind::Worktree { path, .. } => repo.worktrees.iter().find(|w| &w.path == path),
+                _ => None,
+            })
+            .map(|wt| row(repo, wt, last))
+            .collect();
+        MenuGroup {
+            repo: repo.display_name.clone(),
+            rows,
+        }
+    })
+    .collect()
 }
 
 fn row(repo: &RepoSnapshot, wt: &Worktree, last: Option<&Path>) -> MenuRow {

@@ -410,6 +410,35 @@ fn recent_orders_folders_and_branches_by_activity() {
 }
 
 #[test]
+fn recent_nested_branch_lifts_its_folder() {
+    let f = Fixture::new();
+    prefixed_repo(&f);
+    let api = f.code().join("api");
+    add_worktree(&api, &f.code().join("wt/api-auth"), "feature/auth/x");
+    let s = f.scan();
+    let at = opened(&s, &[("api-auth", 500), ("api-plain", 300)]);
+    assert_eq!(
+        shape(&tree_sorted(&s, "api", &[], SortMode::Recent, &at)),
+        [
+            "branch main",
+            "  wt api [main worktree]",
+            "▾ feature/ 3",
+            "  branch auth/x",
+            "    wt api-auth",
+            "  branch a",
+            "    wt api-a",
+            "  branch b",
+            "    wt api-b",
+            "branch plain",
+            "  wt api-plain",
+            "▾ fix/ 1",
+            "  branch c",
+            "    wt api-c",
+        ]
+    );
+}
+
+#[test]
 fn recent_ties_and_unknown_go_by_name() {
     let f = Fixture::new();
     let repo = init_repo(&f.code().join("zed"));
@@ -484,6 +513,23 @@ fn recent_orders_detached_by_activity_and_keeps_the_section_last() {
             "wt api-d1",
         ]
     );
+}
+
+#[test]
+fn recent_keeps_a_detached_main_worktree_first_in_its_section() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let d1 = f.code().join("api-d1");
+    git(
+        &api,
+        &["worktree", "add", "-q", "--detach", d1.to_str().unwrap()],
+    );
+    git(&api, &["checkout", "-q", "--detach"]);
+    let s = f.scan();
+    let at = opened(&s, &[("api-d1", 900)]);
+    let rows = shape(&tree_sorted(&s, "api", &[], SortMode::Recent, &at));
+    let names: Vec<_> = rows.iter().map(|r| r.split(" [").next().unwrap()).collect();
+    assert_eq!(names, ["-- detached --", "wt api", "wt api-d1"]);
 }
 
 #[test]

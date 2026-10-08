@@ -150,17 +150,25 @@ impl TreeView {
         cx.notify();
     }
 
-    /// Keeps a moved selection in view.
+    /// Keeps a moved selection in view, unless the user had scrolled away from it.
     fn rebuild(&mut self) {
         let selected_ix = |tree: &Tree| self.selected.as_ref().and_then(|id| tree.index_of(id));
-        let before = selected_ix(&self.tree);
+        let (viewport, dy) = (self.scroll.bounds(), self.scroll.offset().y);
+        // Item bounds are unscrolled.
+        let before = selected_ix(&self.tree).filter(|&ix| {
+            self.scroll.bounds_for_item(ix).is_some_and(|b| {
+                b.bottom() + dy > viewport.top() && b.top() + dy < viewport.bottom()
+            })
+        });
         self.tree = self
             .repo
             .as_ref()
             .map(|r| r.tree(&self.collapsed, self.sort, &self.last_opened))
             .unwrap_or_default();
         let after = selected_ix(&self.tree);
-        if let Some(ix) = after.filter(|_| after != before) {
+        if let (Some(before), Some(ix)) = (before, after)
+            && before != ix
+        {
             self.scroll.scroll_to_item(ix);
         }
     }
@@ -206,9 +214,10 @@ impl TreeView {
         });
     }
 
-    fn on_key(&mut self, ev: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
-        if m.control || m.alt || m.shift {
+        // Not keys bubbling up from the header's sort menu.
+        if !self.focus.is_focused(window) || m.control || m.alt || m.shift {
             return;
         }
         if m.platform {
@@ -896,6 +905,34 @@ mod tests {
         );
         assert!(row_in_view(cx, w, last_branch));
         assert!(!row_in_view(cx, w, 2));
+    }
+
+    #[gpui_kit::test]
+    fn reorder_leaves_the_view_alone_when_scrolled_away(cx: &mut TestAppContext) {
+        let (w, view) = open(cx, &[]);
+        cx.update_window(w, |_, window, cx| {
+            window.resize(size(px(720.), px(320.)));
+            view.update(cx, |v, cx| v.set_repo(Some(long_repo()), Vec::new(), cx));
+        })
+        .unwrap();
+        press(cx, w, &["down", "down"]);
+        assert_eq!(selected(cx, &view), branch("b00"));
+        view.read_with(cx, |v, _| v.scroll.scroll_to_bottom());
+        let last = 1 + 2 * 40;
+        assert!(row_in_view(cx, w, last));
+        assert!(!row_in_view(cx, w, 2));
+
+        // b01 moves above b00; b00 is still off screen, so nothing scrolls.
+        let opened = LastOpened::from([(PathBuf::from("/c/wt/b01"), 1_700_000_000)]);
+        cx.update_window(w, |_, _, cx| {
+            view.update(cx, |v, cx| v.set_order(SortMode::Recent, opened, cx))
+        })
+        .unwrap();
+        assert_eq!(
+            view.read_with(cx, |v, _| v.tree().index_of(&RowId::Branch("b00".into()))),
+            Some(4)
+        );
+        assert!(row_in_view(cx, w, last));
     }
 
     #[gpui_kit::test]

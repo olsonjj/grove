@@ -7,8 +7,18 @@ use std::path::{Path, PathBuf};
 
 use common::{Fixture, add_worktree, commit_at, git, init_repo};
 use grove_core::{
-    LastOpened, MenuRow, Presence, Snapshot, SnapshotStore, SortMode, StateLine, menu,
+    LastOpened, MenuRow, Presence, RowKind, Settings, Snapshot, SnapshotStore, SortMode, StateLine,
+    menu,
 };
+
+/// Nothing pinned, opened or recent; both lists by name.
+fn by_name() -> Settings {
+    Settings {
+        repo_sort: SortMode::Name,
+        tree_sort: SortMode::Name,
+        ..Default::default()
+    }
+}
 
 fn store(f: &Fixture) -> SnapshotStore {
     let mut store = SnapshotStore::new(&f.code());
@@ -18,18 +28,11 @@ fn store(f: &Fixture) -> SnapshotStore {
 
 /// The popover row of the worktree in folder `folder`.
 fn row(s: &Snapshot, folder: &str) -> MenuRow {
-    menu(
-        s,
-        &[],
-        &LastOpened::new(),
-        SortMode::Name,
-        SortMode::Name,
-        &[],
-    )
-    .into_iter()
-    .flat_map(|g| g.rows)
-    .find(|r| r.path.file_name().is_some_and(|n| n == folder))
-    .unwrap_or_else(|| panic!("no row {folder} in {s:#?}"))
+    menu(s, &by_name())
+        .into_iter()
+        .flat_map(|g| g.rows)
+        .find(|r| r.path.file_name().is_some_and(|n| n == folder))
+        .unwrap_or_else(|| panic!("no row {folder} in {s:#?}"))
 }
 
 fn line(s: &Snapshot, folder: &str) -> StateLine {
@@ -278,11 +281,10 @@ fn groups_by_repo_main_first_then_branches_then_detached_and_marks_last_opened()
 
     let groups = menu(
         s,
-        &[],
-        &LastOpened::new(),
-        SortMode::Name,
-        SortMode::Name,
-        &[recent, PathBuf::from("/elsewhere")],
+        &Settings {
+            recents: vec![recent, PathBuf::from("/elsewhere")],
+            ..by_name()
+        },
     );
     let shape: Vec<(String, Vec<(String, bool)>)> = groups
         .iter()
@@ -323,17 +325,11 @@ fn pinned_repos_groups_come_first() {
         s.repo("web").unwrap().repo.path.clone(),
         PathBuf::from("/gone"),
     ];
-    let repos: Vec<String> = menu(
-        &s,
-        &pinned,
-        &LastOpened::new(),
-        SortMode::Name,
-        SortMode::Name,
-        &[],
-    )
-    .into_iter()
-    .map(|g| g.repo)
-    .collect();
+    let settings = Settings {
+        pinned_repos: pinned.to_vec(),
+        ..by_name()
+    };
+    let repos: Vec<String> = menu(&s, &settings).into_iter().map(|g| g.repo).collect();
     assert_eq!(repos, ["web", "zeta", "api", "beta"]);
 }
 
@@ -349,10 +345,13 @@ fn groups_follow_repo_sort_after_pins() {
     let s = store(&f).snapshot().clone();
     let pinned = [s.repo("api").unwrap().repo.path.clone()];
     let repos = |opened: &LastOpened, sort| -> Vec<String> {
-        menu(&s, &pinned, opened, sort, SortMode::Name, &[])
-            .into_iter()
-            .map(|g| g.repo)
-            .collect()
+        let settings = Settings {
+            pinned_repos: pinned.to_vec(),
+            last_opened: opened.clone(),
+            repo_sort: sort,
+            ..by_name()
+        };
+        menu(&s, &settings).into_iter().map(|g| g.repo).collect()
     };
     let none = LastOpened::new();
     assert_eq!(
@@ -400,7 +399,12 @@ fn worktrees_within_a_group_follow_tree_sort() {
         (path("bisect2"), 900),
     ]);
     let rows = |tree_sort| -> Vec<String> {
-        menu(&s, &[], &opened, SortMode::Name, tree_sort, &[])
+        let settings = Settings {
+            last_opened: opened.clone(),
+            tree_sort,
+            ..by_name()
+        };
+        menu(&s, &settings)
             .into_iter()
             .flat_map(|g| g.rows)
             .map(|r| r.name)
@@ -415,4 +419,68 @@ fn worktrees_within_a_group_follow_tree_sort() {
         rows(SortMode::Name),
         ["main", "Alpha", "beta", "zeta", "bisect", "bisect2"]
     );
+}
+
+#[test]
+fn worktrees_within_a_group_match_the_tree() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    add_worktree(&api, &f.code().join("wt-a"), "feature/a");
+    add_worktree(&api, &f.code().join("wt-b"), "feature/b");
+    add_worktree(&api, &f.code().join("wt-c"), "c");
+    let d1 = f.code().join("d1");
+    git(
+        &api,
+        &["worktree", "add", "-q", "--detach", d1.to_str().unwrap()],
+    );
+    // The main worktree detached too.
+    git(&api, &["checkout", "-q", "--detach"]);
+    let s = f.scan();
+    let path = |folder: &str| {
+        s.repos[0]
+            .worktrees
+            .iter()
+            .find(|w| w.path.ends_with(folder))
+            .unwrap()
+            .path
+            .clone()
+    };
+    let opened = LastOpened::from([
+        (path("wt-a"), 10),
+        (path("wt-b"), 1),
+        (path("wt-c"), 5),
+        (path("d1"), 20),
+    ]);
+    let rows = |tree_sort| -> Vec<String> {
+        let settings = Settings {
+            last_opened: opened.clone(),
+            tree_sort,
+            ..by_name()
+        };
+        let popover: Vec<PathBuf> = menu(&s, &settings)
+            .into_iter()
+            .flat_map(|g| g.rows)
+            .map(|r| r.path)
+            .collect();
+        let tree: Vec<PathBuf> = s.repos[0]
+            .tree(&[], tree_sort, &opened)
+            .rows
+            .into_iter()
+            .filter_map(|r| match r.kind {
+                RowKind::Worktree { path, .. } => Some(path),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(popover, tree, "{tree_sort:?}");
+        popover
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    };
+    // The folder is as active as feature/a; the detached main worktree stays first.
+    assert_eq!(
+        rows(SortMode::Recent),
+        ["wt-a", "wt-b", "wt-c", "api", "d1"]
+    );
+    assert_eq!(rows(SortMode::Name), ["wt-c", "wt-a", "wt-b", "api", "d1"]);
 }
