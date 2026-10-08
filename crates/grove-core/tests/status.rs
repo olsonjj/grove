@@ -3,8 +3,10 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{Badge, Presence, RowId, Snapshot, SnapshotStore, Worktree};
+use common::{Fixture, add_worktree, commit_at, git, init_repo};
+use grove_core::{
+    Badge, GitError, Presence, RowId, Snapshot, SnapshotStore, Worktree, WorktreeStatus,
+};
 
 /// Store over the fixture's code dir with every worktree's status read.
 fn read(f: &Fixture) -> Snapshot {
@@ -385,4 +387,94 @@ fn status_reads_never_write_the_index() {
 fn index_state(path: &Path) -> (Vec<u8>, std::time::SystemTime) {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     (bytes, fs::metadata(path).unwrap().modified().unwrap())
+}
+
+#[test]
+fn commit_advances_head_time() {
+    let f = Fixture::new();
+    let api = f.code().join("api");
+    fs::create_dir_all(&api).unwrap();
+    git(&api, &["init", "-q"]);
+    assert_eq!(worktree(&read(&f), "api").head_time, None, "unborn");
+
+    commit_at(&api, 1_700_000_000);
+    let wt = f.code().join("api-x");
+    add_worktree(&api, &wt, "x");
+    commit_at(&wt, 1_700_000_500);
+    let s = read(&f);
+    assert_eq!(worktree(&s, "api").head_time, Some(1_700_000_000));
+    assert_eq!(worktree(&s, "api-x").head_time, Some(1_700_000_500));
+
+    commit_at(&api, 1_700_001_000);
+    assert_eq!(worktree(&read(&f), "api").head_time, Some(1_700_001_000));
+}
+
+#[test]
+fn reads_that_cant_date_head_keep_its_last_time_until_it_moves() {
+    let f = Fixture::new();
+    let api = f.code().join("api");
+    fs::create_dir_all(&api).unwrap();
+    git(&api, &["init", "-q"]);
+    commit_at(&api, 1_700_000_000);
+    let mut store = SnapshotStore::new(&f.code());
+    store.refresh_statuses();
+    let head_time = |store: &SnapshotStore| worktree(store.snapshot(), "api").head_time;
+    let wt = worktree(store.snapshot(), "api").clone();
+    let (api, Some(Ok(read))) = (wt.path, wt.status) else {
+        panic!("status not read");
+    };
+    let mut land = |status| {
+        let stamp = store.status_reads().stamp();
+        store.apply_status(stamp, &api, status);
+        head_time(&store)
+    };
+    let undated = |head: Option<&str>| {
+        Ok(WorktreeStatus {
+            head: head.map(str::to_string),
+            head_time: None,
+            ..read.clone()
+        })
+    };
+    let timeout = || {
+        Err(GitError::Timeout {
+            args: "status".into(),
+        })
+    };
+
+    // `git log` timed out on the same commit; then status itself timed out.
+    assert_eq!(land(undated(read.head.as_deref())), Some(1_700_000_000));
+    assert_eq!(land(timeout()), Some(1_700_000_000));
+    // HEAD moved but couldn't be dated: unknown, not the old time.
+    assert_eq!(land(Ok(read.clone())), Some(1_700_000_000));
+    assert_eq!(land(undated(Some("0123abc"))), None);
+    assert_eq!(land(timeout()), None);
+
+    store.refresh_statuses();
+    assert_eq!(head_time(&store), Some(1_700_000_000));
+    store.set_presence(&api, Presence::Missing);
+    assert_eq!(head_time(&store), None, "missing");
+}
+
+#[test]
+fn repo_and_full_rereads_keep_head_time_when_status_fails() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let wt = f.code().join("api-x");
+    add_worktree(&api, &wt, "x");
+    commit_at(&wt, 1_700_000_500);
+    let mut store = SnapshotStore::new(&f.code());
+    store.refresh_statuses();
+    let x = |store: &SnapshotStore| worktree(store.snapshot(), "api-x").clone();
+    assert_eq!(x(&store).head_time, Some(1_700_000_500));
+
+    // The worktree's `.git` file points nowhere, so `git status` in it fails.
+    fs::write(wt.join(".git"), "gitdir: /nowhere\n").unwrap();
+    let git_dir = store.snapshot().repos[0].repo.git_dir.clone();
+    assert!(store.refresh_repo(&git_dir));
+    assert!(matches!(x(&store).status, Some(Err(_))));
+    assert_eq!(x(&store).head_time, Some(1_700_000_500));
+
+    store.refresh_all();
+    assert!(matches!(x(&store).status, Some(Err(_))));
+    assert_eq!(x(&store).head_time, Some(1_700_000_500));
 }

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Fixture, add_worktree, git, init_repo};
+use common::{Fixture, add_worktree, commit_at, git, init_repo};
 use grove_core::{Changes, Presence, Snapshot, SnapshotStore, Watcher, Worktree};
 
 const FRESH: Duration = Duration::from_secs(2);
@@ -186,6 +186,18 @@ fn detaching_a_worktree_moves_it() {
     let live = Live::start(&f);
     git(&wt, &["switch", "-q", "--detach"]);
     live.within_2s("detach", |s| find(s, "api-x").is_some_and(|w| w.detached));
+}
+
+#[test]
+fn commit_updates_head_time() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let live = Live::start(&f);
+    assert!(find(&live.snapshot(), "api").unwrap().head_time.is_some());
+    commit_at(&api, 2_000_000_000);
+    live.within_2s("commit", |s| {
+        find(s, "api").and_then(|w| w.head_time) == Some(2_000_000_000)
+    });
 }
 
 #[test]

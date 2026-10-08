@@ -30,9 +30,9 @@ pub struct Notice {
 
 gpui_kit::actions!(details, [LeaveMenu, LeaveMenuBack]);
 
-const MENU_CONTEXT: &str = "OpenWithMenu";
+pub(crate) const MENU_CONTEXT: &str = "OpenWithMenu";
 
-/// Tab out of an open ▾ menu closes it; this context outranks the window's own Tab.
+/// Tab out of an open menu (▾, a repo's context menu) closes it; this context outranks the window's own Tab.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", LeaveMenu, Some(MENU_CONTEXT)),

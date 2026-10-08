@@ -30,6 +30,10 @@ pub struct Settings {
     pub recents: Vec<PathBuf>,
     /// Repo name → collapsed prefix folders.
     pub collapsed: BTreeMap<String, Vec<String>>,
+    /// `RepoRef::path`s. Kept while a repo is absent, so it comes back pinned.
+    pub pinned_repos: Vec<PathBuf>,
+    /// Order of the sidebar's unpinned repos and the popover's groups.
+    pub repo_sort: SortMode,
     pub last_selected_repo: Option<String>,
 }
 
@@ -47,13 +51,15 @@ impl Default for Settings {
             login_item_path: None,
             recents: Vec::new(),
             collapsed: BTreeMap::new(),
+            pinned_repos: Vec::new(),
+            repo_sort: SortMode::Recent,
             last_selected_repo: None,
         }
     }
 }
 
-/// What the settings window edits. The rest of `Settings` (recents, collapse state, the
-/// login item's owner) keeps changing underneath it while it's open.
+/// What the settings window edits. The rest of `Settings` (recents, collapse state, pins,
+/// sort modes, the login item's owner) keeps changing underneath it while it's open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preferences {
     pub code_dir: Option<PathBuf>,
@@ -212,6 +218,25 @@ impl Settings {
         had != collapsed
     }
 
+    pub fn is_pinned(&self, repo: &Path) -> bool {
+        self.pinned_repos.iter().any(|p| p == repo)
+    }
+
+    /// Pins or unpins the repo at `repo`. Returns whether anything changed.
+    pub fn toggle_pin(&mut self, repo: &Path) -> bool {
+        if self.is_pinned(repo) {
+            self.pinned_repos.retain(|p| p != repo);
+        } else {
+            self.pinned_repos.push(repo.to_path_buf());
+        }
+        true
+    }
+
+    /// Returns whether anything changed.
+    pub fn set_repo_sort(&mut self, mode: SortMode) -> bool {
+        std::mem::replace(&mut self.repo_sort, mode) != mode
+    }
+
     /// Moves `worktree` to the front of recents. Returns whether anything changed.
     pub fn record_open(&mut self, worktree: &Path) -> bool {
         if self.recents.first().is_some_and(|p| p == worktree) {
@@ -221,6 +246,26 @@ impl Settings {
         self.recents.insert(0, worktree.to_path_buf());
         self.recents.truncate(MAX_RECENTS);
         true
+    }
+}
+
+/// How a list is ordered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortMode {
+    /// Newest activity first; ties and unknown activity by name, unknown last.
+    #[default]
+    Recent,
+    /// Alphabetical.
+    Name,
+}
+
+impl SortMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Recent => "Recent",
+            Self::Name => "Name",
+        }
     }
 }
 

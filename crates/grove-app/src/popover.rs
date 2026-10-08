@@ -465,7 +465,12 @@ impl Popover {
 
     fn list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let library = shell::library(cx);
-        let groups = menu(library.store.snapshot(), &library.settings.recents);
+        let groups = menu(
+            library.store.snapshot(),
+            &library.settings.pinned_repos,
+            library.settings.repo_sort,
+            &library.settings.recents,
+        );
         let app = |role, fallback: &str| {
             launcher::target_name(role, cx).unwrap_or_else(|| fallback.to_string())
         };
@@ -1029,7 +1034,12 @@ mod tests {
             store.apply_status(
                 stamp,
                 Path::new("/c/wt/api-x"),
-                Ok(WorktreeStatus { files, upstream }),
+                Ok(WorktreeStatus {
+                    files,
+                    upstream,
+                    head: None,
+                    head_time: None,
+                }),
             );
         });
         cx.run_until_parked();

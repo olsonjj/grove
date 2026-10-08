@@ -5,8 +5,8 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{MenuRow, Presence, Snapshot, SnapshotStore, StateLine, menu};
+use common::{Fixture, add_worktree, commit_at, git, init_repo};
+use grove_core::{MenuRow, Presence, Snapshot, SnapshotStore, SortMode, StateLine, menu};
 
 fn store(f: &Fixture) -> SnapshotStore {
     let mut store = SnapshotStore::new(&f.code());
@@ -16,7 +16,7 @@ fn store(f: &Fixture) -> SnapshotStore {
 
 /// The popover row of the worktree in folder `folder`.
 fn row(s: &Snapshot, folder: &str) -> MenuRow {
-    menu(s, &[])
+    menu(s, &[], SortMode::Name, &[])
         .into_iter()
         .flat_map(|g| g.rows)
         .find(|r| r.path.file_name().is_some_and(|n| n == folder))
@@ -267,7 +267,12 @@ fn groups_by_repo_main_first_then_branches_then_detached_and_marks_last_opened()
         .path
         .clone();
 
-    let groups = menu(s, &[recent, PathBuf::from("/elsewhere")]);
+    let groups = menu(
+        s,
+        &[],
+        SortMode::Name,
+        &[recent, PathBuf::from("/elsewhere")],
+    );
     let shape: Vec<(String, Vec<(String, bool)>)> = groups
         .iter()
         .map(|g| {
@@ -293,4 +298,44 @@ fn groups_by_repo_main_first_then_branches_then_detached_and_marks_last_opened()
             ("web".to_string(), rows(&[("main", false)])),
         ]
     );
+}
+
+#[test]
+fn pinned_repos_groups_come_first() {
+    let f = Fixture::new();
+    for name in ["api", "beta", "web", "zeta"] {
+        init_repo(&f.code().join(name));
+    }
+    let s = f.scan();
+    let pinned = [
+        s.repo("zeta").unwrap().repo.path.clone(),
+        s.repo("web").unwrap().repo.path.clone(),
+        PathBuf::from("/gone"),
+    ];
+    let repos: Vec<String> = menu(&s, &pinned, SortMode::Name, &[])
+        .into_iter()
+        .map(|g| g.repo)
+        .collect();
+    assert_eq!(repos, ["web", "zeta", "api", "beta"]);
+}
+
+#[test]
+fn groups_follow_repo_sort_after_pins() {
+    let f = Fixture::new();
+    for (name, at) in [("api", 100), ("beta", 300), ("web", 200), ("zeta", 400)] {
+        let path = f.code().join(name);
+        fs::create_dir_all(&path).unwrap();
+        git(&path, &["init", "-q"]);
+        commit_at(&path, 1_700_000_000 + at);
+    }
+    let s = store(&f).snapshot().clone();
+    let pinned = [s.repo("api").unwrap().repo.path.clone()];
+    let repos = |sort| -> Vec<String> {
+        menu(&s, &pinned, sort, &[])
+            .into_iter()
+            .map(|g| g.repo)
+            .collect()
+    };
+    assert_eq!(repos(SortMode::Recent), ["api", "zeta", "beta", "web"]);
+    assert_eq!(repos(SortMode::Name), ["api", "beta", "web", "zeta"]);
 }

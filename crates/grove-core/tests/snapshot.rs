@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use common::{Fixture, add_worktree, git, init_repo};
 use grove_core::{
-    MAX_RECENTS, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, scan,
+    MAX_RECENTS, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore, SortMode, scan,
 };
 use tempfile::TempDir;
 
@@ -182,8 +182,13 @@ fn settings_round_trip() {
         ..Default::default()
     };
     s.collapsed.insert("api".into(), vec!["feature/".into()]);
+    s.toggle_pin(&tmp.path().join("code/api"));
+    assert!(s.set_repo_sort(SortMode::Name));
+    assert!(!s.set_repo_sort(SortMode::Name));
     file.save(&s).unwrap();
     assert_eq!(file.load().unwrap(), s);
+    let json = fs::read_to_string(file.path()).unwrap();
+    assert!(json.contains(r#""repo_sort": "name""#), "{json}");
 }
 
 #[test]
@@ -194,6 +199,27 @@ fn settings_tolerate_missing_fields() {
     let s = SettingsFile::new(&path).load().unwrap();
     assert_eq!(s.code_dir, Some(PathBuf::from("/x")));
     assert!(s.show_menu_bar_icon && s.launch_at_login && !s.background_fetch);
+    assert!(s.pinned_repos.is_empty());
+    assert_eq!(s.repo_sort, SortMode::Recent);
+}
+
+#[test]
+fn pin_and_unpin_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    let file = SettingsFile::new(tmp.path().join("settings.json"));
+    let (api, web) = (PathBuf::from("/c/api"), PathBuf::from("/c/web"));
+    let mut s = Settings::default();
+    assert!(s.toggle_pin(&api));
+    assert!(s.toggle_pin(&web));
+    file.save(&s).unwrap();
+    let mut s = file.load().unwrap();
+    assert!(s.is_pinned(&api) && s.is_pinned(&web));
+
+    assert!(s.toggle_pin(&api));
+    file.save(&s).unwrap();
+    let s = file.load().unwrap();
+    assert!(!s.is_pinned(&api));
+    assert_eq!(s.pinned_repos, [web]);
 }
 
 #[test]
@@ -245,10 +271,14 @@ fn settings_save_keeps_what_changed_while_the_window_was_open() {
     edited.code_dir = Some("/code/acme".into());
     s.record_open(&PathBuf::from("/w/api"));
     s.set_collapsed("api", "fix/", true);
+    s.toggle_pin(&PathBuf::from("/w/api"));
+    s.set_repo_sort(SortMode::Name);
     s.set_preferences(edited.clone());
     assert_eq!(s.preferences(), edited);
     assert_eq!(s.recents, [PathBuf::from("/w/api")]);
     assert_eq!(s.collapsed("api"), ["fix/"]);
+    assert_eq!(s.pinned_repos, [PathBuf::from("/w/api")]);
+    assert_eq!(s.repo_sort, SortMode::Name);
 }
 
 #[test]
@@ -291,6 +321,49 @@ fn snapshot_cache_round_trips_with_statuses() {
         cache.load(&f.code()).as_ref(),
         Some(store.snapshot().as_ref())
     );
+}
+
+#[test]
+fn snapshot_cache_keeps_head_times_and_loads_without_them() {
+    let f = Fixture::new();
+    init_repo(&f.code().join("api"));
+    let mut store = SnapshotStore::new(&f.code());
+    store.refresh_statuses();
+    let cache = SnapshotCache::new(f.tmp.path().join("snapshot.json"));
+    cache.save(store.snapshot()).unwrap();
+    let head_time = |s: &Snapshot| s.repos[0].worktrees[0].head_time;
+    let cached = cache.load(&f.code()).unwrap();
+    assert!(head_time(&cached).is_some());
+    assert_eq!(head_time(&cached), head_time(store.snapshot()));
+
+    // As written before HEAD and its time were read.
+    let json = fs::read_to_string(cache.path()).unwrap();
+    let no_time = without_field(&json, r#","head_time":"#);
+    let old = without_field(&no_time, r#","head":"#);
+    assert_ne!(no_time, json);
+    assert_ne!(old, no_time);
+    fs::write(cache.path(), old).unwrap();
+    let cached = cache.load(&f.code()).expect("old cache loads");
+    assert_eq!(head_time(&cached), None);
+    let Some(Ok(status)) = &cached.repos[0].worktrees[0].status else {
+        panic!("status not cached");
+    };
+    assert_eq!((status.head.as_deref(), status.head_time), (None, None));
+}
+
+/// `json` without each `<key><number or string>` field.
+fn without_field(json: &str, key: &str) -> String {
+    let mut out = String::new();
+    let mut rest = json;
+    while let Some(at) = rest.find(key) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at + key.len()..];
+        rest = match rest.strip_prefix('"') {
+            Some(s) => &s[s.find('"').unwrap() + 1..],
+            None => rest.trim_start_matches(|c: char| c.is_ascii_digit()),
+        };
+    }
+    out + rest
 }
 
 #[test]

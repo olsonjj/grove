@@ -4,6 +4,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::badge::Badge;
+use crate::order::repo_order;
+use crate::settings::SortMode;
 use crate::snapshot::{Presence, RepoSnapshot, Snapshot, Worktree};
 use crate::tree::by_name;
 
@@ -35,13 +37,17 @@ pub struct StateLine {
     pub changed: Option<Range<usize>>,
 }
 
-/// Every repo with worktrees, in snapshot order. Within a repo: the main worktree, then
-/// branches alphabetically, then detached worktrees by path. `recents[0]` is marked
-/// `last_opened`.
-pub fn menu(snapshot: &Snapshot, recents: &[PathBuf]) -> Vec<MenuGroup> {
+/// Every repo with worktrees, in `repo_order` (`pinned` first, the rest by `repo_sort`).
+/// Within a repo: the main worktree, then branches alphabetically, then detached worktrees
+/// by path. `recents[0]` is marked `last_opened`.
+pub fn menu(
+    snapshot: &Snapshot,
+    pinned: &[PathBuf],
+    repo_sort: SortMode,
+    recents: &[PathBuf],
+) -> Vec<MenuGroup> {
     let last = recents.first().map(PathBuf::as_path);
-    snapshot
-        .repos
+    repo_order(snapshot, pinned, repo_sort)
         .iter()
         .filter(|r| !r.worktrees.is_empty())
         .map(|repo| {

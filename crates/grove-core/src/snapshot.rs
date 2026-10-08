@@ -80,6 +80,26 @@ pub struct Worktree {
     pub presence: Presence,
     /// `None` until read (and never for a folder that isn't present).
     pub status: Option<StatusResult>,
+    /// HEAD's committer time, Unix seconds, from the status reads; `None` until known, on an
+    /// unborn branch, and for a folder that isn't present.
+    #[serde(default)]
+    pub head_time: Option<i64>,
+}
+
+/// HEAD's time after `status` replaces `prev`. A read that couldn't date HEAD keeps the last
+/// time while HEAD may not have moved: the read failed, or found the same commit.
+fn head_time_after(status: &StatusResult, prev: Option<&Worktree>) -> Option<i64> {
+    let prev_time = prev.and_then(|p| p.head_time);
+    let prev_head = match prev.and_then(|p| p.status.as_ref()) {
+        Some(Ok(s)) => s.head.as_deref(),
+        _ => None,
+    };
+    match status {
+        Ok(s) if s.head_time.is_some() => s.head_time,
+        Ok(s) if s.head.is_some() && s.head.as_deref() == prev_head => prev_time,
+        Ok(_) => None,
+        Err(_) => prev_time,
+    }
 }
 
 /// Whether a worktree's folder is on disk.
@@ -179,6 +199,7 @@ fn read_statuses<'a>(worktrees: impl Iterator<Item = &'a mut Worktree>) {
     let mut results = reads.collect();
     for w in &mut worktrees {
         w.status = results.remove(&w.path);
+        w.head_time = w.status.as_ref().and_then(|s| head_time_after(s, None));
     }
 }
 
@@ -369,6 +390,7 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
                     is_main: i == 0,
                     presence: Presence::of(&e.path),
                     status: None,
+                    head_time: None,
                     path: e.path,
                     branch: e.branch,
                     head: e.head,
@@ -611,15 +633,14 @@ impl SnapshotStore {
     /// Statuses read at `stamp` lose to ones from later reads already stored.
     fn merge_statuses(&mut self, worktrees: &mut [Worktree], stamp: u64) {
         for w in worktrees {
+            let current = self.snapshot.worktrees().find(|c| c.path == w.path);
             if self.is_stale(stamp, self.status_stamps.get(&w.path)) {
                 if w.presence.is_openable() {
-                    w.status = self
-                        .snapshot
-                        .worktrees()
-                        .find(|c| c.path == w.path)
-                        .and_then(|c| c.status.clone());
+                    w.status = current.and_then(|c| c.status.clone());
+                    w.head_time = current.and_then(|c| c.head_time);
                 }
-            } else if w.status.is_some() {
+            } else if let Some(status) = &w.status {
+                w.head_time = head_time_after(status, current);
                 self.status_stamps.insert(w.path.clone(), stamp);
             }
         }
@@ -665,8 +686,10 @@ impl SnapshotStore {
         if current.status.as_ref() == Some(&status) {
             return false;
         }
+        let head_time = head_time_after(&status, Some(current));
         if let Some(w) = Arc::make_mut(&mut self.snapshot).worktree_mut(path) {
             w.status = Some(status);
+            w.head_time = head_time;
         }
         true
     }
@@ -683,6 +706,7 @@ impl SnapshotStore {
             w.presence = presence;
             if !presence.is_openable() {
                 w.status = None;
+                w.head_time = None;
             }
         }
         true

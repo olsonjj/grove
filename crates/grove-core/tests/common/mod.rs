@@ -9,6 +9,20 @@ use tempfile::TempDir;
 
 /// Runs git with an isolated config so tests work on any machine.
 pub fn git(dir: &Path, args: &[&str]) {
+    git_env(dir, args, &[]);
+}
+
+/// An empty commit in `dir` committed at Unix time `secs`.
+pub fn commit_at(dir: &Path, secs: i64) {
+    let date = format!("@{secs} +0000");
+    git_env(
+        dir,
+        &["commit", "-q", "--allow-empty", "-m", &format!("at {secs}")],
+        &[("GIT_COMMITTER_DATE", &date)],
+    );
+}
+
+fn git_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) {
     let out = Command::new("git")
         .current_dir(dir)
         .args([
@@ -26,6 +40,7 @@ pub fn git(dir: &Path, args: &[&str]) {
         .args(args)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .envs(env.iter().copied())
         .output()
         .expect("run git");
     assert!(

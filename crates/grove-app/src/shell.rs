@@ -12,7 +12,7 @@ use gpui_kit::{
 };
 use grove_core::{
     Changes, FetchReport, Preferences, Settings, SettingsFile, Snapshot, SnapshotCache,
-    SnapshotStore, StatusReads, Watcher,
+    SnapshotStore, SortMode, StatusReads, Watcher,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
@@ -543,6 +543,18 @@ pub fn select_repo(name: &str, cx: &mut App) {
 pub fn set_collapsed(repo: &str, prefix: &str, collapsed: bool, cx: &mut App) {
     let library = cx.global_mut::<Library>();
     if library.settings.set_collapsed(repo, prefix, collapsed) {
+        save_settings(cx);
+    }
+}
+
+pub fn set_repo_sort(mode: SortMode, cx: &mut App) {
+    if cx.global_mut::<Library>().settings.set_repo_sort(mode) {
+        save_settings(cx);
+    }
+}
+
+pub fn toggle_pin(repo: &Path, cx: &mut App) {
+    if cx.global_mut::<Library>().settings.toggle_pin(repo) {
         save_settings(cx);
     }
 }

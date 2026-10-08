@@ -1077,6 +1077,8 @@ mod tests {
                 Ok(WorktreeStatus {
                     files,
                     upstream: Upstream::None,
+                    head: None,
+                    head_time: None,
                 }),
             );
         });

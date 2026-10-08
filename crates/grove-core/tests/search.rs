@@ -20,6 +20,7 @@ fn wt(path: &str, branch: Option<&str>) -> Worktree {
         locked: false,
         presence: Presence::Present,
         status: None,
+        head_time: None,
     }
 }
 
@@ -193,6 +194,8 @@ fn hits_carry_presence_and_badges() {
     s.repos[0].worktrees[1].status = Some(Ok(WorktreeStatus {
         files: vec![],
         upstream: Upstream::None,
+        head: None,
+        head_time: None,
     }));
     s.repos[0].worktrees[2].presence = Presence::Missing;
     let hits = search(&s, &[], "");

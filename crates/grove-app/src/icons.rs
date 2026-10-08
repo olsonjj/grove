@@ -16,6 +16,8 @@ pub const LOCK: &str = "grove/lock.svg";
 pub const SEARCH: &str = "grove/search.svg";
 pub const REFRESH: &str = "grove/refresh.svg";
 pub const SETTINGS: &str = "grove/settings.svg";
+pub const PIN: &str = "grove/pin.svg";
+pub const PIN_FILLED: &str = "grove/pin-filled.svg";
 
 const ICONS: &[(&str, &str)] = &[
     (
@@ -61,6 +63,14 @@ const ICONS: &[(&str, &str)] = &[
     (
         SETTINGS,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h10"/><path d="M18 6h2"/><circle cx="16" cy="6" r="2"/><path d="M4 12h4"/><path d="M12 12h8"/><circle cx="10" cy="12" r="2"/><path d="M4 18h12"/><circle cx="18" cy="18" r="2"/></svg>"#,
+    ),
+    (
+        PIN,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 6 4 4v2H6v-2l4-4z"/><path d="M12 15v6"/></svg>"#,
+    ),
+    (
+        PIN_FILLED,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="black" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 6 4 4v2H6v-2l4-4z"/><path d="M12 15v6"/></svg>"#,
     ),
 ];
 

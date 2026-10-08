@@ -98,6 +98,12 @@ pub struct WorktreeStatus {
     /// Paths `git status` lists (modified, staged, unmerged, untracked), in its order.
     pub files: Vec<ChangedFile>,
     pub upstream: Upstream,
+    /// HEAD's commit; `None` on an unborn branch.
+    #[serde(default)]
+    pub head: Option<String>,
+    /// HEAD's committer time, Unix seconds; `None` on an unborn branch or if unreadable.
+    #[serde(default)]
+    pub head_time: Option<i64>,
 }
 
 impl WorktreeStatus {
@@ -229,14 +235,39 @@ pub fn common_dir(path: &Path) -> Result<PathBuf, GitError> {
     Ok(dir.canonicalize().unwrap_or(dir))
 }
 
-/// Changed files and ahead/behind vs `@{u}` (any remote), from one read-only `git status`.
+/// Changed files and ahead/behind vs `@{u}` (any remote) from a read-only `git status`,
+/// plus the time of the HEAD commit it reports.
 pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
     let out = run(
         Some(path),
         &["status", "--porcelain=v2", "--branch", "-z"],
         READ,
     )?;
-    Ok(parse_status(&out))
+    let mut status = parse_status(&out);
+    status.head_time = status
+        .head
+        .as_deref()
+        .and_then(|oid| commit_time(path, oid));
+    Ok(status)
+}
+
+fn commit_time(path: &Path, oid: &str) -> Option<i64> {
+    run(
+        Some(path),
+        &[
+            "log",
+            "-1",
+            "--no-show-signature",
+            "--format=%ct",
+            oid,
+            "--",
+        ],
+        QUICK,
+    )
+    .ok()?
+    .trim()
+    .parse()
+    .ok()
 }
 
 /// `fetch --all --prune`: every remote, deleted remote branches pruned. Grove's only
@@ -385,13 +416,16 @@ fn parse_status(out: &str) -> WorktreeStatus {
     let mut files = Vec::new();
     let mut upstream = None;
     let mut ab = None;
+    let mut head = None;
     let mut fields = out.split('\0');
     while let Some(field) = fields.next() {
         let Some(header) = field.strip_prefix("# ") else {
             files.extend(parse_entry(field, &mut fields));
             continue;
         };
-        if let Some(name) = header.strip_prefix("branch.upstream ") {
+        if let Some(oid) = header.strip_prefix("branch.oid ") {
+            head = Some(oid.to_string()).filter(|oid| oid != "(initial)");
+        } else if let Some(name) = header.strip_prefix("branch.upstream ") {
             upstream = Some(name.to_string());
         } else if let Some(counts) = header.strip_prefix("branch.ab ") {
             // "+1 -2"
@@ -411,7 +445,12 @@ fn parse_status(out: &str) -> WorktreeStatus {
         },
         (Some(name), None) => Upstream::Gone { name },
     };
-    WorktreeStatus { files, upstream }
+    WorktreeStatus {
+        files,
+        upstream,
+        head,
+        head_time: None,
+    }
 }
 
 /// One file entry; a rename or copy takes its source path from the next field.
@@ -526,9 +565,13 @@ mod tests {
                 files: vec![],
                 upstream: Upstream::Gone {
                     name: "origin/g".into()
-                }
+                },
+                head: Some("abc".into()),
+                head_time: None,
             }
         );
+        let unborn = parse_status("# branch.oid (initial)\0# branch.head main\0");
+        assert_eq!(unborn.head, None);
         let detached = parse_status("# branch.oid abc\0# branch.head (detached)\0? x\0");
         assert_eq!(detached.upstream, Upstream::None);
         assert_eq!(detached.changed(), 1);

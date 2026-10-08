@@ -24,6 +24,7 @@ pub fn wt(path: &str, branch: Option<&str>, is_main: bool) -> Worktree {
         locked: false,
         presence: Presence::Present,
         status: None,
+        head_time: None,
     }
 }
 

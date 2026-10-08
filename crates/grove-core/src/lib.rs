@@ -8,6 +8,7 @@ mod env;
 pub mod git;
 mod launch;
 mod menu;
+mod order;
 mod process;
 mod search;
 mod settings;
@@ -30,10 +31,11 @@ pub use launch::{
     execute, execute_with, plan, plan_command,
 };
 pub use menu::{MenuGroup, MenuRow, StateLine, menu};
+pub use order::{RepoOrder, activity_time, repo_activity, repo_order};
 pub use search::{Hit, Matches, search};
 pub use settings::{
     CustomCommand, LoginItemHost, LoginItemStatus, MAX_RECENTS, Preferences, Settings,
-    SettingsFile, TerminalOpensIn, is_installed_location,
+    SettingsFile, SortMode, TerminalOpensIn, is_installed_location,
 };
 pub use snapshot::{
     FetchRead, FetchReport, FetchResult, Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead,

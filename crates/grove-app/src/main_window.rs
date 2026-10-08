@@ -1,17 +1,19 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use gpui_kit::base::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, Window, WindowBounds,
-    WindowKind, WindowOptions, div, px, size,
+    Anchor, AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, FocusHandle,
+    Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, TestSupportExt, TitlebarOptions, Window,
+    WindowBounds, WindowKind, WindowOptions, anchored, deferred, div, px, size,
 };
-use grove_core::RepoSnapshot;
+use grove_core::{RepoSnapshot, SortMode, repo_order};
 
-use crate::details_view::{self, DetailsView};
+use crate::details_view::{self, DetailsView, LeaveMenu, LeaveMenuBack};
 use crate::icons::{self, icon};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
@@ -39,7 +41,28 @@ struct MainWindow {
     fetch_seen: u64,
     /// The last `Notices::posted` shown.
     notices_seen: u64,
+    /// Sidebar rows' focus (row, pin button) by repo name, so it follows a row when pinning
+    /// moves it.
+    repo_focus: HashMap<String, [FocusHandle; 2]>,
+    hovered_repo: Option<String>,
+    repo_menu: Option<RepoMenu>,
+    repo_menu_item: FocusHandle,
+    sort_menu: bool,
+    sort_button: FocusHandle,
+    /// Recent, Name.
+    sort_items: [FocusHandle; 2],
+    repo_scroll: ScrollHandle,
+    /// The sidebar order last rendered, to scroll the selection back into view on a reorder.
+    shown_order: Vec<String>,
     _subs: [Subscription; 8],
+}
+
+/// A sidebar row's context menu.
+struct RepoMenu {
+    repo: String,
+    path: PathBuf,
+    pinned: bool,
+    at: Point<Pixels>,
 }
 
 /// The saved repo if it still exists, else the first.
@@ -51,7 +74,15 @@ fn selected_repo(cx: &App) -> Option<String> {
         .last_selected_repo
         .as_deref()
         .and_then(|name| snapshot.repo(name))
-        .or_else(|| snapshot.repos.first())
+        .or_else(|| {
+            repo_order(
+                snapshot,
+                &library.settings.pinned_repos,
+                library.settings.repo_sort,
+            )
+            .iter()
+            .next()
+        })
         .map(|r| r.name().to_string())
 }
 
@@ -93,6 +124,15 @@ impl MainWindow {
             open_seq: 0,
             fetch_seen: cx.try_global::<shell::Fetcher>().map_or(0, |f| f.finished),
             notices_seen: cx.try_global::<shell::Notices>().map_or(0, |n| n.posted),
+            repo_focus: HashMap::new(),
+            hovered_repo: None,
+            repo_menu: None,
+            repo_menu_item: cx.focus_handle(),
+            sort_menu: false,
+            sort_button: cx.focus_handle(),
+            sort_items: [cx.focus_handle(), cx.focus_handle()],
+            repo_scroll: ScrollHandle::new(),
+            shown_order: Vec::new(),
             _subs: [
                 collapse,
                 open,
@@ -179,6 +219,16 @@ impl MainWindow {
             self.status = Some(status);
             cx.notify();
         }
+    }
+
+    /// The shown repo, so a reorder never moves the selection; else the saved one or the first.
+    fn selected(&self, cx: &App) -> Option<String> {
+        self.tree
+            .read(cx)
+            .repo_name()
+            .filter(|n| shell::library(cx).store.snapshot().repo(n).is_some())
+            .map(str::to_string)
+            .or_else(|| selected_repo(cx))
     }
 
     fn show_repo(&mut self, name: Option<&str>, cx: &mut Context<Self>) {
@@ -359,67 +409,64 @@ impl MainWindow {
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let library = shell::library(cx);
         let snapshot = library.store.snapshot().clone();
-        let selected = selected_repo(cx);
+        let (pinned, sort) = (
+            library.settings.pinned_repos.clone(),
+            library.settings.repo_sort,
+        );
+        let selected = self.selected(cx);
         let top_bar = self.top_bar(selected.as_deref().and_then(|n| snapshot.repo(n)), cx);
 
-        let rows = snapshot.repos.iter().enumerate().map(|(i, repo)| {
-            let is_selected = selected.as_deref() == Some(repo.name());
-            let name = repo.name().to_string();
-            let count = repo.worktree_count();
-            let a11y = format!(
-                "{}, {count} worktree{}{}",
-                repo.display_name,
-                if count == 1 { "" } else { "s" },
-                if is_selected { ", selected" } else { "" }
+        let order = repo_order(&snapshot, &pinned, sort);
+        self.repo_focus
+            .retain(|name, _| order.iter().any(|r| r.name() == name));
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut selected_row = None;
+        if !order.pinned.is_empty() {
+            rows.push(
+                group_header("pinned-header", format!("PINNED · {}", order.pinned.len()))
+                    .px(px(8.))
+                    .pb(px(6.))
+                    .into_any_element(),
             );
-            Button::new(("repo", i))
-                .accessibility_label(a11y)
-                .selected(is_selected)
-                .flex_none()
-                .h(px(34.))
-                .px(px(10.))
-                .justify_between()
-                .gap(px(8.))
-                .rounded(px(6.))
-                .border_1()
-                .border_color(gpui_kit::transparent_black())
-                .focus_visible(|s| s.border_color(theme::link()))
-                .text_size(px(13.))
-                .cursor_pointer()
-                .relative()
-                .when_else(
-                    is_selected,
-                    |d| {
-                        d.bg(theme::selected())
-                            .text_color(theme::text())
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(theme::selection_bar())
-                    },
-                    |d| {
-                        d.text_color(theme::text_soft())
-                            .hover(|s| s.bg(theme::raised()))
-                    },
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    shell::select_repo(&name, cx);
-                    if this.tree.read(cx).repo_name() != Some(name.as_str()) {
-                        this.show_repo(Some(&name), cx);
-                    }
-                    window.focus(&this.tree.focus_handle(cx), cx);
-                    cx.notify();
-                }))
-                .child(theme::mono(repo.display_name.clone()).truncate())
-                .child(
-                    div()
-                        .flex_none()
-                        .text_size(px(11.))
-                        .text_color(theme::link())
-                        .child(format!("{count} wt")),
-                )
-        });
+        }
+        for (ix, repo) in order.pinned.iter().enumerate() {
+            let is_selected = selected.as_deref() == Some(repo.name());
+            if is_selected {
+                selected_row = Some(rows.len());
+            }
+            rows.push(self.repo_row(ix, repo, true, is_selected, window, cx));
+        }
+        if !order.pinned.is_empty() && !order.others.is_empty() {
+            rows.push(
+                div()
+                    .flex_none()
+                    .h(px(1.))
+                    .mx(px(8.))
+                    .my(px(6.))
+                    .bg(theme::border())
+                    .into_any_element(),
+            );
+        }
+        for (i, repo) in order.others.iter().enumerate() {
+            let is_selected = selected.as_deref() == Some(repo.name());
+            let ix = order.pinned.len() + i;
+            if is_selected {
+                selected_row = Some(rows.len());
+            }
+            rows.push(self.repo_row(ix, repo, false, is_selected, window, cx));
+        }
+        let names: Vec<String> = order.iter().map(|r| r.name().to_string()).collect();
+        if names != self.shown_order {
+            if let Some(row) = selected_row {
+                self.repo_scroll.scroll_to_item(row);
+            }
+            self.shown_order = names;
+        }
+        let repo_menu = self.repo_menu(cx);
+        let sort_menu = self.sort_menu(sort, cx);
 
         let sidebar = div()
             .w(px(240.))
@@ -432,23 +479,42 @@ impl Render for MainWindow {
             .border_color(theme::border())
             .child(
                 div()
-                    .px(px(18.))
-                    .pt(px(14.))
-                    .pb(px(8.))
-                    .text_size(px(11.))
-                    .text_color(theme::faint())
-                    .child(format!("REPOSITORIES · {}", snapshot.repos.len())),
+                    .flex_none()
+                    .pl(px(18.))
+                    .pr(px(12.))
+                    .pt(px(10.))
+                    .pb(px(4.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .child(group_header(
+                        "repos-header",
+                        format!("REPOSITORIES · {}", snapshot.repos.len()),
+                    ))
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .child(self.sort_button(sort, cx))
+                            .children(sort_menu),
+                    ),
             )
             .child(
                 div()
                     .id("repo-list")
+                    .track_scroll(&self.repo_scroll)
+                    .on_key_down(cx.listener(Self::on_repo_key))
                     .flex_1()
                     .overflow_y_scroll()
                     .px(px(10.))
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .children(rows),
+                    .children(rows)
+                    .test_support(),
             )
             .child(
                 div()
@@ -531,7 +597,451 @@ impl Render for MainWindow {
                     .child(content),
             )
             .child(self.status_bar(cx))
+            .children(repo_menu)
     }
+}
+
+impl MainWindow {
+    fn select_repo(&mut self, name: &str, cx: &mut Context<Self>) {
+        shell::select_repo(name, cx);
+        if self.tree.read(cx).repo_name() != Some(name) {
+            self.show_repo(Some(name), cx);
+        }
+        cx.notify();
+    }
+
+    /// ↑/↓ move the selection through both groups, skipping headers.
+    fn on_repo_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &ev.keystroke;
+        let step: isize = match ks.key.as_str() {
+            "up" if !ks.modifiers.modified() => -1,
+            "down" if !ks.modifiers.modified() => 1,
+            _ => return,
+        };
+        let library = shell::library(cx);
+        let names: Vec<String> = repo_order(
+            library.store.snapshot(),
+            &library.settings.pinned_repos,
+            library.settings.repo_sort,
+        )
+        .iter()
+        .map(|r| r.name().to_string())
+        .collect();
+        let focused = |n: &String| {
+            self.repo_focus
+                .get(n)
+                .is_some_and(|[row, _]| row.is_focused(window))
+        };
+        let Some(at) = names.iter().position(focused) else {
+            return;
+        };
+        let next = &names[at.saturating_add_signed(step).min(names.len() - 1)];
+        self.select_repo(next, cx);
+        if let Some([row, _]) = self.repo_focus.get(next) {
+            window.focus(row, cx);
+        }
+        cx.stop_propagation();
+    }
+
+    /// The row under the pointer changes, so hover is re-read from the next layout.
+    fn toggle_pin(&mut self, path: &Path, cx: &mut Context<Self>) {
+        // Saved first, or an unsaved (fallback) selection would follow the new first row. A
+        // saved one naming an absent repo is kept for when it returns.
+        if shell::library(cx).settings.last_selected_repo.is_none()
+            && let Some(name) = self.selected(cx)
+        {
+            shell::select_repo(&name, cx);
+        }
+        shell::toggle_pin(path, cx);
+        self.hovered_repo = None;
+        cx.notify();
+    }
+
+    fn close_repo_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(menu) = self.repo_menu.take() {
+            if let Some([row, _]) = self.repo_focus.get(&menu.repo) {
+                window.focus(row, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    fn repo_row(
+        &mut self,
+        ix: usize,
+        repo: &RepoSnapshot,
+        pinned: bool,
+        is_selected: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let name = repo.name().to_string();
+        let path = repo.repo.path.clone();
+        let count = repo.worktree_count();
+        let a11y = format!(
+            "{}, {count} worktree{}{}{}",
+            repo.display_name,
+            if count == 1 { "" } else { "s" },
+            if pinned { ", pinned" } else { "" },
+            if is_selected { ", selected" } else { "" }
+        );
+        let [focus, pin_focus] = self
+            .repo_focus
+            .entry(name.clone())
+            .or_insert_with(|| [cx.focus_handle(), cx.focus_handle()])
+            .clone();
+        // Also while focused, so unpinning from the keyboard doesn't drop focus.
+        let show_pin = pinned
+            || is_selected
+            || self.hovered_repo.as_deref() == Some(&name)
+            || pin_focus.is_focused(window);
+        let button = Button::new(("repo", ix))
+            .track_focus(&focus)
+            .accessibility_label(a11y)
+            .selected(is_selected)
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .pl(px(10.))
+            .pr(px(4.))
+            .justify_between()
+            .gap(px(8.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(|s| s.border_color(theme::link()))
+            .cursor_pointer()
+            .on_click(cx.listener({
+                let name = name.clone();
+                move |this, _, window, cx| {
+                    this.select_repo(&name, cx);
+                    window.focus(&this.tree.focus_handle(cx), cx);
+                }
+            }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener({
+                    let (name, path) = (name.clone(), path.clone());
+                    move |this, ev: &MouseDownEvent, window, cx| {
+                        this.repo_menu = Some(RepoMenu {
+                            repo: name.clone(),
+                            path: path.clone(),
+                            pinned,
+                            at: ev.position,
+                        });
+                        window.focus(&this.repo_menu_item, cx);
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(theme::mono(repo.display_name.clone()).truncate())
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(11.))
+                    .text_color(theme::link())
+                    .child(format!("{count} wt")),
+            );
+        let pin_slot = div().flex_none().size(px(24.)).mr(px(6.));
+        div()
+            // By name: a row moved by pinning gets fresh hover state.
+            .id(SharedString::from(format!("repo-row-{name}")))
+            .flex_none()
+            .h(px(34.))
+            .flex()
+            .items_center()
+            .rounded(px(6.))
+            .text_size(px(13.))
+            .relative()
+            .on_hover(cx.listener({
+                let name = name.clone();
+                move |this, hovered: &bool, _, cx| {
+                    if *hovered {
+                        this.hovered_repo = Some(name.clone());
+                    } else if this.hovered_repo.as_deref() == Some(&name) {
+                        this.hovered_repo = None;
+                    }
+                    cx.notify();
+                }
+            }))
+            .when_else(
+                is_selected,
+                |d| {
+                    d.bg(theme::selected())
+                        .text_color(theme::text())
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(theme::selection_bar())
+                },
+                |d| {
+                    d.text_color(theme::text_soft())
+                        .hover(|s| s.bg(theme::raised()))
+                },
+            )
+            .child(button)
+            .child(if show_pin {
+                pin_button(ix, &repo.display_name, pinned)
+                    .track_focus(&pin_focus)
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_pin(&path, cx)))
+                    .into_any_element()
+            } else {
+                pin_slot.into_any_element()
+            })
+            .into_any_element()
+    }
+
+    fn repo_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.repo_menu.as_ref()?;
+        let (label, path) = (if menu.pinned { "Unpin" } else { "Pin" }, menu.path.clone());
+        let item = Button::new("repo-menu-pin")
+            .track_focus(&self.repo_menu_item)
+            .tab_stop(false)
+            .role(gpui_kit::Role::MenuItem)
+            .accessibility_label(label)
+            .h(px(28.))
+            .px(px(10.))
+            .justify_start()
+            .rounded(px(5.))
+            .cursor_pointer()
+            .text_color(theme::text())
+            .hover(|s| s.bg(theme::selected()))
+            .focus(|s| s.bg(theme::selected()))
+            .child(label)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.toggle_pin(&path, cx);
+                this.close_repo_menu(window, cx);
+            }));
+        Some(
+            deferred(
+                anchored().position(menu.at).snap_to_window().child(
+                    div()
+                        .id("repo-menu")
+                        .role(gpui_kit::Role::Menu)
+                        .key_context(details_view::MENU_CONTEXT)
+                        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                            if ev.keystroke.key == "escape" {
+                                this.close_repo_menu(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_action(cx.listener(|this, _: &LeaveMenu, window, cx| {
+                            this.close_repo_menu(window, cx);
+                            window.focus_next(cx);
+                        }))
+                        .on_action(cx.listener(|this, _: &LeaveMenuBack, window, cx| {
+                            this.close_repo_menu(window, cx);
+                            window.focus_prev(cx);
+                        }))
+                        // Outside click closes the menu and is swallowed, like a native menu.
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.repo_menu = None;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
+                        .min_w(px(140.))
+                        .p(px(4.))
+                        .flex()
+                        .flex_col()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(theme::border_strong())
+                        .bg(theme::raised())
+                        .shadow_lg()
+                        .occlude()
+                        .text_size(px(13.))
+                        .child(item)
+                        .test_support(),
+                ),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
+    }
+
+    /// "Recent ▾": opens the repo sort menu with the current mode focused.
+    fn sort_button(&self, sort: SortMode, cx: &mut Context<Self>) -> Button {
+        Button::new("repo-sort")
+            .track_focus(&self.sort_button)
+            .accessibility_label(format!("Sort repositories: {}", sort.label()))
+            .aria_expanded(self.sort_menu)
+            .flex_none()
+            .h(px(22.))
+            .px(px(6.))
+            .gap(px(3.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(|s| s.border_color(theme::link()))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::border()))
+            .text_size(px(11.))
+            .text_color(theme::muted())
+            .child(sort.label())
+            .child(icon(icons::CHEVRON_DOWN, 10.).text_color(theme::muted()))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.sort_menu {
+                    this.close_sort_menu(window, cx);
+                } else {
+                    this.sort_menu = true;
+                    window.focus(&this.sort_items[sort_ix(sort)], cx);
+                    cx.notify();
+                }
+            }))
+    }
+
+    fn close_sort_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if std::mem::take(&mut self.sort_menu) {
+            window.focus(&self.sort_button, cx);
+            cx.notify();
+        }
+    }
+
+    fn on_sort_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.sort_items.iter().position(|h| h.is_focused(window));
+        let next = match (ev.keystroke.key.as_str(), at) {
+            ("escape", _) => {
+                self.close_sort_menu(window, cx);
+                return cx.stop_propagation();
+            }
+            ("down", Some(i)) => (i + 1).min(SORT_MODES.len() - 1),
+            ("up", Some(i)) => i.saturating_sub(1),
+            ("down" | "up", None) => 0,
+            _ => return,
+        };
+        window.focus(&self.sort_items[next], cx);
+        cx.stop_propagation();
+    }
+
+    fn sort_menu(&self, sort: SortMode, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.sort_menu {
+            return None;
+        }
+        let items = SORT_MODES.into_iter().enumerate().map(|(i, mode)| {
+            Button::new(("repo-sort-choice", i))
+                .track_focus(&self.sort_items[i])
+                .tab_stop(false)
+                .role(gpui_kit::Role::MenuItemRadio)
+                .aria_toggled((mode == sort).into())
+                .accessibility_label(mode.label())
+                .h(px(28.))
+                .px(px(10.))
+                .justify_between()
+                .gap(px(12.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .text_color(theme::text())
+                .hover(|s| s.bg(theme::selected()))
+                .focus(|s| s.bg(theme::selected()))
+                .child(mode.label())
+                .when(mode == sort, |d| {
+                    d.child(div().text_color(theme::link()).child("✓"))
+                })
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    shell::set_repo_sort(mode, cx);
+                    this.close_sort_menu(window, cx);
+                }))
+        });
+        Some(
+            deferred(
+                anchored().anchor(Anchor::TopRight).snap_to_window().child(
+                    div()
+                        .id("repo-sort-menu")
+                        .role(gpui_kit::Role::Menu)
+                        .key_context(details_view::MENU_CONTEXT)
+                        .on_key_down(cx.listener(Self::on_sort_key))
+                        .on_action(cx.listener(|this, _: &LeaveMenu, window, cx| {
+                            this.close_sort_menu(window, cx);
+                            window.focus_next(cx);
+                        }))
+                        .on_action(cx.listener(|this, _: &LeaveMenuBack, window, cx| {
+                            this.close_sort_menu(window, cx);
+                            window.focus_prev(cx);
+                        }))
+                        // Outside click closes the menu and is swallowed, like a native menu.
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.sort_menu = false;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
+                        .mt(px(4.))
+                        .min_w(px(120.))
+                        .p(px(4.))
+                        .flex()
+                        .flex_col()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(theme::border_strong())
+                        .bg(theme::raised())
+                        .shadow_lg()
+                        .occlude()
+                        .text_size(px(13.))
+                        .child(
+                            div()
+                                .px(px(10.))
+                                .py(px(4.))
+                                .text_size(px(11.))
+                                .text_color(theme::faint())
+                                .child("SORT BY"),
+                        )
+                        .children(items)
+                        .test_support(),
+                ),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
+    }
+}
+
+/// The repo sort menu's items, in order.
+const SORT_MODES: [SortMode; 2] = [SortMode::Recent, SortMode::Name];
+
+fn sort_ix(mode: SortMode) -> usize {
+    SORT_MODES.iter().position(|m| *m == mode).unwrap_or(0)
+}
+
+/// "PINNED · 2", "REPOSITORIES · 40".
+fn group_header(id: &'static str, text: String) -> impl Styled + IntoElement {
+    div()
+        .id(id)
+        .test_support()
+        .aria_label(text.clone())
+        .flex_none()
+        .text_size(px(11.))
+        .text_color(theme::faint())
+        .child(text)
+}
+
+/// Shown on hover and selection, and always (filled) on pinned rows.
+fn pin_button(ix: usize, repo: &str, pinned: bool) -> Button {
+    let label = if pinned { "Unpin" } else { "Pin" };
+    Button::new(("repo-pin", ix))
+        .accessibility_label(format!("{label} {repo}"))
+        .flex_none()
+        .size(px(24.))
+        .mr(px(6.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .focus_visible(|s| s.border_color(theme::link()))
+        .cursor_pointer()
+        .hover(|s| s.bg(theme::border()))
+        .child(
+            icon(
+                if pinned {
+                    icons::PIN_FILLED
+                } else {
+                    icons::PIN
+                },
+                13.,
+            )
+            .text_color(if pinned {
+                theme::link()
+            } else {
+                theme::muted()
+            }),
+        )
+        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
 }
 
 /// Bordered top bar button.
@@ -622,7 +1132,8 @@ mod tests {
     use gpui_kit::{Point, TestAppContext};
     use grove_core::{
         Change, ChangedFile, Fallback, LaunchError, Outcome, Permission, Presence, RowId, RowKind,
-        Settings, SettingsFile, Snapshot, SnapshotStore, TerminalOpensIn, Upstream, WorktreeStatus,
+        Settings, SettingsFile, Snapshot, SnapshotStore, SortMode, TerminalOpensIn, Upstream,
+        WorktreeStatus,
     };
     use tempfile::TempDir;
 
@@ -1000,6 +1511,8 @@ mod tests {
                         ahead: 2,
                         behind: 1,
                     },
+                    head: None,
+                    head_time: None,
                 }),
             );
         });
@@ -1277,6 +1790,8 @@ mod tests {
                 ahead: 12,
                 behind: 30,
             },
+            head: None,
+            head_time: None,
         }));
         let (w, _) = launch_at(cx, &file, repo, MIN_SIZE);
         keys(cx, w, &["down"; 4]);
@@ -1451,6 +1966,8 @@ mod tests {
                 ahead: 2,
                 behind: 1,
             },
+            head: None,
+            head_time: None,
         }));
         let (w, main) = launch_repo(cx, &file, repo);
         let fields = main.read_with(cx, |m, cx| m.details.read(cx).status_fields());
@@ -1917,10 +2434,11 @@ mod tests {
         let file = settings_file(&tmp, Settings::default());
         fake_launcher(cx, Ok(Outcome::Opened));
         let w = two_repos(cx, &file);
-        let ids: [gpui_kit::ElementId; 13] = [
+        let ids: [gpui_kit::ElementId; 14] = [
             "jump-to".into(),
             "fetch-all".into(),
             "open-settings".into(),
+            "repo-sort".into(),
             ("repo", 0usize).into(),
             ("repo", 1usize).into(),
             "change-code-folder".into(),
@@ -2057,5 +2575,390 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    fn label_of(
+        cx: &mut TestAppContext,
+        w: AnyWindowHandle,
+        id: impl Into<gpui_kit::ElementId>,
+    ) -> String {
+        let id = id.into();
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(id).label().unwrap().to_string()
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn pin_button_and_context_menu_pin_persist_and_keep_selection(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        let pins = || file.load().unwrap().pinned_repos;
+        assert!(!has(cx, w, "repo-pin", 1), "only on hover or selection");
+        assert_eq!(label_of(cx, w, ("repo-pin", 0usize)), "Pin api");
+
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.hover(("repo", 1usize), cx);
+        })
+        .unwrap();
+        click(cx, w, ("repo-pin", 1usize));
+        assert_eq!(pins(), [PathBuf::from("/c/web")]);
+        assert_eq!(label_of(cx, w, ("repo", 0usize)), "web, 1 worktree, pinned");
+        assert_eq!(label_of(cx, w, ("repo-pin", 0usize)), "Unpin web");
+        assert_eq!(
+            label_of(cx, w, ("repo", 1usize)),
+            "api, 5 worktrees, selected"
+        );
+
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click(("repo", 0usize), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(label_of(cx, w, "repo-menu-pin"), "Unpin");
+        click(cx, w, "repo-menu-pin");
+        assert!(pins().is_empty());
+        assert!(!found(cx, w, "repo-menu"));
+        assert_eq!(
+            label_of(cx, w, ("repo", 0usize)),
+            "api, 5 worktrees, selected"
+        );
+
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click(("repo", 0usize), cx);
+        })
+        .unwrap();
+        click(cx, w, "repo-menu-pin");
+        assert_eq!(pins(), [PathBuf::from("/c/api")]);
+        assert_eq!(
+            label_of(cx, w, ("repo", 0usize)),
+            "api, 5 worktrees, pinned, selected"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn repo_menu_closes_on_escape_tab_and_outside_click(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        let open = |cx: &mut TestAppContext| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.right_click(("repo", 1usize), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(found(cx, w, "repo-menu"));
+        };
+        let focused = |cx: &mut TestAppContext, id: gpui_kit::ElementId| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(id).focused() == Some(true)
+            })
+            .unwrap()
+        };
+
+        open(cx);
+        assert!(focused(cx, "repo-menu-pin".into()));
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "repo-menu"));
+        assert!(focused(cx, ("repo", 1usize).into()));
+
+        open(cx);
+        keys(cx, w, &["tab"]);
+        assert!(!found(cx, w, "repo-menu"));
+
+        open(cx);
+        click(cx, w, "repos-header");
+        assert!(!found(cx, w, "repo-menu"));
+        assert!(file.load().unwrap().pinned_repos.is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn arrow_keys_cross_from_pinned_into_the_rest(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                pinned_repos: vec!["/c/web".into()],
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        tab_to(cx, w, ("repo", 0usize));
+        keys(cx, w, &["down"]);
+        assert_eq!(
+            label_of(cx, w, ("repo", 1usize)),
+            "api, 5 worktrees, selected"
+        );
+        keys(cx, w, &["up"]);
+        assert_eq!(
+            label_of(cx, w, ("repo", 0usize)),
+            "web, 1 worktree, pinned, selected"
+        );
+        assert_eq!(
+            file.load().unwrap().last_selected_repo.as_deref(),
+            Some("web")
+        );
+        // Focus stayed in the sidebar, on the selected row.
+        keys(cx, w, &["down", "down"]);
+        assert_eq!(
+            label_of(cx, w, ("repo", 1usize)),
+            "api, 5 worktrees, selected"
+        );
+    }
+
+    fn header_texts(cx: &mut TestAppContext, w: AnyWindowHandle) -> Vec<String> {
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            ["pinned-header", "repos-header"]
+                .into_iter()
+                .filter_map(|id| Some(window.try_find(id)?.label()?.to_string()))
+                .collect()
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn all_pinned_still_counts_every_repo_and_selects_the_first_pin(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                pinned_repos: vec!["/c/web".into(), "/c/api".into()],
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        assert_eq!(header_texts(cx, w), ["PINNED · 2", "REPOSITORIES · 2"]);
+        assert_eq!(
+            label_of(cx, w, ("repo", 0usize)),
+            "api, 5 worktrees, pinned, selected"
+        );
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            let in_list = |id: &'static str| {
+                let list: gpui_kit::ElementId = "repo-list".into();
+                window.find(id).path().contains(&list)
+            };
+            // REPOSITORIES stays fixed above the scrolling list; PINNED scrolls with it.
+            assert!(!in_list("repos-header"));
+            assert!(in_list("pinned-header"));
+            assert!(
+                window.find("repos-header").bounds().origin.y
+                    < window.find("pinned-header").bounds().origin.y
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn unpinning_from_the_keyboard_keeps_focus_on_the_moved_button(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                pinned_repos: vec!["/c/web".into()],
+                last_selected_repo: Some("api".into()),
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        assert_eq!(header_texts(cx, w), ["PINNED · 1", "REPOSITORIES · 2"]);
+        tab_to(cx, w, ("repo-pin", 0usize));
+        keys(cx, w, &["enter"]);
+        assert!(file.load().unwrap().pinned_repos.is_empty());
+        assert_eq!(header_texts(cx, w), ["REPOSITORIES · 2"]);
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            let pin = window.find(("repo-pin", 1usize));
+            assert_eq!(pin.label(), Some("Pin web"));
+            assert_eq!(pin.focused(), Some(true));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn pinning_keeps_a_saved_selection_of_an_absent_repo(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                last_selected_repo: Some("gone".into()),
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        click(cx, w, ("repo-pin", 0usize));
+        let s = file.load().unwrap();
+        assert_eq!(s.pinned_repos, [PathBuf::from("/c/api")]);
+        assert_eq!(s.last_selected_repo.as_deref(), Some("gone"));
+    }
+
+    /// A one-worktree repo at `/c/<name>`.
+    fn repo_named(name: &str) -> grove_core::RepoSnapshot {
+        let mut repo = canned();
+        repo.display_name = name.into();
+        repo.repo.name = name.into();
+        repo.repo.path = format!("/c/{name}").into();
+        repo.repo.git_dir = format!("/c/{name}/.git").into();
+        repo.worktrees.truncate(1);
+        repo.worktrees[0].path = format!("/c/{name}").into();
+        repo
+    }
+
+    fn launch_repos(
+        cx: &mut TestAppContext,
+        file: &SettingsFile,
+        repos: Vec<grove_core::RepoSnapshot>,
+        window: gpui_kit::Size<gpui_kit::Pixels>,
+    ) -> (AnyWindowHandle, Entity<MainWindow>) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::details_view::init(cx);
+            set_library(file, repos, cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: window,
+                })),
+                ..Default::default()
+            };
+            open_with(options, cx).unwrap()
+        })
+    }
+
+    /// A status read for `/c/<repo>` landing with HEAD committed at `head_time`.
+    fn commit_lands(cx: &mut TestAppContext, repo: &str, head_time: i64) {
+        cx.update(|cx| {
+            let store = &mut cx.global_mut::<Library>().store;
+            let stamp = store.status_reads().stamp();
+            store.apply_status(
+                stamp,
+                Path::new(&format!("/c/{repo}")),
+                Ok(WorktreeStatus {
+                    files: vec![],
+                    upstream: Upstream::None,
+                    head: Some(format!("{head_time:x}")),
+                    head_time: Some(head_time),
+                }),
+            );
+        });
+        cx.run_until_parked();
+    }
+
+    fn sidebar(cx: &mut TestAppContext, w: AnyWindowHandle, n: usize) -> Vec<String> {
+        (0..n).map(|ix| label_of(cx, w, ("repo", ix))).collect()
+    }
+
+    #[gpui_kit::test]
+    fn sort_menu_changes_order_persists_and_keeps_selection(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                last_selected_repo: Some("api".into()),
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut web = repo_named("web");
+        web.worktrees[0].head_time = Some(1_700_000_000);
+        let (w, main) = launch_repos(
+            cx,
+            &file,
+            vec![repo_named("api"), web],
+            size(px(1180.), px(720.)),
+        );
+        let recent = ["web, 1 worktree", "api, 1 worktree, selected"];
+        let by_name = ["api, 1 worktree, selected", "web, 1 worktree"];
+        assert_eq!(sidebar(cx, w, 2), recent);
+        assert_eq!(label_of(cx, w, "repo-sort"), "Sort repositories: Recent");
+
+        click(cx, w, "repo-sort");
+        assert!(found(cx, w, "repo-sort-menu"));
+        click(cx, w, ("repo-sort-choice", 1usize));
+        assert!(!found(cx, w, "repo-sort-menu"));
+        assert_eq!(sidebar(cx, w, 2), by_name);
+        assert_eq!(label_of(cx, w, "repo-sort"), "Sort repositories: Name");
+        assert_eq!(file.load().unwrap().repo_sort, SortMode::Name);
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.tree.read(cx).repo_name().map(str::to_string)),
+            Some("api".into())
+        );
+
+        // From the keyboard: opens on the current mode; Escape closes back to the button.
+        let focused = |cx: &mut TestAppContext, id: gpui_kit::ElementId| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(id).focused() == Some(true)
+            })
+            .unwrap()
+        };
+        tab_to(cx, w, "repo-sort");
+        keys(cx, w, &["enter"]);
+        assert!(focused(cx, ("repo-sort-choice", 1usize).into()));
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "repo-sort-menu"));
+        assert!(focused(cx, "repo-sort".into()));
+        keys(cx, w, &["enter", "up", "enter"]);
+        assert!(!found(cx, w, "repo-sort-menu"));
+        assert_eq!(sidebar(cx, w, 2), recent);
+        assert_eq!(file.load().unwrap().repo_sort, SortMode::Recent);
+
+        // Tab leaves the menu and closes it.
+        keys(cx, w, &["enter", "tab"]);
+        assert!(!found(cx, w, "repo-sort-menu"));
+    }
+
+    #[gpui_kit::test]
+    fn live_reorder_keeps_selection_and_scrolls_it_into_view(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let names: Vec<String> = (0..30).map(|i| format!("r{i:02}")).collect();
+        let repos = names.iter().map(|n| repo_named(n)).collect();
+        let (w, main) = launch_repos(cx, &file, repos, size(px(1180.), px(400.)));
+        let in_view = |cx: &mut TestAppContext, ix: usize| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                let list = window.find("repo-list").bounds();
+                let row = window.find(("repo", ix)).bounds();
+                row.top() >= list.top() && row.bottom() <= list.bottom()
+            })
+            .unwrap()
+        };
+        // Nothing saved: the first row is selected.
+        assert_eq!(
+            label_of(cx, w, ("repo", 0usize)),
+            "r00, 1 worktree, selected"
+        );
+        assert!(in_view(cx, 0));
+        assert!(!in_view(cx, 29), "fixture must overflow");
+
+        for (i, name) in names.iter().enumerate().skip(1) {
+            commit_lands(cx, name, 1_700_000_000 + i as i64);
+        }
+        assert_eq!(label_of(cx, w, ("repo", 0usize)), "r29, 1 worktree");
+        assert_eq!(
+            label_of(cx, w, ("repo", 29usize)),
+            "r00, 1 worktree, selected"
+        );
+        assert!(in_view(cx, 29));
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.tree.read(cx).repo_name().map(str::to_string)),
+            Some("r00".into())
+        );
     }
 }
