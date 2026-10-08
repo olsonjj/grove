@@ -15,6 +15,7 @@ pub struct MenuGroup {
     pub rows: Vec<MenuRow>,
 }
 
+/// One worktree in the popover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuRow {
     pub path: PathBuf,

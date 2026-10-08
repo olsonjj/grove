@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(dead_code, reason = "each test binary uses a subset")]
 
 use std::fs;
 use std::path::{Path, PathBuf};

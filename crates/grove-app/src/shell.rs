@@ -471,13 +471,13 @@ fn start_watching(cx: &mut App) {
     cx.global_mut::<Live>().watch = Some(watch_tx);
     cx.spawn(async move |cx| {
         while let Ok(changes) = changes_rx.recv().await {
-            cx.update(|cx| apply_changes(changes, cx));
+            cx.update(|cx| apply_changes(&changes, cx));
         }
     })
     .detach();
 }
 
-fn apply_changes(changes: Changes, cx: &mut App) {
+fn apply_changes(changes: &Changes, cx: &mut App) {
     for git_dir in &changes.repos {
         let Some(read) = cx.global_mut::<Library>().store.repo_read(git_dir) else {
             continue;

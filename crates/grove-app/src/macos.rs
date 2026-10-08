@@ -5,16 +5,16 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSNumber, NSPoint, NSRect, ns_string};
 
-fn mtm() -> MainThreadMarker {
-    MainThreadMarker::new().expect("must run on the main thread")
-}
-
-/// Dark theme only: also darkens titlebars and system panels (folder picker).
+/// Dark theme only: also darkens titlebars and system panels (folder picker). No-op off
+/// the main thread.
 pub fn use_dark_appearance() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
     // SAFETY: AppKit-provided constant.
     let name = unsafe { NSAppearanceNameDarkAqua };
     let appearance = NSAppearance::appearanceNamed(name);
-    NSApplication::sharedApplication(mtm()).setAppearance(appearance.as_deref());
+    NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());
 }
 
 /// Undoes Hide Grove, which activating alone doesn't. No-op off the main thread.

@@ -48,7 +48,7 @@ fn boot() -> Boot {
         eprintln!("[grove] settings {}: {e}", settings_file.path().display());
         Settings::default()
     });
-    let mut setup = Setup {
+    let first_run = |settings_file, settings| Setup {
         stage: Stage::Choose,
         mode: Mode::FirstRun {
             settings_file,
@@ -59,28 +59,24 @@ fn boot() -> Boot {
         focus: None,
     };
     if let Err(e) = check_git() {
-        setup.stage = Stage::GitProblem(e);
-        return Boot::Setup(setup);
+        return Boot::Setup(Setup {
+            stage: Stage::GitProblem(e),
+            ..first_run(settings_file, settings)
+        });
     }
 
     // Dev/testing: behave as if this folder was just picked in setup.
     if let Some(dir) = std::env::var_os("GROVE_CODE_DIR") {
         let dir = PathBuf::from(dir);
-        setup.scanned = Some(scan(&dir));
-        setup.folder = Some(dir);
-        return Boot::Setup(setup);
+        return Boot::Setup(Setup {
+            scanned: Some(scan(&dir)),
+            folder: Some(dir),
+            ..first_run(settings_file, settings)
+        });
     }
 
-    let Mode::FirstRun {
-        settings_file,
-        settings,
-    } = &setup.mode
-    else {
-        unreachable!("boot is first run");
-    };
-    let (settings_file, settings) = (settings_file.clone(), settings.clone());
     let Some(dir) = settings.code_dir.clone() else {
-        return Boot::Setup(setup);
+        return Boot::Setup(first_run(settings_file, settings));
     };
     // A folder that's gone falls through to the scan, which sends it back to setup.
     let cached = SnapshotCache::beside(&settings_file)
@@ -110,9 +106,11 @@ fn boot() -> Boot {
         snapshot.repos.len()
     );
     if snapshot.repos.is_empty() {
-        setup.folder = Some(dir);
-        setup.scanned = Some(snapshot);
-        return Boot::Setup(setup);
+        return Boot::Setup(Setup {
+            folder: Some(dir),
+            scanned: Some(snapshot),
+            ..first_run(settings_file, settings)
+        });
     }
     Boot::Ready(
         Library {

@@ -1,7 +1,6 @@
 //! Watches repos and worktrees on disk (FSEvents) and says what to refresh.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -36,16 +35,10 @@ impl Changes {
     }
 }
 
-#[derive(Debug)]
+/// FSEvents (or the watcher's thread) couldn't start.
+#[derive(Debug, thiserror::Error)]
+#[error("can't watch for changes: {0}")]
 pub struct WatchError(notify::Error);
-
-impl fmt::Display for WatchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "can't watch for changes: {}", self.0)
-    }
-}
-
-impl std::error::Error for WatchError {}
 
 /// Watches each repo's git dir and each present worktree. Events are debounced on a
 /// thread of its own, which blocks while nothing happens (no polling). Dropping it stops

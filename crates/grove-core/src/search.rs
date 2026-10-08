@@ -1,11 +1,12 @@
 //! Quick switcher search: fuzzy match over every worktree's branch, folder and repo name.
 
+use std::borrow::Cow;
 use std::cmp::Reverse;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::badge::Badge;
-use crate::snapshot::{Presence, RepoSnapshot, Snapshot, Worktree};
+use crate::snapshot::{Presence, Snapshot};
 
 /// Any contiguous run beats any scattered match.
 const SUBSTRING: i32 = 1000;
@@ -48,13 +49,25 @@ pub fn search(snapshot: &Snapshot, recents: &[PathBuf], query: &str) -> Vec<Hit>
         .iter()
         .flat_map(|repo| repo.worktrees.iter().map(move |wt| (repo, wt)))
         .filter_map(|(repo, wt)| {
-            let rank = recents.iter().position(|p| *p == wt.path);
-            let mut hit = Hit::new(repo, wt, rank.is_some());
+            // Scored on borrowed fields: only matches pay for a `Hit`.
+            let folder = folder_name(&wt.path);
+            let mut matches = Matches::default();
             let score = words
                 .iter()
-                .map(|w| hit.match_word(w))
+                .map(|w| matches.add_best(w, wt.branch.as_deref(), &folder, &repo.display_name))
                 .sum::<Option<i32>>()?;
-            hit.matches.normalize();
+            matches.normalize();
+            let rank = recents.iter().position(|p| *p == wt.path);
+            let hit = Hit {
+                path: wt.path.clone(),
+                repo: repo.display_name.clone(),
+                branch: wt.branch.clone(),
+                folder: folder.into_owned(),
+                presence: wt.presence,
+                badges: repo.badges(wt),
+                recent: rank.is_some(),
+                matches,
+            };
             Some((score, rank.unwrap_or(usize::MAX), hit))
         })
         .collect();
@@ -62,32 +75,24 @@ pub fn search(snapshot: &Snapshot, recents: &[PathBuf], query: &str) -> Vec<Hit>
     scored.into_iter().map(|(_, _, hit)| hit).collect()
 }
 
-impl Hit {
-    fn new(repo: &RepoSnapshot, wt: &Worktree, recent: bool) -> Self {
-        let folder = wt.path.file_name().map_or_else(
-            || wt.path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        Self {
-            path: wt.path.clone(),
-            repo: repo.display_name.clone(),
-            branch: wt.branch.clone(),
-            folder,
-            presence: wt.presence,
-            badges: repo.badges(wt),
-            recent,
-            matches: Matches::default(),
-        }
-    }
+fn folder_name(path: &Path) -> Cow<'_, str> {
+    path.file_name().map_or_else(
+        || Cow::Owned(path.display().to_string()),
+        |n| n.to_string_lossy(),
+    )
+}
 
+impl Matches {
     /// Scores `word` against its best field (branch, then folder, then repo if close) and
     /// records where it matched; `None` if no field matches.
-    fn match_word(&mut self, word: &str) -> Option<i32> {
-        let fields = [
-            (self.branch.as_deref(), 30),
-            (Some(self.folder.as_str()), 15),
-            (Some(self.repo.as_str()), 0),
-        ];
+    fn add_best(
+        &mut self,
+        word: &str,
+        branch: Option<&str>,
+        folder: &str,
+        repo: &str,
+    ) -> Option<i32> {
+        let fields = [(branch, 30), (Some(folder), 15), (Some(repo), 0)];
         let (score, field, ranges) = fields
             .into_iter()
             .enumerate()
@@ -96,13 +101,10 @@ impl Hit {
                 Some((score + bonus, i, ranges))
             })
             .max_by_key(|(score, ..)| *score)?;
-        let m = &mut self.matches;
-        [&mut m.branch, &mut m.folder, &mut m.repo][field].extend(ranges);
+        [&mut self.branch, &mut self.folder, &mut self.repo][field].extend(ranges);
         Some(score)
     }
-}
 
-impl Matches {
     fn normalize(&mut self) {
         for ranges in [&mut self.branch, &mut self.folder, &mut self.repo] {
             ranges.sort_by_key(|r| r.start);

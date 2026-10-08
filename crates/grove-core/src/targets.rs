@@ -403,49 +403,41 @@ fn parse_mdfind(out: &str) -> Vec<(PathBuf, String)> {
 }
 
 /// Why there's no editor or terminal to open with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NoTarget {
     /// The configured default names an app that is no longer installed (or a custom
     /// command that's gone).
+    #[error(fmt = fmt_uninstalled)]
     Uninstalled(Role, String),
+    #[error("No {} found (looked for {})", .0.noun(), known_names(*.0))]
     NoneDetected(Role),
     /// A Run in terminal command, but the default terminal can't be told to run one.
+    #[error(
+        "{} can't run custom commands. Pick another terminal or turn off Run in terminal",
+        .0.name()
+    )]
     CantRunCommands(Terminal),
 }
 
-impl std::fmt::Display for NoTarget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NoTarget::Uninstalled(role, id) => {
-                let noun = role.noun();
-                if let Some(label) = custom_label(id) {
-                    return write!(
-                        f,
-                        "Your default {noun}, {label}, isn't a custom command anymore"
-                    );
-                }
-                let name: &str = TargetKind::from_id(*role, id).map_or(id, |k| k.name());
-                write!(f, "Your default {noun}, {name}, isn't installed anymore")
-            }
-            NoTarget::NoneDetected(role) => {
-                let names: Vec<&str> = TargetKind::all()
-                    .filter(|k| k.role() == *role)
-                    .map(TargetKind::name)
-                    .collect();
-                write!(
-                    f,
-                    "No {} found (looked for {})",
-                    role.noun(),
-                    names.join(", ")
-                )
-            }
-            NoTarget::CantRunCommands(t) => write!(
-                f,
-                "{} can't run custom commands. Pick another terminal or turn off Run in terminal",
-                t.name()
-            ),
-        }
+fn fmt_uninstalled(role: &Role, id: &str, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let noun = role.noun();
+    if let Some(label) = custom_label(id) {
+        return write!(
+            f,
+            "Your default {noun}, {label}, isn't a custom command anymore"
+        );
     }
+    let name: &str = TargetKind::from_id(*role, id).map_or(id, |k| k.name());
+    write!(f, "Your default {noun}, {name}, isn't installed anymore")
+}
+
+/// Every detectable app for `role`, comma-separated.
+fn known_names(role: Role) -> String {
+    TargetKind::all()
+        .filter(|k| k.role() == role)
+        .map(TargetKind::name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The configured default for `role`; with none configured, the first detected one. A

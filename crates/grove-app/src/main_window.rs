@@ -113,7 +113,7 @@ impl MainWindow {
             }
         })
         .detach();
-        this.show_repo(selected_repo(cx), cx);
+        this.show_repo(selected_repo(cx).as_deref(), cx);
         if std::env::var_os("GROVE_DEV_OPEN").is_some() {
             this.dev_open(cx);
         }
@@ -147,7 +147,7 @@ impl MainWindow {
             Some(repo) => self
                 .tree
                 .update(cx, |tree, cx| tree.update_repo(Some(repo), cx)),
-            None => self.show_repo(selected_repo(cx), cx),
+            None => self.show_repo(selected_repo(cx).as_deref(), cx),
         }
         cx.notify();
     }
@@ -181,14 +181,10 @@ impl MainWindow {
         }
     }
 
-    fn show_repo(&mut self, name: Option<String>, cx: &mut Context<Self>) {
+    fn show_repo(&mut self, name: Option<&str>, cx: &mut Context<Self>) {
         let library = shell::library(cx);
-        let repo = name
-            .as_deref()
-            .and_then(|n| library.store.snapshot().repo(n))
-            .cloned();
+        let repo = name.and_then(|n| library.store.snapshot().repo(n)).cloned();
         let collapsed = name
-            .as_deref()
             .map(|n| library.settings.collapsed(n).to_vec())
             .unwrap_or_default();
         self.tree
@@ -410,7 +406,7 @@ impl Render for MainWindow {
                 .on_click(cx.listener(move |this, _, window, cx| {
                     shell::select_repo(&name, cx);
                     if this.tree.read(cx).repo_name() != Some(name.as_str()) {
-                        this.show_repo(Some(name.clone()), cx);
+                        this.show_repo(Some(&name), cx);
                     }
                     window.focus(&this.tree.focus_handle(cx), cx);
                     cx.notify();

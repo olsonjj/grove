@@ -61,5 +61,5 @@ fn icon() -> Icon {
             }
         }
     }
-    Icon::from_rgba(rgba, N, N).expect("valid icon")
+    Icon::from_rgba(rgba, N, N).expect("rgba is N×N×4 bytes")
 }

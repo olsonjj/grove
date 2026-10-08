@@ -7,10 +7,13 @@ use serde::{Deserialize, Serialize};
 
 pub const MAX_RECENTS: usize = 10;
 
+/// Everything Grove persists in `settings.json`; missing fields take their defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub code_dir: Option<PathBuf>,
+    /// Editor or terminal id (`Editor::id`, `Terminal::id`); editors may also name a custom
+    /// command (`CustomCommand::id`). `None` = first detected.
     pub default_editor: Option<String>,
     pub default_terminal: Option<String>,
     /// `None` = per-terminal default (see `Terminal::default_opens_in`).
@@ -228,6 +231,7 @@ pub enum TerminalOpensIn {
     Window,
 }
 
+/// A user-defined shell command offered alongside the editors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomCommand {
     pub label: String,

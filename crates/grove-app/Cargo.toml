@@ -8,6 +8,9 @@ publish.workspace = true
 name = "grove"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 gpui-kit.workspace = true
 tray-icon.workspace = true

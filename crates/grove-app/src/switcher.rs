@@ -405,8 +405,8 @@ impl Switcher {
     fn row(&self, ix: usize, hit: &Hit, cx: &mut Context<Self>) -> AnyElement {
         let selected = ix == self.selected;
         let (title, title_ranges) = match &hit.branch {
-            Some(branch) => (branch.clone(), hit.matches.branch.clone()),
-            None => (hit.folder.clone(), hit.matches.folder.clone()),
+            Some(branch) => (branch.clone(), &hit.matches.branch),
+            None => (hit.folder.clone(), &hit.matches.folder),
         };
         let path = DisplayPath::new(&hit.path, home_dir().as_deref());
         // The folder's matches sit at the end of the shown path.
@@ -471,7 +471,7 @@ impl Switcher {
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_ellipsis()
-                                    .child(highlighted(title, &title_ranges)),
+                                    .child(highlighted(title, title_ranges)),
                             )
                             .when(hit.branch.is_none(), |d| {
                                 d.child(

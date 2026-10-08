@@ -712,7 +712,7 @@ impl Render for DetailsView {
             .flex()
             .flex_col()
             .gap(px(18.));
-        let Some(details) = self.details.clone() else {
+        let Some(details) = &self.details else {
             return base
                 .child(
                     div()

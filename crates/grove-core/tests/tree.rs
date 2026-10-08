@@ -246,7 +246,7 @@ fn keyboard_navigation_over_real_tree() {
     );
     assert_eq!(
         navigate(&tree, Some(&feature), NavKey::Up).select,
-        Some(main_wt.clone())
+        Some(main_wt)
     );
     // ← on an open folder collapses it; ← on a child moves to its parent.
     assert_eq!(

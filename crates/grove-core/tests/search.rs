@@ -1,5 +1,7 @@
-// Expected highlight ranges read best as `[start..end]`.
-#![expect(clippy::single_range_in_vec_init)]
+#![expect(
+    clippy::single_range_in_vec_init,
+    reason = "expected highlight ranges read best as `[start..end]`"
+)]
 
 use std::path::PathBuf;
 

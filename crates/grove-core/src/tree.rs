@@ -23,6 +23,7 @@ pub enum RowId {
     DetachedSection,
 }
 
+/// What a row shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKind {
     Folder {
@@ -47,10 +48,13 @@ pub enum RowKind {
     DetachedSection,
 }
 
+/// One visible row of a `Tree`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub id: RowId,
+    /// Indent level; 0 at the top.
     pub depth: usize,
+    /// The folder or branch row it's nested under.
     pub parent: Option<RowId>,
     pub kind: RowKind,
 }
@@ -132,6 +136,7 @@ pub fn tilde(path: &Path, home: Option<&Path>) -> String {
     }
 }
 
+/// `$HOME`, unless unset or empty.
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())

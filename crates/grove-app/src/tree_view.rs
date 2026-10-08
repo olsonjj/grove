@@ -396,7 +396,7 @@ impl TreeView {
                         .child(self.open_button(ix, *presence, cx))
                         .child(self.terminal_button(ix, *presence, cx))
                 }),
-            RowKind::DetachedSection => unreachable!(),
+            RowKind::DetachedSection => unreachable!("rendered above"),
         }
         .test_support()
         .into_any_element()

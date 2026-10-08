@@ -38,42 +38,28 @@ impl fmt::Display for GitVersion {
     }
 }
 
+/// The git binary Grove runs, from `check`.
 #[derive(Debug, Clone)]
 pub struct GitInfo {
     pub binary: PathBuf,
     pub version: GitVersion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// A git command that couldn't run or failed. Serializable so the snapshot cache keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 pub enum GitError {
     /// No usable `git` (not on PATH, or e.g. the /usr/bin/git shim without Xcode CLT).
-    NotFound {
-        detail: String,
-    },
-    TooOld {
-        found: GitVersion,
-    },
-    Timeout {
-        args: String,
-    },
-    Failed {
-        args: String,
-        stderr: String,
-    },
+    #[error("git not found: {detail}")]
+    NotFound { detail: String },
+    #[error("git {found} is older than {MIN_VERSION}")]
+    TooOld { found: GitVersion },
+    /// Killed at its deadline; `args` as run, space-joined.
+    #[error("git {args} timed out")]
+    Timeout { args: String },
+    /// Exited with an unexpected code.
+    #[error("git {args} failed: {}", .stderr.trim())]
+    Failed { args: String, stderr: String },
 }
-
-impl fmt::Display for GitError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotFound { detail } => write!(f, "git not found: {detail}"),
-            Self::TooOld { found } => write!(f, "git {found} is older than {MIN_VERSION}"),
-            Self::Timeout { args } => write!(f, "git {args} timed out"),
-            Self::Failed { args, stderr } => write!(f, "git {args} failed: {}", stderr.trim()),
-        }
-    }
-}
-
-impl std::error::Error for GitError {}
 
 impl GitError {
     /// One line for a status bar: git's first `fatal:`/`error:` message, else its first line.
@@ -120,6 +106,7 @@ impl WorktreeStatus {
     }
 }
 
+/// One path `git status` lists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangedFile {
     pub change: Change,
@@ -181,6 +168,7 @@ pub struct Commit {
     pub time: i64,
 }
 
+/// A branch's upstream, from `git status --branch`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Upstream {
     /// No upstream configured, or HEAD is detached.
@@ -228,6 +216,7 @@ pub fn check() -> Result<GitInfo, GitError> {
     })
 }
 
+/// `git worktree list --porcelain`, main worktree (or the bare repo) first.
 pub fn worktree_list(repo: &Path) -> Result<Vec<WorktreeEntry>, GitError> {
     let out = run(Some(repo), &["worktree", "list", "--porcelain"], READ)?;
     Ok(parse_worktree_list(&out))

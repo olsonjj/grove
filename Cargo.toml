@@ -17,6 +17,7 @@ serde_json = "=1.0.151"
 tempfile = "=3.27.0"
 notify = "=8.2.0"
 libc = "=0.2.190"
+thiserror = "=2.0.21"
 grove-core = { path = "crates/grove-core" }
 objc2 = "=0.6.4"
 objc2-foundation = "=0.3.2"
@@ -36,3 +37,8 @@ objc2-service-management = { version = "=0.3.2", default-features = false, featu
     "objc2",
     "objc2-foundation",
 ] }
+
+[workspace.lints.clippy]
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+todo = "warn"

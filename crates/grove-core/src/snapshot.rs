@@ -42,6 +42,7 @@ impl Snapshot {
     }
 }
 
+/// One discovered repo and its worktrees.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoSnapshot {
     pub repo: RepoRef,
@@ -50,6 +51,7 @@ pub struct RepoSnapshot {
     /// Main worktree first (normal repos), then linked worktrees in git's order.
     /// Bare repos have only linked worktrees.
     pub worktrees: Vec<Worktree>,
+    /// `git worktree list` failed; `worktrees` is empty.
     pub error: Option<GitError>,
     /// The last fetch failed, so ahead/behind and upstream gone are as of an earlier one.
     #[serde(default)]
@@ -66,6 +68,7 @@ impl RepoSnapshot {
     }
 }
 
+/// One entry of `git worktree list` (bare entries skipped).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worktree {
     pub path: PathBuf,
@@ -123,6 +126,7 @@ fn presence_in(path: &Path, volumes: &Path) -> Presence {
     }
 }
 
+/// One worktree's `git status` read.
 pub type StatusResult = Result<WorktreeStatus, GitError>;
 
 /// Status reads for present worktrees, stamped when issued (see `SnapshotStore`).
@@ -197,6 +201,7 @@ impl ScanRead {
     }
 }
 
+/// A finished `ScanRead`, for `SnapshotStore::apply_scan`.
 #[derive(Debug, Clone)]
 pub struct ScanResult {
     stamp: u64,
@@ -222,6 +227,7 @@ impl RepoRead {
     }
 }
 
+/// A finished `RepoRead`, for `SnapshotStore::apply_repo`.
 #[derive(Debug, Clone)]
 pub struct RepoResult {
     stamp: u64,
@@ -268,6 +274,7 @@ impl FetchRead {
     }
 }
 
+/// A finished `FetchRead`, for `SnapshotStore::apply_fetch`.
 #[derive(Debug, Clone)]
 pub struct FetchResult {
     stamp: u64,
@@ -560,8 +567,7 @@ impl SnapshotStore {
 
     /// Records each repo's fetch outcome, the reread statuses, and the fetch time if any repo
     /// fetched. A failed repo keeps its last-known counts, marked stale until a fetch
-    /// succeeds. `None` if it
-    /// predates a `replace`.
+    /// succeeds. `None` if it predates a `replace`.
     pub fn apply_fetch(&mut self, result: FetchResult) -> Option<FetchReport> {
         if result.stamp <= self.floor {
             return None;

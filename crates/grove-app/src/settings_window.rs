@@ -694,7 +694,7 @@ impl SettingsWindow {
             ))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "one call per toggle row")]
     fn toggle(
         &self,
         id: &'static str,

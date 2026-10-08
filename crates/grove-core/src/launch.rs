@@ -2,7 +2,7 @@
 //! existing window; every open asks for a new window or tab.
 
 use std::ffi::OsString;
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,7 @@ const OSASCRIPT_WAIT: Duration = Duration::from_secs(120);
 /// After exit, how long to wait for stderr EOF (a daemonized child may hold the pipe).
 const STDERR_GRACE: Duration = Duration::from_millis(200);
 
+/// What opening a worktree runs, from `plan` or `plan_command`; `execute` runs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchPlan {
     /// Run `program` with `args` in `cwd`, resolved PATH applied. No shell involved.
@@ -115,11 +116,16 @@ pub fn plan_command(
 }
 
 /// Why a custom command can't run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CommandError {
-    Target(NoTarget),
+    #[error(transparent)]
+    Target(#[from] NoTarget),
     /// Run in terminal, but the path has control characters, which typed into a shell
     /// would act as keystrokes.
+    #[error(
+        "Can't run a command in a terminal at {}: the path has control characters",
+        .0.to_string_lossy().escape_debug()
+    )]
     ControlChars(PathBuf),
 }
 
@@ -127,25 +133,6 @@ impl CommandError {
     /// Fixable in settings.
     pub fn in_settings(&self) -> bool {
         matches!(self, CommandError::Target(_))
-    }
-}
-
-impl From<NoTarget> for CommandError {
-    fn from(e: NoTarget) -> Self {
-        CommandError::Target(e)
-    }
-}
-
-impl fmt::Display for CommandError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            CommandError::Target(e) => e.fmt(f),
-            CommandError::ControlChars(p) => write!(
-                f,
-                "Can't run a command in a terminal at {}: the path has control characters",
-                p.to_string_lossy().escape_debug()
-            ),
-        }
     }
 }
 
@@ -423,19 +410,21 @@ fn percent_encode(path: &Path) -> String {
         if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
             out.push(b as char);
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            let _ = write!(out, "%{b:02X}");
         }
     }
     out
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Why a plan didn't open anything. Errors are strings so the type stays `Clone + Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LaunchError {
+    #[error("Folder not found: {}", .0.display())]
     MissingFolder(PathBuf),
-    Spawn {
-        program: String,
-        error: String,
-    },
+    #[error("Couldn't run {program}: {error}")]
+    Spawn { program: String, error: String },
+    /// Exited non-zero; `stderr` is its last line, maybe empty.
+    #[error(fmt = fmt_exit)]
     Exit {
         program: String,
         status: String,
@@ -443,20 +432,11 @@ pub enum LaunchError {
     },
 }
 
-impl fmt::Display for LaunchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LaunchError::MissingFolder(p) => write!(f, "Folder not found: {}", p.display()),
-            LaunchError::Spawn { program, error } => write!(f, "Couldn't run {program}: {error}"),
-            LaunchError::Exit {
-                program,
-                status,
-                stderr,
-            } if stderr.is_empty() => write!(f, "{program} failed ({status})"),
-            LaunchError::Exit {
-                program, stderr, ..
-            } => write!(f, "{program} failed: {stderr}"),
-        }
+fn fmt_exit(program: &str, status: &str, stderr: &str, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    if stderr.is_empty() {
+        write!(f, "{program} failed ({status})")
+    } else {
+        write!(f, "{program} failed: {stderr}")
     }
 }
 
@@ -488,6 +468,7 @@ pub enum Fallback {
     Failed(String),
 }
 
+/// How a plan that didn't fail went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     Opened,
@@ -523,6 +504,7 @@ pub fn execute(plan: &LaunchPlan, env: &ShellEnv) -> Result<Outcome, LaunchError
     execute_with(plan, env, &Runner::default())
 }
 
+/// `execute` with a custom `runner`.
 pub fn execute_with(
     plan: &LaunchPlan,
     env: &ShellEnv,

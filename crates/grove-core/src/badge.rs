@@ -3,6 +3,7 @@
 use crate::git::{GitError, Upstream};
 use crate::snapshot::{Presence, RepoSnapshot, Worktree};
 
+/// One fact about a worktree, as a short label (`label`) and a sentence (`description`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Badge {
     MainWorktree,

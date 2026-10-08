@@ -13,6 +13,7 @@ use crate::snapshot::Snapshot;
 /// New `#[serde(default)]` fields are compatible.
 const VERSION: u32 = 1;
 
+/// `snapshot.json`: the last `Snapshot`, versioned.
 #[derive(Debug, Clone)]
 pub struct SnapshotCache {
     path: PathBuf,

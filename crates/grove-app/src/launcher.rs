@@ -285,7 +285,8 @@ fn open(
             |pane: &str| format!("allow Grove in System Settings → Privacy & Security → {pane}");
         let mut window = format!("Opened {path} in a new {app} window");
         if let Some(label) = &skipped {
-            window.push_str(&format!(" without running {label}"));
+            window.push_str(" without running ");
+            window.push_str(label);
         }
         let (text, warn) = match outcome {
             Outcome::Opened | Outcome::FellBack(Fallback::NotRunning) => return None,

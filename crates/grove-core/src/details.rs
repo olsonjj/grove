@@ -8,6 +8,7 @@ use crate::launch::shell_quote;
 use crate::snapshot::{RepoSnapshot, Worktree};
 use crate::tree::RowId;
 
+/// The details pane for one tree row, from `RepoSnapshot::details`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Details {
     /// Full branch name, worktree folder name, or folder prefix.

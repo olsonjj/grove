@@ -1,6 +1,6 @@
 //! Menu bar popover: every worktree by repo with its state and open buttons.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use gpui_kit::base::Button;
@@ -151,7 +151,7 @@ impl Popover {
 
     /// Opens `path`; closes shortly after the launch went through, or stays open to show
     /// why it didn't. Every line also reaches the main window's status bar.
-    fn open(&mut self, path: PathBuf, presence: Presence, role: Role, cx: &mut Context<Self>) {
+    fn open(&mut self, path: &Path, presence: Presence, role: Role, cx: &mut Context<Self>) {
         if let Some(line) = &self.launching {
             let notice = Notice {
                 text: format!("{line} Still opening…"),
@@ -161,7 +161,7 @@ impl Popover {
         }
         self.seq += 1;
         let seq = self.seq;
-        let opening = match launcher::open_worktree(&path, presence, role, None, cx) {
+        let opening = match launcher::open_worktree(path, presence, role, None, cx) {
             Ok(opening) => opening,
             Err(e) => {
                 let notice = Notice {
@@ -372,7 +372,7 @@ impl Popover {
                 path,
                 label,
                 mode,
-                cx.listener(move |this, _, _, cx| this.open(wt.clone(), presence, role, cx)),
+                cx.listener(move |this, _, _, cx| this.open(&wt, presence, role, cx)),
             )
         };
         let mut a11y = format!("{}, {}", row.name, row.state.text);
@@ -604,7 +604,7 @@ impl Render for Popover {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{Point, TestAppContext};
