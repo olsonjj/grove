@@ -484,22 +484,39 @@ fn start_watching(cx: &mut App) {
 
 fn apply_changes(changes: &Changes, cx: &mut App) {
     for git_dir in &changes.repos {
-        let Some(read) = cx.global_mut::<Library>().store.repo_read(git_dir) else {
-            continue;
-        };
-        cx.spawn(async move |cx| {
-            let result = cx.background_spawn(async move { read.run() }).await;
-            cx.update(|cx| {
-                if cx.global_mut::<Library>().store.apply_repo(result) {
-                    snapshot_changed(cx);
-                }
-            });
-        })
-        .detach();
+        reread_repo(git_dir, cx);
     }
     for path in &changes.worktrees {
         read_status(path, cx);
     }
+}
+
+/// Rereads one repo's worktrees and statuses in the background.
+fn reread_repo(git_dir: &Path, cx: &mut App) {
+    let Some(read) = cx.global_mut::<Library>().store.repo_read(git_dir) else {
+        return;
+    };
+    cx.spawn(async move |cx| {
+        let result = cx.background_spawn(async move { read.run() }).await;
+        cx.update(|cx| {
+            if cx.global_mut::<Library>().store.apply_repo(result) {
+                snapshot_changed(cx);
+            }
+        });
+    })
+    .detach();
+}
+
+/// After Grove removed or pruned `worktree`: forgets when it was opened and rereads its repo.
+pub fn worktree_removed(git_dir: &Path, worktree: &Path, cx: &mut App) {
+    if cx
+        .global_mut::<Library>()
+        .settings
+        .forget_worktree(worktree)
+    {
+        save_settings(cx);
+    }
+    reread_repo(git_dir, cx);
 }
 
 /// After repos or worktrees may have come or gone: re-aim the watcher, update the cache.

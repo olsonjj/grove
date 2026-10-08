@@ -7,17 +7,20 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Role as A11yRole,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt,
-    Window, div, px, rgb,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
+    Pixels, Point, Render, Role as A11yRole, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, anchored, deferred,
+    div, px, rgb,
 };
 use grove_core::{
     Badge, LastOpened, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind,
     SortMode, Tree, navigate,
 };
 
+use crate::details_view::{LeaveMenu, LeaveMenuBack, MENU_CONTEXT};
 use crate::icons::{self, icon};
 use crate::launcher::Choice;
+use crate::removal::{self, Offer, RemoveRequested};
 use crate::sort_menu::{SortChosen, SortMenu, SortMenuIds};
 use crate::theme;
 
@@ -50,10 +53,22 @@ pub struct TreeView {
     scroll: ScrollHandle,
     sort_menu: Entity<SortMenu>,
     _sort_chosen: Subscription,
+    row_menu: Option<RowMenu>,
+    row_menu_item: FocusHandle,
+    /// Holds focus when the item is disabled (a disabled button can't), so Esc still closes.
+    row_menu_focus: FocusHandle,
+}
+
+/// A worktree row's context menu.
+struct RowMenu {
+    path: PathBuf,
+    offer: Offer,
+    at: Point<Pixels>,
 }
 
 impl EventEmitter<CollapseChanged> for TreeView {}
 impl EventEmitter<OpenRequested> for TreeView {}
+impl EventEmitter<RemoveRequested> for TreeView {}
 /// Forwarded from the header's sort menu; the owner persists it.
 impl EventEmitter<SortChosen> for TreeView {}
 
@@ -86,6 +101,9 @@ impl TreeView {
             scroll: ScrollHandle::new(),
             sort_menu,
             _sort_chosen: sort_chosen,
+            row_menu: None,
+            row_menu_item: cx.focus_handle(),
+            row_menu_focus: cx.focus_handle(),
         }
     }
 
@@ -138,6 +156,11 @@ impl TreeView {
             return;
         }
         self.repo = repo.cloned();
+        let old: Vec<RowId> = self.tree.rows.iter().map(|r| r.id.clone()).collect();
+        let old_ix = self
+            .selected
+            .as_ref()
+            .and_then(|id| old.iter().position(|r| r == id));
         self.rebuild();
         if self
             .selected
@@ -145,7 +168,23 @@ impl TreeView {
             .is_some_and(|id| self.tree.index_of(id).is_none())
         {
             self.selected = None;
-            self.apply(navigate(&self.tree, None, NavKey::Down), cx);
+            // The row that took its place: the next surviving one, else the previous.
+            let survivor = old_ix.and_then(|ix| {
+                let lands = |id: &RowId| {
+                    self.tree
+                        .index_of(id)
+                        .filter(|&i| self.tree.selectable(i))
+                        .map(|_| id.clone())
+                };
+                old[ix + 1..]
+                    .iter()
+                    .find_map(lands)
+                    .or_else(|| old[..ix].iter().rev().find_map(lands))
+            });
+            match survivor {
+                Some(id) => self.select(id),
+                None => self.apply(navigate(&self.tree, None, NavKey::Down), cx),
+            }
         }
         cx.notify();
     }
@@ -292,6 +331,142 @@ impl TreeView {
         self.apply(effect, cx);
     }
 
+    /// Selects a worktree row and opens its menu, if it has one (not the main worktree).
+    fn open_row_menu(
+        &mut self,
+        ix: usize,
+        at: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.tree.rows.get(ix) else {
+            return;
+        };
+        let RowKind::Worktree { path, .. } = &row.kind else {
+            return;
+        };
+        let wt = self
+            .repo
+            .as_ref()
+            .and_then(|r| r.worktrees.iter().find(|w| &w.path == path));
+        let offer = wt.and_then(removal::offer);
+        let path = path.clone();
+        self.select(row.id.clone());
+        match offer {
+            Some(offer) => {
+                let focus = match offer.reason {
+                    None => &self.row_menu_item,
+                    Some(_) => &self.row_menu_focus,
+                };
+                window.focus(focus, cx);
+                self.row_menu = Some(RowMenu { path, offer, at });
+            }
+            None => window.focus(&self.focus, cx),
+        }
+        cx.notify();
+    }
+
+    fn close_row_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.row_menu.take().is_some() {
+            window.focus(&self.focus, cx);
+            cx.notify();
+        }
+    }
+
+    fn row_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let menu = self.row_menu.as_ref()?;
+        let path = menu.path.clone();
+        let enabled = menu.offer.reason.is_none();
+        let item = Button::new("tree-menu-remove")
+            .track_focus(&self.row_menu_item)
+            .tab_stop(false)
+            .role(gpui_kit::Role::MenuItem)
+            .accessibility_label(menu.offer.label)
+            .when_some(menu.offer.reason.clone(), |b, reason| {
+                b.aria_description(reason)
+            })
+            .disabled(!enabled)
+            .h(px(28.))
+            .px(px(10.))
+            .justify_start()
+            .rounded(px(5.))
+            .focus(|s| s.bg(theme::selected()))
+            .when_else(
+                enabled,
+                |b| {
+                    b.cursor_pointer()
+                        .text_color(theme::text())
+                        .hover(|s| s.bg(theme::selected()))
+                },
+                |b| b.text_color(theme::faint()),
+            )
+            .child(menu.offer.label)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.close_row_menu(window, cx);
+                cx.emit(RemoveRequested { path: path.clone() });
+            }));
+        let reason = menu.offer.reason.clone().map(|reason| {
+            div()
+                .id("tree-menu-reason")
+                .aria_label(reason.clone())
+                .max_w(px(280.))
+                .px(px(10.))
+                .pb(px(4.))
+                .text_size(px(12.))
+                .text_color(theme::muted())
+                .child(reason)
+                .test_support()
+        });
+        Some(
+            deferred(
+                anchored().position(menu.at).snap_to_window().child(
+                    div()
+                        .id("tree-menu")
+                        .track_focus(&self.row_menu_focus)
+                        .role(gpui_kit::Role::Menu)
+                        .key_context(MENU_CONTEXT)
+                        .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                            if ev.keystroke.key == "escape" {
+                                this.close_row_menu(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .on_action(cx.listener(|this, _: &LeaveMenu, window, cx| {
+                            this.close_row_menu(window, cx);
+                            window.focus_next(cx);
+                        }))
+                        .on_action(cx.listener(|this, _: &LeaveMenuBack, window, cx| {
+                            this.close_row_menu(window, cx);
+                            window.focus_prev(cx);
+                        }))
+                        // Outside click closes the menu and is swallowed, like a native menu.
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.row_menu = None;
+                            cx.stop_propagation();
+                            cx.notify();
+                        }))
+                        .min_w(px(160.))
+                        .p(px(4.))
+                        .flex()
+                        .flex_col()
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(theme::border_strong())
+                        .bg(theme::raised())
+                        .shadow_lg()
+                        .occlude()
+                        .font_family(theme::SANS)
+                        .text_size(px(13.))
+                        .child(item)
+                        .children(reason)
+                        .test_support(),
+                ),
+            )
+            .with_priority(1)
+            .into_any_element(),
+        )
+    }
+
     fn count_line(&self) -> String {
         let t = &self.tree;
         let plural =
@@ -359,7 +534,14 @@ impl TreeView {
             .role(A11yRole::TreeItem)
             .aria_label(row_label(row))
             .aria_selected(selected)
-            .on_click(cx.listener(move |this, _, window, cx| this.on_row_click(ix, window, cx)));
+            .on_click(cx.listener(move |this, _, window, cx| this.on_row_click(ix, window, cx)))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.open_row_menu(ix, ev.position, window, cx);
+                    cx.stop_propagation();
+                }),
+            );
 
         match &row.kind {
             RowKind::Folder {
@@ -633,6 +815,7 @@ impl Render for TreeView {
             .map(|(ix, row)| self.render_row(ix, row, cx))
             .collect();
         let empty = rows.is_empty();
+        let row_menu = self.row_menu(cx);
         let error = self
             .repo
             .as_ref()
@@ -709,6 +892,7 @@ impl Render for TreeView {
                     .children(rows)
                     .test_support(),
             )
+            .children(row_menu)
     }
 }
 

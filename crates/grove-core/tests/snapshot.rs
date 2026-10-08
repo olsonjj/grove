@@ -282,6 +282,21 @@ fn record_open_stamps_last_opened_for_every_worktree() {
 }
 
 #[test]
+fn removal_forgets_when_the_worktree_was_opened() {
+    let mut s = Settings::default();
+    s.record_open(&PathBuf::from("/w/a"), 1_700_000_000);
+    s.record_open(&PathBuf::from("/w/b"), 1_700_000_000);
+
+    assert!(s.forget_worktree(&PathBuf::from("/w/a")));
+
+    assert_eq!(
+        s.last_opened.keys().collect::<Vec<_>>(),
+        [&PathBuf::from("/w/b")]
+    );
+    assert!(!s.forget_worktree(&PathBuf::from("/w/a")));
+}
+
+#[test]
 fn rescan_prunes_last_opened_for_vanished_worktrees() {
     let f = Fixture::new();
     let api = init_repo(&f.code().join("api"));

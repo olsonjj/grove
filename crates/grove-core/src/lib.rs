@@ -10,6 +10,7 @@ mod launch;
 mod menu;
 mod order;
 mod process;
+mod removal;
 mod search;
 mod settings;
 mod snapshot;
@@ -23,8 +24,8 @@ pub use details::{Details, cd_command, relative_time, unix_now};
 pub use discovery::{RepoRef, discover};
 pub use env::{PathSource, ShellEnv, resolved_env};
 pub use git::{
-    Change, ChangedFile, Commit, GitError, Upstream, WorktreeStatus, read_worktree_status,
-    recent_commits,
+    Change, ChangedFile, Commit, GitError, Upstream, WorktreeStatus, prune_worktrees,
+    read_worktree_status, recent_commits, remove_worktree,
 };
 pub use launch::{
     CommandError, Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, command_line,
@@ -32,6 +33,7 @@ pub use launch::{
 };
 pub use menu::{MenuGroup, MenuRow, StateLine, menu};
 pub use order::{RepoOrder, activity_time, repo_activity, repo_order};
+pub use removal::{RemovalPlan, read_removal_plan};
 pub use search::{Hit, Matches, search};
 pub use settings::{
     CustomCommand, LastOpened, LoginItemHost, LoginItemStatus, MAX_RECENTS, Preferences, Settings,

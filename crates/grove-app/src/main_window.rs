@@ -2,19 +2,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui_kit::base::Button;
+use gpui_kit::component::WindowExt;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable,
     FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     ParentElement, Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, Subscription, TestSupportExt, TitlebarOptions, Window, WindowBounds, WindowKind,
-    WindowOptions, anchored, deferred, div, px, size,
+    Styled, Subscription, TestSupportExt, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowKind, WindowOptions, anchored, deferred, div, px, size,
 };
-use grove_core::{RepoSnapshot, repo_order};
+use grove_core::{GitError, RemovalPlan, RepoSnapshot, Worktree, read_removal_plan, repo_order};
 
 use crate::details_view::{self, DetailsView, LeaveMenu, LeaveMenuBack};
 use crate::icons::{self, icon};
+use crate::removal::{self, Job, RemoveRequested};
 use crate::sort_menu::{SortChosen, SortMenu, SortMenuIds};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
@@ -52,7 +54,27 @@ struct MainWindow {
     repo_scroll: ScrollHandle,
     /// The sidebar order last rendered, to scroll the selection back into view on a reorder.
     shown_order: Vec<String>,
-    _subs: [Subscription; 10],
+    /// The open remove confirm.
+    removal: Option<Removal>,
+    _subs: [Subscription; 12],
+}
+
+/// A worktree to remove or prune, and its repo.
+#[derive(Clone)]
+struct Target {
+    repo: PathBuf,
+    git_dir: PathBuf,
+    worktree: Worktree,
+}
+
+#[derive(Clone)]
+struct Removal {
+    target: Target,
+    plan: RemovalPlan,
+    confirm: removal::Confirm,
+    running: bool,
+    cancel: FocusHandle,
+    ok: FocusHandle,
 }
 
 /// A sidebar row's context menu.
@@ -112,6 +134,13 @@ impl MainWindow {
         let details_open = cx.subscribe(&details, |this, _, ev: &OpenRequested, cx| {
             this.open(ev, cx);
         });
+        let tree_remove = cx.subscribe_in(&tree, window, |this, _, ev: &RemoveRequested, w, cx| {
+            this.request_removal(&ev.path, w, cx);
+        });
+        let details_remove =
+            cx.subscribe_in(&details, window, |this, _, ev: &RemoveRequested, w, cx| {
+                this.request_removal(&ev.path, w, cx);
+            });
         let notice = cx.subscribe(&details, |this, _, ev: &details_view::Notice, cx| {
             this.open_seq += 1;
             this.set_status(ev.text.clone(), ev.error, false, cx);
@@ -144,6 +173,7 @@ impl MainWindow {
             repo_sort,
             repo_scroll: ScrollHandle::new(),
             shown_order: Vec::new(),
+            removal: None,
             _subs: [
                 collapse,
                 open,
@@ -155,6 +185,8 @@ impl MainWindow {
                 fetcher,
                 notices,
                 activation,
+                tree_remove,
+                details_remove,
             ],
         };
         cx.spawn(async move |this, cx| {
@@ -296,6 +328,171 @@ impl MainWindow {
                 .detach();
             }
         }
+    }
+
+    /// Remove worktree… / Prune from the tree or details pane. Removal reads the worktree's
+    /// status fresh, then confirms; Prune runs at once (nothing on disk to lose).
+    fn request_removal(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        if self.removal.is_some() {
+            return;
+        }
+        let snapshot = shell::library(cx).store.snapshot().clone();
+        let Some(target) = snapshot.repos.iter().find_map(|r| {
+            let wt = r.worktrees.iter().find(|w| w.path == path)?;
+            Some(Target {
+                repo: r.repo.path.clone(),
+                git_dir: r.repo.git_dir.clone(),
+                worktree: wt.clone(),
+            })
+        }) else {
+            return;
+        };
+        if let Some(plan) = RemovalPlan::gate(&target.worktree) {
+            return self.confirm_removal(target, plan, window, cx);
+        }
+        cx.spawn_in(window, async move |this, cx| {
+            let wt = target.worktree.clone();
+            let plan = cx
+                .background_spawn(async move { read_removal_plan(&wt) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.confirm_removal(target, plan, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_removal(
+        &mut self,
+        target: Target,
+        plan: RemovalPlan,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = tilde(&target.worktree.path);
+        let Some(confirm) = removal::confirm(&target.worktree, &plan) else {
+            return match plan {
+                RemovalPlan::Prune => self.run_job(target, Job::Prune, window, cx),
+                RemovalPlan::NotAllowed(why) => {
+                    self.open_seq += 1;
+                    self.set_status(format!("Can't remove {path}: {why}"), true, false, cx);
+                }
+                RemovalPlan::Clean | RemovalPlan::Dirty { .. } => {}
+            };
+        };
+        if self.removal.is_some() {
+            return;
+        }
+        let cancel = cx.focus_handle();
+        self.removal = Some(Removal {
+            target,
+            plan,
+            confirm,
+            running: false,
+            cancel: cancel.clone(),
+            ok: cx.focus_handle(),
+        });
+        let main = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, cx| {
+            let Some(r) = main.upgrade().and_then(|m| m.read(cx).removal.clone()) else {
+                return alert;
+            };
+            let (on_ok, on_cancel) = (main.clone(), main.clone());
+            alert
+                .title(r.confirm.title.clone())
+                .description(
+                    div()
+                        .id("remove-message")
+                        .aria_label(r.confirm.message.clone())
+                        .child(r.confirm.message.clone())
+                        .test_support(),
+                )
+                .footer(removal_footer(&r, main.clone()))
+                // The dialog binds Enter to OK; make it press the focused button instead.
+                .on_ok(move |_, window, cx| {
+                    on_ok
+                        .update(cx, |this, cx| {
+                            let Some(r) = &this.removal else { return true };
+                            if r.cancel.is_focused(window) {
+                                this.cancel_removal(cx)
+                            } else {
+                                if r.ok.is_focused(window) {
+                                    this.start_removal(window, cx);
+                                }
+                                false
+                            }
+                        })
+                        .unwrap_or(true)
+                })
+                .on_cancel(move |_, _, cx| {
+                    on_cancel
+                        .update(cx, |this, cx| this.cancel_removal(cx))
+                        .unwrap_or(true)
+                })
+        });
+        window.focus(&cancel, cx);
+        cx.notify();
+    }
+
+    /// False while removal runs: it can't be stopped.
+    fn cancel_removal(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.removal.as_ref().is_some_and(|r| r.running) {
+            return false;
+        }
+        self.removal = None;
+        cx.notify();
+        true
+    }
+
+    fn start_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(r) = self.removal.as_mut().filter(|r| !r.running) else {
+            return;
+        };
+        r.running = true;
+        let (target, force) = (r.target.clone(), r.plan.force());
+        window.refresh();
+        self.run_job(target, Job::Remove { force }, window, cx);
+    }
+
+    fn run_job(&mut self, target: Target, job: Job, window: &mut Window, cx: &mut Context<Self>) {
+        let run = removal::runner(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let (repo, path) = (target.repo.clone(), target.worktree.path.clone());
+            let result = cx
+                .background_spawn(async move { run(&repo, &path, job) })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.finish_removal(&target, job, result, window, cx)
+            });
+        })
+        .detach();
+    }
+
+    fn finish_removal(
+        &mut self,
+        target: &Target,
+        job: Job,
+        result: Result<(), GitError>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.removal.take().is_some() {
+            window.close_dialog(cx);
+        }
+        let path = tilde(&target.worktree.path);
+        let (verb, failed) = match job {
+            Job::Remove { .. } => ("Removed", "Couldn't remove"),
+            Job::Prune => ("Pruned", "Couldn't prune"),
+        };
+        let (text, error) = match result {
+            Ok(()) => {
+                shell::worktree_removed(&target.git_dir, &target.worktree.path, cx);
+                (format!("{verb} {path}"), false)
+            }
+            Err(e) => (format!("{failed} {path}: {}", e.brief()), true),
+        };
+        self.open_seq += 1;
+        self.set_status(text, error, false, cx);
     }
 
     fn top_bar(&self, repo: Option<&RepoSnapshot>, cx: &mut Context<Self>) -> AnyElement {
@@ -895,6 +1092,71 @@ impl MainWindow {
     }
 }
 
+/// Cancel (focused first) and the confirm, which shows progress while removal runs.
+fn removal_footer(r: &Removal, main: WeakEntity<MainWindow>) -> impl IntoElement {
+    let cancel_main = main.clone();
+    let (bg, fg, hover) = if r.confirm.destructive {
+        (theme::warn_text(), theme::bg(), theme::warn_text())
+    } else {
+        (theme::accent(), theme::on_accent(), theme::accent_hover())
+    };
+    let button = |id: &'static str| {
+        Button::new(id)
+            .disabled(r.running)
+            .h(px(30.))
+            .px(px(14.))
+            .rounded(px(7.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .focus_visible(|s| s.border_color(theme::link()))
+            .text_size(px(13.))
+            .when(!r.running, |b| b.cursor_pointer())
+    };
+    div()
+        .flex()
+        .justify_end()
+        .gap(px(8.))
+        .px(px(16.))
+        .child(
+            button("remove-cancel")
+                .track_focus(&r.cancel)
+                .accessibility_label("Cancel")
+                .bg(theme::raised())
+                .text_color(theme::text())
+                .hover(|s| s.bg(theme::border()))
+                .child("Cancel")
+                .on_click(move |_, window, cx| {
+                    if matches!(
+                        cancel_main.update(cx, |this, cx| this.cancel_removal(cx)),
+                        Ok(true)
+                    ) {
+                        window.close_dialog(cx);
+                    }
+                }),
+        )
+        .child(
+            button("remove-confirm")
+                .track_focus(&r.ok)
+                .accessibility_label(if r.running {
+                    "Removing…"
+                } else {
+                    r.confirm.ok
+                })
+                .bg(bg)
+                .text_color(fg)
+                .font_weight(FontWeight::SEMIBOLD)
+                .hover(move |s| s.bg(hover))
+                .child(if r.running {
+                    "Removing…"
+                } else {
+                    r.confirm.ok
+                })
+                .on_click(move |_, window, cx| {
+                    let _ = main.update(cx, |this, cx| this.start_removal(window, cx));
+                }),
+        )
+}
+
 /// "PINNED · 2", "REPOSITORIES · 40".
 fn group_header(id: &'static str, text: String) -> impl Styled + IntoElement {
     div()
@@ -1021,6 +1283,7 @@ fn open_with(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
     use gpui_kit::test::TestWindowExt;
@@ -3006,5 +3269,321 @@ mod tests {
             main.read_with(cx, |m, cx| m.tree.read(cx).selected().cloned()),
             Some(RowId::Branch("feature/x".into()))
         );
+    }
+
+    /// Index of the tree row for the worktree at `path`.
+    fn row_of(cx: &mut TestAppContext, main: &Entity<MainWindow>, path: &Path) -> usize {
+        main.read_with(cx, |m, cx| {
+            m.tree
+                .read(cx)
+                .tree()
+                .index_of(&RowId::Worktree(path.into()))
+                .unwrap_or_else(|| panic!("no row for {}", path.display()))
+        })
+    }
+
+    fn right_click(
+        cx: &mut TestAppContext,
+        w: AnyWindowHandle,
+        id: impl Into<gpui_kit::ElementId>,
+    ) {
+        let id = id.into();
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click(id, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn remove_is_offered_on_linked_worktrees_only(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[2].locked = true; // api-y
+        repo.worktrees[3].presence = Presence::Missing; // api-z
+        fake_presence(cx, "/c/wt/api-z", Presence::Missing);
+        let (w, main) = launch_repo(cx, &file, repo);
+        let row = |cx: &mut TestAppContext, p: &str| row_of(cx, &main, Path::new(p));
+
+        let ix = row(cx, "/c/api");
+        click(cx, w, ("tree-row", ix));
+        assert!(!found(cx, w, "details-remove"));
+        right_click(cx, w, ("tree-row", ix));
+        assert!(!found(cx, w, "tree-menu"));
+
+        let ix = row(cx, "/c/wt/api-x");
+        click(cx, w, ("tree-row", ix));
+        assert_eq!(label_of(cx, w, "details-remove"), "Remove worktree…");
+        assert!(!found(cx, w, "details-remove-reason"));
+        right_click(cx, w, ("tree-row", ix));
+        assert_eq!(label_of(cx, w, "tree-menu-remove"), "Remove worktree…");
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "tree-menu"));
+
+        let ix = row(cx, "/c/wt/api-y");
+        click(cx, w, ("tree-row", ix));
+        let locked = "Can't remove: it's locked (run git worktree unlock first)";
+        assert_eq!(label_of(cx, w, "details-remove-reason"), locked);
+        // Disabled: clicks do nothing.
+        click(cx, w, "details-remove");
+        right_click(cx, w, ("tree-row", ix));
+        assert_eq!(label_of(cx, w, "tree-menu-reason"), locked);
+        click(cx, w, "tree-menu-remove");
+        assert!(main.read_with(cx, |m, _| m.removal.is_none()));
+        assert_eq!(status(cx, &main), None);
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "tree-menu"));
+
+        let ix = row(cx, "/c/wt/api-z");
+        click(cx, w, ("tree-row", ix));
+        assert_eq!(label_of(cx, w, "details-remove"), "Prune");
+        right_click(cx, w, ("tree-row", ix));
+        assert_eq!(label_of(cx, w, "tree-menu-remove"), "Prune");
+    }
+
+    type Removals = Arc<Mutex<Vec<(PathBuf, Job)>>>;
+
+    /// Records each removal, then runs it for real (temp repos only) or fails with `fail`.
+    fn fake_remover(cx: &mut TestAppContext, fail: Option<&'static str>) -> Removals {
+        let calls: Removals = Default::default();
+        let sink = calls.clone();
+        cx.update(|cx| {
+            cx.set_global(removal::Remover {
+                run: Arc::new(move |repo, path, job| {
+                    sink.lock().unwrap().push((path.to_path_buf(), job));
+                    match fail {
+                        Some(stderr) => Err(GitError::Failed {
+                            args: "worktree remove".into(),
+                            stderr: stderr.into(),
+                        }),
+                        None => removal::run(repo, path, job),
+                    }
+                }),
+            })
+        });
+        calls
+    }
+
+    /// Real repo `api` in `tmp/code` with clean worktrees `a` and `c` and `b` holding one
+    /// modified and two untracked files, under `tmp/wt`. Trees sort by name.
+    fn removal_fixture(
+        cx: &mut TestAppContext,
+        tmp: &TempDir,
+        settings: Settings,
+    ) -> (AnyWindowHandle, Entity<MainWindow>, SettingsFile, PathBuf) {
+        removal_fixture_with(cx, tmp, settings, |_| {})
+    }
+
+    /// `removal_fixture`, with `before_scan` given the worktrees' folder.
+    fn removal_fixture_with(
+        cx: &mut TestAppContext,
+        tmp: &TempDir,
+        settings: Settings,
+        before_scan: impl FnOnce(&Path),
+    ) -> (AnyWindowHandle, Entity<MainWindow>, SettingsFile, PathBuf) {
+        let file = settings_file(
+            tmp,
+            Settings {
+                tree_sort: SortMode::Name,
+                ..settings
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let code = tmp.path().join("code");
+        let api = code.join("api");
+        std::fs::create_dir_all(&api).unwrap();
+        git(&api, &["init", "-q"]);
+        std::fs::write(api.join("readme"), "hi\n").unwrap();
+        git(&api, &["add", "readme"]);
+        git(&api, &["commit", "-q", "-m", "one"]);
+        let wt = tmp.path().join("wt");
+        for b in ["a", "b", "c"] {
+            let dir = wt.join(b);
+            git(
+                &api,
+                &["worktree", "add", "-q", "-b", b, dir.to_str().unwrap()],
+            );
+        }
+        let b = wt.join("b");
+        std::fs::write(b.join("readme"), "changed\n").unwrap();
+        std::fs::create_dir(b.join("new")).unwrap();
+        std::fs::write(b.join("new/one"), "1").unwrap();
+        std::fs::write(b.join("new/two"), "2").unwrap();
+        before_scan(&wt);
+        let repo = grove_core::scan(&code).repos.remove(0);
+        let wt = repo.worktrees[1].path.parent().unwrap().to_path_buf();
+        let (w, main) = launch_repo(cx, &file, repo);
+        // The confirm's slide-in otherwise moves its buttons between frames.
+        cx.update(|cx| cx.set_reduce_motion(true));
+        (w, main, file, wt)
+    }
+
+    fn selected_row(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> Option<RowId> {
+        main.read_with(cx, |m, cx| m.tree.read(cx).selected().cloned())
+    }
+
+    fn focused(cx: &mut TestAppContext, w: AnyWindowHandle, id: &'static str) -> bool {
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(id).focused() == Some(true)
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn clean_remove_confirms_then_removes_without_force(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let removals = fake_remover(cx, None);
+        let (w, main, file, wt) = removal_fixture(cx, &tmp, Settings::default());
+        let a = wt.join("a");
+        cx.update(|cx| shell::record_open(&a, cx));
+        cx.run_until_parked();
+        assert!(file.load().unwrap().last_opened.contains_key(&a));
+
+        let ix = row_of(cx, &main, &a);
+        click(cx, w, ("tree-row", ix));
+        click(cx, w, "details-remove");
+        let message = label_of(cx, w, "remove-message");
+        assert!(
+            message.starts_with(&format!("Remove {}?", a.display())),
+            "{message}"
+        );
+        assert!(message.contains("Branch a is kept."), "{message}");
+        assert!(!message.contains("permanently"), "{message}");
+        assert_eq!(label_of(cx, w, "remove-confirm"), "Remove");
+        assert!(focused(cx, w, "remove-cancel"));
+
+        click(cx, w, "remove-confirm");
+        assert_eq!(
+            *removals.lock().unwrap(),
+            [(a.clone(), Job::Remove { force: false })]
+        );
+        assert!(!found(cx, w, "remove-message"));
+        assert!(!a.exists());
+        let s = status(cx, &main).unwrap();
+        assert_eq!(s.text, format!("Removed {}", tilde(&a)));
+        assert!(!s.error);
+        // Its rows are gone; the next row (b's branch) takes the selection.
+        assert!(main.read_with(cx, |m, cx| {
+            m.tree
+                .read(cx)
+                .tree()
+                .index_of(&RowId::Worktree(a.clone()))
+                .is_none()
+        }));
+        assert_eq!(selected_row(cx, &main), Some(RowId::Branch("b".into())));
+        assert!(!file.load().unwrap().last_opened.contains_key(&a));
+    }
+
+    #[gpui_kit::test]
+    fn dirty_remove_counts_changes_and_forces_after_cancel_and_esc(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let removals = fake_remover(cx, None);
+        let (w, main, _file, wt) = removal_fixture(cx, &tmp, Settings::default());
+        let b = wt.join("b");
+        let ix = row_of(cx, &main, &b);
+        let open_confirm = |cx: &mut TestAppContext| {
+            right_click(cx, w, ("tree-row", ix));
+            click(cx, w, "tree-menu-remove");
+        };
+
+        open_confirm(cx);
+        let message = label_of(cx, w, "remove-message");
+        assert!(
+            message.contains("1 modified and 2 untracked files will be permanently deleted"),
+            "{message}"
+        );
+        assert_eq!(label_of(cx, w, "remove-confirm"), "Discard and remove");
+        assert!(focused(cx, w, "remove-cancel"));
+        // Enter on the focused Cancel, Esc, and a Cancel click each leave it be.
+        keys(cx, w, &["enter"]);
+        assert!(!found(cx, w, "remove-message"));
+        open_confirm(cx);
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "remove-message"));
+        open_confirm(cx);
+        click(cx, w, "remove-cancel");
+        assert!(!found(cx, w, "remove-message"));
+        assert!(removals.lock().unwrap().is_empty());
+        assert!(b.join("new/one").exists());
+        assert_eq!(status(cx, &main), None);
+
+        open_confirm(cx);
+        click(cx, w, "remove-confirm");
+        assert_eq!(
+            *removals.lock().unwrap(),
+            [(b.clone(), Job::Remove { force: true })]
+        );
+        assert!(!b.exists());
+        // The next row is c's branch.
+        assert_eq!(selected_row(cx, &main), Some(RowId::Branch("c".into())));
+    }
+
+    #[gpui_kit::test]
+    fn last_row_removed_selects_the_previous(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        fake_remover(cx, None);
+        let (w, main, _file, wt) = removal_fixture(cx, &tmp, Settings::default());
+        let c = wt.join("c");
+        let ix = row_of(cx, &main, &c);
+        click(cx, w, ("tree-row", ix));
+        click(cx, w, "details-remove");
+        assert!(found(cx, w, "remove-message"));
+        keys(cx, w, &["tab", "enter"]);
+        assert!(!c.exists());
+        assert_eq!(selected_row(cx, &main), Some(RowId::Worktree(wt.join("b"))));
+    }
+
+    #[gpui_kit::test]
+    fn failed_remove_shows_gits_error(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let removals = fake_remover(cx, Some("fatal: 'x' is locked\n"));
+        let (w, main, _file, wt) = removal_fixture(cx, &tmp, Settings::default());
+        let a = wt.join("a");
+        let ix = row_of(cx, &main, &a);
+        click(cx, w, ("tree-row", ix));
+        click(cx, w, "details-remove");
+        assert!(found(cx, w, "remove-message"));
+        click(cx, w, "remove-confirm");
+        assert_eq!(removals.lock().unwrap().len(), 1);
+        assert!(!found(cx, w, "remove-message"));
+        assert!(a.exists());
+        let s = status(cx, &main).unwrap();
+        assert_eq!(
+            s.text,
+            format!("Couldn't remove {}: 'x' is locked", tilde(&a))
+        );
+        assert!(s.error);
+        assert_eq!(selected_row(cx, &main), Some(RowId::Worktree(a)));
+    }
+
+    #[gpui_kit::test]
+    fn missing_worktree_prunes_without_confirm(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let removals = fake_remover(cx, None);
+        let (w, main, _file, wt) = removal_fixture_with(cx, &tmp, Settings::default(), |wt| {
+            std::fs::remove_dir_all(wt.join("c")).unwrap()
+        });
+        let c = wt.join("c");
+        let ix = row_of(cx, &main, &c);
+        click(cx, w, ("tree-row", ix));
+        assert_eq!(label_of(cx, w, "details-remove"), "Prune");
+        click(cx, w, "details-remove");
+        assert!(!found(cx, w, "remove-message"));
+        assert_eq!(*removals.lock().unwrap(), [(c.clone(), Job::Prune)]);
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            format!("Pruned {}", tilde(&c))
+        );
+        assert!(main.read_with(cx, |m, cx| {
+            m.tree
+                .read(cx)
+                .tree()
+                .index_of(&RowId::Worktree(c.clone()))
+                .is_none()
+        }));
     }
 }

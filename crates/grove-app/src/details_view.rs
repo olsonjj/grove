@@ -18,6 +18,7 @@ use grove_core::git::GitError;
 use crate::icons::{self, icon};
 use crate::launcher::Choice;
 use crate::main_window::tilde;
+use crate::removal::{self, RemoveRequested};
 use crate::tree_view::{OpenRequested, TreeView};
 use crate::{launcher, theme};
 
@@ -68,6 +69,7 @@ struct Commits {
 
 impl EventEmitter<OpenRequested> for DetailsView {}
 impl EventEmitter<Notice> for DetailsView {}
+impl EventEmitter<RemoveRequested> for DetailsView {}
 
 impl DetailsView {
     pub fn new(tree: Entity<TreeView>, cx: &mut Context<Self>) -> Self {
@@ -691,6 +693,55 @@ impl DetailsView {
                     .into_any_element(),
             };
             out.push(section("RECENT COMMITS").child(body).into_any_element());
+        }
+
+        if let Some(offer) = removal::offer(wt) {
+            let path = wt.path.clone();
+            let enabled = offer.reason.is_none();
+            out.push(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(px(6.))
+                    .child(
+                        Button::new("details-remove")
+                            .accessibility_label(offer.label)
+                            .when_some(offer.reason.clone(), |b, reason| b.aria_description(reason))
+                            .disabled(!enabled)
+                            .h(px(28.))
+                            .px(px(10.))
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(theme::border_strong())
+                            .focus_visible(|s| s.border_color(theme::link()))
+                            .bg(theme::raised())
+                            .text_size(px(12.))
+                            .when_else(
+                                enabled,
+                                |b| {
+                                    b.text_color(theme::warn_text())
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(theme::border()))
+                                },
+                                |b| b.text_color(theme::faint()),
+                            )
+                            .child(offer.label)
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(RemoveRequested { path: path.clone() })
+                            })),
+                    )
+                    .children(offer.reason.map(|reason| {
+                        div()
+                            .id("details-remove-reason")
+                            .aria_label(reason.clone())
+                            .text_size(px(12.))
+                            .text_color(theme::muted())
+                            .child(reason)
+                            .test_support()
+                    }))
+                    .into_any_element(),
+            );
         }
         out
     }

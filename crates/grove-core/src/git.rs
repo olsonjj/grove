@@ -1,4 +1,5 @@
-//! The only module that runs `git`. Everything here is read-only except `fetch`.
+//! The only module that runs `git`. Everything here is read-only except `fetch` and
+//! worktree removal.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -24,6 +25,8 @@ const QUICK: Duration = Duration::from_secs(5);
 const READ: Duration = Duration::from_secs(15);
 /// Generous: a first fetch of a big repo is slow, and it runs off the UI thread.
 const FETCH: Duration = Duration::from_secs(5 * 60);
+/// Removing a worktree deletes its folder, build output and dependencies included.
+const WRITE: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GitVersion {
@@ -241,11 +244,18 @@ pub fn common_dir(path: &Path) -> Result<PathBuf, GitError> {
 /// Changed files and ahead/behind vs `@{u}` (any remote) from a read-only `git status`,
 /// plus the time of the HEAD commit it reports and of the newest changed file.
 pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
-    let out = run(
-        Some(path),
-        &["status", "--porcelain=v2", "--branch", "-z"],
-        READ,
-    )?;
+    read_status(path, &[])
+}
+
+/// As `read_worktree_status`, but each untracked file listed, not just its folder.
+pub(crate) fn read_status_all_untracked(path: &Path) -> Result<WorktreeStatus, GitError> {
+    read_status(path, &["--untracked-files=all"])
+}
+
+fn read_status(path: &Path, extra: &[&str]) -> Result<WorktreeStatus, GitError> {
+    let mut args = vec!["status", "--porcelain=v2", "--branch", "-z"];
+    args.extend_from_slice(extra);
+    let out = run(Some(path), &args, READ)?;
     let mut status = parse_status(&out);
     status.head_time = status
         .head
@@ -297,6 +307,23 @@ fn commit_time(path: &Path, oid: &str) -> Option<i64> {
 /// start, are off (config form, as `--no-auto-maintenance` needs git 2.29).
 pub fn fetch(repo: &Path) -> Result<(), GitError> {
     run(Some(repo), FETCH_ARGS, FETCH).map(drop)
+}
+
+/// `git worktree remove [--force] <path>`, run from `repo`'s main worktree (or the bare
+/// repo). The branch stays.
+pub fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
+    let path = path.to_string_lossy();
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.push("--force");
+    }
+    args.push(&path);
+    run(Some(repo), &args, WRITE).map(drop)
+}
+
+/// `git worktree prune`: drops entries whose folders are gone.
+pub fn prune_worktrees(repo: &Path) -> Result<(), GitError> {
+    run(Some(repo), &["worktree", "prune"], WRITE).map(drop)
 }
 
 const FETCH_ARGS: &[&str] = &[
