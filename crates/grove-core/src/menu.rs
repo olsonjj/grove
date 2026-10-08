@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use crate::badge::Badge;
-use crate::order::repo_order;
+use crate::order::{activity_time, by_activity, repo_order};
 use crate::settings::{LastOpened, SortMode};
 use crate::snapshot::{Presence, RepoSnapshot, Snapshot, Worktree};
 use crate::tree::by_name;
@@ -38,13 +38,15 @@ pub struct StateLine {
 }
 
 /// Every repo with worktrees, in `repo_order` (`pinned` first, the rest by `repo_sort`).
-/// Within a repo: the main worktree, then branches alphabetically, then detached worktrees
-/// by path. `recents[0]` is marked `last_opened`.
+/// Within a repo: the main worktree, then branched worktrees, then detached ones, each by
+/// `tree_sort` (ties: branch name, or path when detached). `recents[0]` is marked
+/// `last_opened`.
 pub fn menu(
     snapshot: &Snapshot,
     pinned: &[PathBuf],
     last_opened: &LastOpened,
     repo_sort: SortMode,
+    tree_sort: SortMode,
     recents: &[PathBuf],
 ) -> Vec<MenuGroup> {
     let last = recents.first().map(PathBuf::as_path);
@@ -57,6 +59,11 @@ pub fn menu(
                 b.is_main
                     .cmp(&a.is_main)
                     .then(a.branch.is_none().cmp(&b.branch.is_none()))
+                    .then_with(|| {
+                        let (ta, tb) =
+                            (activity_time(a, last_opened), activity_time(b, last_opened));
+                        by_activity(tree_sort, ta, tb)
+                    })
                     .then_with(|| match (&a.branch, &b.branch) {
                         (Some(x), Some(y)) => by_name(x, y),
                         _ => a.path.cmp(&b.path),

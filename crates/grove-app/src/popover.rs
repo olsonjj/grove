@@ -470,6 +470,7 @@ impl Popover {
             &library.settings.pinned_repos,
             &library.settings.last_opened,
             library.settings.repo_sort,
+            library.settings.tree_sort,
             &library.settings.recents,
         );
         let app = |role, fallback: &str| {

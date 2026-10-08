@@ -3,7 +3,9 @@ mod common;
 use std::path::Path;
 
 use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{Badge, NavKey, Presence, RowId, RowKind, Snapshot, Tree, navigate};
+use grove_core::{
+    Badge, LastOpened, NavKey, Presence, RowId, RowKind, Snapshot, SortMode, Tree, navigate,
+};
 
 /// One line per visible row, indented by depth. Worktrees show their folder name.
 fn shape(tree: &Tree) -> Vec<String> {
@@ -37,10 +39,47 @@ fn shape(tree: &Tree) -> Vec<String> {
 }
 
 fn tree_of(s: &Snapshot, repo: &str, collapsed: &[&str]) -> Tree {
+    tree_sorted(s, repo, collapsed, SortMode::Name, &LastOpened::new())
+}
+
+fn tree_sorted(
+    s: &Snapshot,
+    repo: &str,
+    collapsed: &[&str],
+    sort: SortMode,
+    opened: &LastOpened,
+) -> Tree {
     let repo = s.repo(repo).expect("repo");
     assert!(repo.error.is_none(), "{:?}", repo.error);
     let collapsed: Vec<String> = collapsed.iter().map(|c| c.to_string()).collect();
-    repo.tree(&collapsed)
+    repo.tree(&collapsed, sort, opened)
+}
+
+/// Worktrees (by folder name) opened at the given Unix times. Statuses are unread, so
+/// these are their only activity.
+fn opened(s: &Snapshot, at: &[(&str, i64)]) -> LastOpened {
+    at.iter()
+        .map(|(folder, t)| {
+            let wt = s
+                .repos
+                .iter()
+                .flat_map(|r| &r.worktrees)
+                .find(|w| w.path.file_name().is_some_and(|n| n == *folder))
+                .unwrap_or_else(|| panic!("no worktree {folder}"));
+            (wt.path.clone(), *t)
+        })
+        .collect()
+}
+
+/// Branch names in row order.
+fn branches(tree: &Tree) -> Vec<&str> {
+    tree.rows
+        .iter()
+        .filter_map(|r| match &r.kind {
+            RowKind::Branch { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn rev_parse(dir: &Path) -> String {
@@ -304,4 +343,177 @@ fn rows_resolve_to_the_worktree_they_open() {
         Some((wt.join("api-c").as_path(), Presence::Missing))
     );
     assert_eq!(tree.worktree_for(&RowId::Folder("feature/".into())), None);
+}
+
+#[test]
+fn name_mode_ignores_activity() {
+    let f = Fixture::new();
+    prefixed_repo(&f);
+    let s = f.scan();
+    let at = opened(&s, &[("api-plain", 500), ("api-c", 400)]);
+    assert_eq!(
+        shape(&tree_sorted(&s, "api", &[], SortMode::Name, &at)),
+        shape(&tree_of(&s, "api", &[]))
+    );
+}
+
+#[test]
+fn recent_orders_folders_and_branches_by_activity() {
+    let f = Fixture::new();
+    prefixed_repo(&f);
+    let s = f.scan();
+    // fix/c never active: unknown sorts after known.
+    let at = opened(
+        &s,
+        &[
+            ("api", 100),
+            ("api-plain", 500),
+            ("api-a", 300),
+            ("api-b", 400),
+        ],
+    );
+    assert_eq!(
+        shape(&tree_sorted(&s, "api", &[], SortMode::Recent, &at)),
+        [
+            "branch main",
+            "  wt api [main worktree]",
+            "branch plain",
+            "  wt api-plain",
+            "▾ feature/ 2",
+            "  branch b",
+            "    wt api-b",
+            "  branch a",
+            "    wt api-a",
+            "▾ fix/ 1",
+            "  branch c",
+            "    wt api-c",
+        ]
+    );
+
+    // A folder's activity is its newest branch.
+    let at = opened(&s, &[("api-plain", 500), ("api-a", 300), ("api-c", 600)]);
+    assert_eq!(
+        shape(&tree_sorted(&s, "api", &[], SortMode::Recent, &at))[2..],
+        [
+            "▾ fix/ 1",
+            "  branch c",
+            "    wt api-c",
+            "branch plain",
+            "  wt api-plain",
+            "▾ feature/ 2",
+            "  branch a",
+            "    wt api-a",
+            "  branch b",
+            "    wt api-b",
+        ]
+    );
+}
+
+#[test]
+fn recent_ties_and_unknown_go_by_name() {
+    let f = Fixture::new();
+    let repo = init_repo(&f.code().join("zed"));
+    for b in ["omega", "beta", "Alpha", "gamma", "Delta"] {
+        add_worktree(&repo, &f.code().join(format!("zed-{b}")), b);
+    }
+    let s = f.scan();
+    let at = opened(
+        &s,
+        &[("zed-beta", 200), ("zed-Alpha", 200), ("zed-omega", 100)],
+    );
+    // main is never active here, yet stays first.
+    assert_eq!(
+        branches(&tree_sorted(&s, "zed", &[], SortMode::Recent, &at)),
+        ["main", "Alpha", "beta", "omega", "Delta", "gamma"]
+    );
+}
+
+#[test]
+fn recent_collapsed_folder_keeps_its_position() {
+    let f = Fixture::new();
+    prefixed_repo(&f);
+    let s = f.scan();
+    let at = opened(&s, &[("api-plain", 300), ("api-b", 400), ("api-c", 200)]);
+    assert_eq!(
+        shape(&tree_sorted(
+            &s,
+            "api",
+            &["feature/"],
+            SortMode::Recent,
+            &at
+        )),
+        [
+            "branch main",
+            "  wt api [main worktree]",
+            "▸ feature/ 2",
+            "branch plain",
+            "  wt api-plain",
+            "▾ fix/ 1",
+            "  branch c",
+            "    wt api-c",
+        ]
+    );
+}
+
+#[test]
+fn recent_orders_detached_by_activity_and_keeps_the_section_last() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    add_worktree(&api, &f.code().join("api-x"), "x");
+    for name in ["api-d1", "api-d2", "api-d3"] {
+        let at = f.code().join(name);
+        git(
+            &api,
+            &["worktree", "add", "-q", "--detach", at.to_str().unwrap()],
+        );
+    }
+    let s = f.scan();
+    let at = opened(&s, &[("api-x", 100), ("api-d2", 900), ("api-d3", 500)]);
+    let rows = shape(&tree_sorted(&s, "api", &[], SortMode::Recent, &at));
+    let names: Vec<_> = rows.iter().map(|r| r.split(" [").next().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "branch main",
+            "  wt api",
+            "branch x",
+            "  wt api-x",
+            "-- detached --",
+            "wt api-d2",
+            "wt api-d3",
+            "wt api-d1",
+        ]
+    );
+}
+
+#[test]
+fn recent_keeps_main_worktree_first_under_its_branch() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    add_worktree(&api, &f.code().join("api-x"), "x");
+    // A second checkout of main, newer than everything.
+    let again = f.code().join("api-again");
+    git(
+        &api,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-f",
+            again.to_str().unwrap(),
+            "main",
+        ],
+    );
+    let s = f.scan();
+    let at = opened(&s, &[("api-again", 900), ("api-x", 500)]);
+    assert_eq!(
+        shape(&tree_sorted(&s, "api", &[], SortMode::Recent, &at)),
+        [
+            "branch main",
+            "  wt api [main worktree]",
+            "  wt api-again",
+            "branch x",
+            "  wt api-x",
+        ]
+    );
 }

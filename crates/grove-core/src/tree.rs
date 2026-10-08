@@ -2,7 +2,7 @@
 //!
 //! Branches containing `/` are grouped by their first segment (`feature/auth/x` → folder
 //! `feature/`, row `auth/x`), matching the design prototype. Top level order: the main
-//! worktree's branch, then prefix folders, then plain branches, each alphabetical.
+//! worktree's branch, then prefix folders and plain branches mixed, by the sort mode.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::badge::Badge;
 use crate::git::GitError;
+use crate::order::{activity_time, by_activity};
+use crate::settings::{LastOpened, SortMode};
 use crate::snapshot::{Presence, RepoSnapshot, Worktree};
 
 /// Stable identity of a row, for selection.
@@ -145,10 +147,13 @@ pub fn home_dir() -> Option<PathBuf> {
 
 impl RepoSnapshot {
     /// The checked-out tree; folders whose prefix is in `collapsed` hide their children.
-    pub fn tree(&self, collapsed: &[String]) -> Tree {
+    /// `last_opened` only matters in Recent mode.
+    pub fn tree(&self, collapsed: &[String], sort: SortMode, last_opened: &LastOpened) -> Tree {
         build(
             &self.worktrees,
             collapsed,
+            sort,
+            last_opened,
             home_dir().as_deref(),
             self.fetch_error.as_ref(),
         )
@@ -158,6 +163,8 @@ impl RepoSnapshot {
 fn build(
     worktrees: &[Worktree],
     collapsed: &[String],
+    sort: SortMode,
+    last_opened: &LastOpened,
     home: Option<&Path>,
     fetch_error: Option<&GitError>,
 ) -> Tree {
@@ -180,6 +187,17 @@ fn build(
         detached: detached.len(),
         rows: Vec::new(),
     };
+
+    let branch_activity: BTreeMap<&str, Option<i64>> = branches
+        .iter()
+        .map(|(&name, wts)| {
+            let t = wts
+                .iter()
+                .filter_map(|w| activity_time(w, last_opened))
+                .max();
+            (name, t)
+        })
+        .collect();
 
     let mut folders: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut plain = Vec::new();
@@ -223,15 +241,31 @@ fn build(
         push_branch(&mut tree, main, main, 0, None);
     }
 
-    // Folders and plain branches share one alphabetical list.
-    let mut entries: Vec<(&str, Option<Vec<&str>>)> = folders
+    /// A prefix folder with its branches, or a plain branch.
+    struct Entry<'a> {
+        key: &'a str,
+        activity: Option<i64>,
+        folder: Option<Vec<&'a str>>,
+    }
+    // Folders and plain branches share one list; a folder is as active as its newest branch.
+    let mut entries: Vec<Entry> = folders
         .into_iter()
-        .map(|(prefix, names)| (prefix, Some(names)))
-        .chain(plain.into_iter().map(|name| (name, None)))
+        .map(|(key, names)| Entry {
+            key,
+            activity: names.iter().filter_map(|n| branch_activity[n]).max(),
+            folder: Some(names),
+        })
+        .chain(plain.into_iter().map(|key| Entry {
+            key,
+            activity: branch_activity[key],
+            folder: None,
+        }))
         .collect();
-    entries.sort_by(|a, b| by_name(a.0, b.0));
-    for (key, names) in entries {
-        let Some(mut names) = names else {
+    entries.sort_by(|a, b| {
+        by_activity(sort, a.activity, b.activity).then_with(|| by_name(a.key, b.key))
+    });
+    for Entry { key, folder, .. } in entries {
+        let Some(mut names) = folder else {
             push_branch(&mut tree, key, key, 0, None);
             continue;
         };
@@ -250,14 +284,21 @@ fn build(
         if is_collapsed {
             continue;
         }
-        names.sort_by(|a, b| by_name(a, b));
+        names.sort_by(|a, b| {
+            by_activity(sort, branch_activity[a], branch_activity[b]).then_with(|| by_name(a, b))
+        });
         for name in names {
             push_branch(&mut tree, name, &name[key.len()..], 1, Some(id.clone()));
         }
     }
 
     if !detached.is_empty() {
-        detached.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.path.cmp(&b.path)));
+        detached.sort_by(|a, b| {
+            let (ta, tb) = (activity_time(a, last_opened), activity_time(b, last_opened));
+            by_activity(sort, ta, tb)
+                .then(b.is_main.cmp(&a.is_main))
+                .then(a.path.cmp(&b.path))
+        });
         tree.rows.push(Row {
             id: RowId::DetachedSection,
             depth: 0,

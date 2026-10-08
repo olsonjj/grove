@@ -1,6 +1,6 @@
 //! The order every surface lists repos in.
 
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::path::PathBuf;
 
 use crate::settings::{LastOpened, SortMode};
@@ -35,11 +35,7 @@ pub fn repo_order<'a>(
         .iter()
         .partition(|r| pinned.contains(&r.repo.path));
     if sort == SortMode::Recent {
-        // Newest first, unknown last.
-        others.sort_by_cached_key(|r| {
-            let t = repo_activity(r, last_opened);
-            (t.is_none(), Reverse(t))
-        });
+        others.sort_by_cached_key(|r| recency(repo_activity(r, last_opened)));
     }
     RepoOrder { pinned, others }
 }
@@ -63,4 +59,17 @@ pub fn repo_activity(repo: &RepoSnapshot, last_opened: &LastOpened) -> Option<i6
         .iter()
         .filter_map(|wt| activity_time(wt, last_opened))
         .max()
+}
+
+/// Newest first, unknown last. `Equal` in Name mode, so callers fall back to name order.
+pub(crate) fn by_activity(sort: SortMode, a: Option<i64>, b: Option<i64>) -> Ordering {
+    match sort {
+        SortMode::Recent => recency(a).cmp(&recency(b)),
+        SortMode::Name => Ordering::Equal,
+    }
+}
+
+/// Sort key: newest first, unknown last.
+fn recency(t: Option<i64>) -> (bool, Reverse<Option<i64>>) {
+    (t.is_none(), Reverse(t))
 }

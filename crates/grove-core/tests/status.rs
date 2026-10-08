@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use common::{Fixture, add_worktree, commit_at, git, init_repo};
 use grove_core::{
-    Badge, GitError, Presence, RowId, Snapshot, SnapshotStore, Worktree, WorktreeStatus,
+    Badge, GitError, LastOpened, Presence, RowId, Snapshot, SnapshotStore, SortMode, Worktree,
+    WorktreeStatus,
 };
 
 /// Store over the fixture's code dir with every worktree's status read.
@@ -187,7 +188,7 @@ fn locked_worktree_is_badged_and_opens() {
     let s = read(&f);
     assert_eq!(badges(&s, "api-locked"), ["local only", "locked"]);
     assert_eq!(worktree(&s, "api-locked").presence, Presence::Present);
-    let tree = s.repos[0].tree(&[]);
+    let tree = s.repos[0].tree(&[], SortMode::Name, &LastOpened::new());
     let (_, presence) = tree
         .worktree_for(&RowId::Branch("held".into()))
         .expect("row");
@@ -211,7 +212,7 @@ fn deleted_folder_is_missing_and_not_openable() {
             .description()
             .contains("git worktree prune")
     );
-    let tree = s.repos[0].tree(&[]);
+    let tree = s.repos[0].tree(&[], SortMode::Name, &LastOpened::new());
     let (_, presence) = tree.worktree_for(&RowId::Branch("x".into())).unwrap();
     assert!(!presence.is_openable());
 }

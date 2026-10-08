@@ -41,6 +41,8 @@ pub struct Settings {
     pub pinned_repos: Vec<PathBuf>,
     /// Order of the sidebar's unpinned repos and the popover's groups.
     pub repo_sort: SortMode,
+    /// Order of every repo's tree and of worktrees within a popover group.
+    pub tree_sort: SortMode,
     pub last_selected_repo: Option<String>,
 }
 
@@ -61,6 +63,7 @@ impl Default for Settings {
             collapsed: BTreeMap::new(),
             pinned_repos: Vec::new(),
             repo_sort: SortMode::Recent,
+            tree_sort: SortMode::Recent,
             last_selected_repo: None,
         }
     }
@@ -244,6 +247,11 @@ impl Settings {
     /// Returns whether anything changed.
     pub fn set_repo_sort(&mut self, mode: SortMode) -> bool {
         std::mem::replace(&mut self.repo_sort, mode) != mode
+    }
+
+    /// Returns whether anything changed.
+    pub fn set_tree_sort(&mut self, mode: SortMode) -> bool {
+        std::mem::replace(&mut self.tree_sort, mode) != mode
     }
 
     /// Moves `worktree` to the front of recents and stamps it opened `at` (Unix seconds).

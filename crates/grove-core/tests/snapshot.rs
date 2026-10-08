@@ -185,10 +185,13 @@ fn settings_round_trip() {
     s.toggle_pin(&tmp.path().join("code/api"));
     assert!(s.set_repo_sort(SortMode::Name));
     assert!(!s.set_repo_sort(SortMode::Name));
+    assert!(s.set_tree_sort(SortMode::Name));
+    assert!(!s.set_tree_sort(SortMode::Name));
     file.save(&s).unwrap();
     assert_eq!(file.load().unwrap(), s);
     let json = fs::read_to_string(file.path()).unwrap();
     assert!(json.contains(r#""repo_sort": "name""#), "{json}");
+    assert!(json.contains(r#""tree_sort": "name""#), "{json}");
 }
 
 #[test]
@@ -201,6 +204,7 @@ fn settings_tolerate_missing_fields() {
     assert!(s.show_menu_bar_icon && s.launch_at_login && !s.background_fetch);
     assert!(s.pinned_repos.is_empty());
     assert_eq!(s.repo_sort, SortMode::Recent);
+    assert_eq!(s.tree_sort, SortMode::Recent);
 }
 
 #[test]
@@ -352,12 +356,14 @@ fn settings_save_keeps_what_changed_while_the_window_was_open() {
     s.set_collapsed("api", "fix/", true);
     s.toggle_pin(&PathBuf::from("/w/api"));
     s.set_repo_sort(SortMode::Name);
+    s.set_tree_sort(SortMode::Name);
     s.set_preferences(edited.clone());
     assert_eq!(s.preferences(), edited);
     assert_eq!(s.recents, [PathBuf::from("/w/api")]);
     assert_eq!(s.collapsed("api"), ["fix/"]);
     assert_eq!(s.pinned_repos, [PathBuf::from("/w/api")]);
     assert_eq!(s.repo_sort, SortMode::Name);
+    assert_eq!(s.tree_sort, SortMode::Name);
     assert_eq!(s.last_opened[&PathBuf::from("/w/api")], 1_700_000_000);
 }
 

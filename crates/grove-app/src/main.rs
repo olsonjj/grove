@@ -9,6 +9,7 @@ mod popover;
 mod settings_window;
 mod setup;
 mod shell;
+mod sort_menu;
 mod status_item;
 mod switcher;
 #[cfg(test)]

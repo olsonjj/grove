@@ -558,6 +558,12 @@ pub fn set_repo_sort(mode: SortMode, cx: &mut App) {
     }
 }
 
+pub fn set_tree_sort(mode: SortMode, cx: &mut App) {
+    if cx.global_mut::<Library>().settings.set_tree_sort(mode) {
+        save_settings(cx);
+    }
+}
+
 pub fn toggle_pin(repo: &Path, cx: &mut App) {
     if cx.global_mut::<Library>().settings.toggle_pin(repo) {
         save_settings(cx);

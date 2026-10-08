@@ -6,16 +6,19 @@ use gpui_kit::base::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Render, Role as A11yRole, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, TestSupportExt, Window, div, px, rgb,
+    AnyElement, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, Role as A11yRole,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt,
+    Window, div, px, rgb,
 };
 use grove_core::{
-    Badge, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind, Tree, navigate,
+    Badge, LastOpened, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind,
+    SortMode, Tree, navigate,
 };
 
 use crate::icons::{self, icon};
 use crate::launcher::Choice;
+use crate::sort_menu::{SortChosen, SortMenu, SortMenuIds};
 use crate::theme;
 
 /// A prefix folder was collapsed or expanded; the owner persists it.
@@ -39,14 +42,20 @@ pub struct OpenRequested {
 pub struct TreeView {
     repo: Option<RepoSnapshot>,
     collapsed: Vec<String>,
+    sort: SortMode,
+    last_opened: LastOpened,
     tree: Tree,
     selected: Option<RowId>,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    sort_menu: Entity<SortMenu>,
+    _sort_chosen: Subscription,
 }
 
 impl EventEmitter<CollapseChanged> for TreeView {}
 impl EventEmitter<OpenRequested> for TreeView {}
+/// Forwarded from the header's sort menu; the owner persists it.
+impl EventEmitter<SortChosen> for TreeView {}
 
 impl Focusable for TreeView {
     fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
@@ -56,15 +65,40 @@ impl Focusable for TreeView {
 
 impl TreeView {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        let sort = SortMode::default();
+        let ids = SortMenuIds {
+            button: "tree-sort",
+            menu: "tree-sort-menu",
+            choice: "tree-sort-choice",
+            what: "branches",
+        };
+        let sort_menu = cx.new(|cx| SortMenu::new(ids, sort, cx));
+        let sort_chosen = cx.subscribe(&sort_menu, |_, _, ev: &SortChosen, cx| cx.emit(*ev));
         Self {
             repo: None,
             collapsed: Vec::new(),
+            sort,
+            last_opened: LastOpened::new(),
             tree: Tree::default(),
             selected: None,
             // A tab stop so Tab comes back here from the details pane and top bar.
             focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
+            sort_menu,
+            _sort_chosen: sort_chosen,
         }
+    }
+
+    /// Reorders by `sort`; the selection stays on its row and is scrolled into view.
+    pub fn set_order(&mut self, sort: SortMode, last_opened: LastOpened, cx: &mut Context<Self>) {
+        if self.sort == sort && self.last_opened == last_opened {
+            return;
+        }
+        self.sort = sort;
+        self.last_opened = last_opened;
+        self.sort_menu.update(cx, |m, cx| m.set_mode(sort, cx));
+        self.rebuild();
+        cx.notify();
     }
 
     pub fn repo_name(&self) -> Option<&str> {
@@ -116,12 +150,19 @@ impl TreeView {
         cx.notify();
     }
 
+    /// Keeps a moved selection in view.
     fn rebuild(&mut self) {
+        let selected_ix = |tree: &Tree| self.selected.as_ref().and_then(|id| tree.index_of(id));
+        let before = selected_ix(&self.tree);
         self.tree = self
             .repo
             .as_ref()
-            .map(|r| r.tree(&self.collapsed))
+            .map(|r| r.tree(&self.collapsed, self.sort, &self.last_opened))
             .unwrap_or_default();
+        let after = selected_ix(&self.tree);
+        if let Some(ix) = after.filter(|_| after != before) {
+            self.scroll.scroll_to_item(ix);
+        }
     }
 
     fn apply(&mut self, effect: NavEffect, cx: &mut Context<Self>) {
@@ -615,7 +656,14 @@ impl Render for TreeView {
                             .text_color(theme::muted())
                             .child(self.count_line()),
                     )
-                    .child(legend()),
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(legend())
+                            .child(self.sort_menu.clone()),
+                    ),
             )
             .children(error.map(|e| {
                 div()
@@ -817,6 +865,37 @@ mod tests {
         press(cx, w, &["up"; 81]);
         assert_eq!(selected(cx, &view), branch("main"));
         assert!(row_in_view(cx, w, 0));
+    }
+
+    #[gpui_kit::test]
+    fn reorder_keeps_selection_and_scrolls_it_into_view(cx: &mut TestAppContext) {
+        let (w, view) = open(cx, &[]);
+        cx.update_window(w, |_, window, cx| {
+            window.resize(size(px(720.), px(320.)));
+            view.update(cx, |v, cx| v.set_repo(Some(long_repo()), Vec::new(), cx));
+        })
+        .unwrap();
+        press(cx, w, &["down", "down"]);
+        assert_eq!(selected(cx, &view), branch("b00"));
+        assert!(row_in_view(cx, w, 2));
+
+        // Every other branch active: b00, never active, sorts last.
+        let opened = (1..40)
+            .map(|i| (PathBuf::from(format!("/c/wt/b{i:02}")), 1_700_000_000 + i))
+            .collect();
+        cx.update_window(w, |_, _, cx| {
+            view.update(cx, |v, cx| v.set_order(SortMode::Recent, opened, cx))
+        })
+        .unwrap();
+        // After main, its worktree and 39 branches with one worktree each.
+        let last_branch = 2 + 2 * 39;
+        assert_eq!(selected(cx, &view), branch("b00"));
+        assert_eq!(
+            view.read_with(cx, |v, _| v.tree().rows[last_branch].id.clone()),
+            RowId::Branch("b00".into())
+        );
+        assert!(row_in_view(cx, w, last_branch));
+        assert!(!row_in_view(cx, w, 2));
     }
 
     #[gpui_kit::test]

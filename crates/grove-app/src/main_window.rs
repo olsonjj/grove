@@ -5,16 +5,17 @@ use gpui_kit::base::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    Anchor, AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, FocusHandle,
-    Focusable, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, TestSupportExt, TitlebarOptions, Window,
-    WindowBounds, WindowKind, WindowOptions, anchored, deferred, div, px, size,
+    AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, FocusHandle, Focusable,
+    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    ParentElement, Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, TestSupportExt, TitlebarOptions, Window, WindowBounds, WindowKind,
+    WindowOptions, anchored, deferred, div, px, size,
 };
-use grove_core::{RepoSnapshot, SortMode, repo_order};
+use grove_core::{RepoSnapshot, repo_order};
 
 use crate::details_view::{self, DetailsView, LeaveMenu, LeaveMenuBack};
 use crate::icons::{self, icon};
+use crate::sort_menu::{SortChosen, SortMenu, SortMenuIds};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
 
@@ -47,14 +48,11 @@ struct MainWindow {
     hovered_repo: Option<String>,
     repo_menu: Option<RepoMenu>,
     repo_menu_item: FocusHandle,
-    sort_menu: bool,
-    sort_button: FocusHandle,
-    /// Recent, Name.
-    sort_items: [FocusHandle; 2],
+    repo_sort: Entity<SortMenu>,
     repo_scroll: ScrollHandle,
     /// The sidebar order last rendered, to scroll the selection back into view on a reorder.
     shown_order: Vec<String>,
-    _subs: [Subscription; 8],
+    _subs: [Subscription; 10],
 }
 
 /// A sidebar row's context menu.
@@ -96,6 +94,20 @@ impl MainWindow {
         let open = cx.subscribe(&tree, |this, _, ev: &OpenRequested, cx| {
             this.open(ev, cx);
         });
+        let tree_sort = cx.subscribe(&tree, |_, _, ev: &SortChosen, cx| {
+            shell::set_tree_sort(ev.0, cx);
+        });
+        let ids = SortMenuIds {
+            button: "repo-sort",
+            menu: "repo-sort-menu",
+            choice: "repo-sort-choice",
+            what: "repositories",
+        };
+        let mode = shell::library(cx).settings.repo_sort;
+        let repo_sort = cx.new(|cx| SortMenu::new(ids, mode, cx));
+        let repo_sort_chosen = cx.subscribe(&repo_sort, |_, _, ev: &SortChosen, cx| {
+            shell::set_repo_sort(ev.0, cx);
+        });
         let details = cx.new(|cx| DetailsView::new(tree.clone(), cx));
         let details_open = cx.subscribe(&details, |this, _, ev: &OpenRequested, cx| {
             this.open(ev, cx);
@@ -129,14 +141,14 @@ impl MainWindow {
             hovered_repo: None,
             repo_menu: None,
             repo_menu_item: cx.focus_handle(),
-            sort_menu: false,
-            sort_button: cx.focus_handle(),
-            sort_items: [cx.focus_handle(), cx.focus_handle()],
+            repo_sort,
             repo_scroll: ScrollHandle::new(),
             shown_order: Vec::new(),
             _subs: [
                 collapse,
                 open,
+                tree_sort,
+                repo_sort_chosen,
                 details_open,
                 notice,
                 library,
@@ -182,6 +194,9 @@ impl MainWindow {
         if !cx.has_global::<shell::Library>() {
             return;
         }
+        let mode = shell::library(cx).settings.repo_sort;
+        self.repo_sort.update(cx, |m, cx| m.set_mode(mode, cx));
+        self.sync_tree_order(cx);
         let name = self.tree.read(cx).repo_name().map(str::to_string);
         let snapshot = shell::library(cx).store.snapshot().clone();
         match name.as_deref().and_then(|n| snapshot.repo(n)) {
@@ -232,7 +247,15 @@ impl MainWindow {
             .or_else(|| selected_repo(cx))
     }
 
+    fn sync_tree_order(&self, cx: &mut Context<Self>) {
+        let settings = &shell::library(cx).settings;
+        let (sort, last_opened) = (settings.tree_sort, settings.last_opened.clone());
+        self.tree
+            .update(cx, |tree, cx| tree.set_order(sort, last_opened, cx));
+    }
+
     fn show_repo(&mut self, name: Option<&str>, cx: &mut Context<Self>) {
+        self.sync_tree_order(cx);
         let library = shell::library(cx);
         let repo = name.and_then(|n| library.store.snapshot().repo(n)).cloned();
         let collapsed = name
@@ -470,7 +493,6 @@ impl Render for MainWindow {
             self.shown_order = names;
         }
         let repo_menu = self.repo_menu(cx);
-        let sort_menu = self.sort_menu(sort, cx);
 
         let sidebar = div()
             .w(px(240.))
@@ -496,15 +518,7 @@ impl Render for MainWindow {
                         "repos-header",
                         format!("REPOSITORIES · {}", snapshot.repos.len()),
                     ))
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .flex_col()
-                            .items_end()
-                            .child(self.sort_button(sort, cx))
-                            .children(sort_menu),
-                    ),
+                    .child(self.repo_sort.clone()),
             )
             .child(
                 div()
@@ -862,147 +876,6 @@ impl MainWindow {
             .into_any_element(),
         )
     }
-
-    /// "Recent ▾": opens the repo sort menu with the current mode focused.
-    fn sort_button(&self, sort: SortMode, cx: &mut Context<Self>) -> Button {
-        Button::new("repo-sort")
-            .track_focus(&self.sort_button)
-            .accessibility_label(format!("Sort repositories: {}", sort.label()))
-            .aria_expanded(self.sort_menu)
-            .flex_none()
-            .h(px(22.))
-            .px(px(6.))
-            .gap(px(3.))
-            .rounded(px(5.))
-            .border_1()
-            .border_color(gpui_kit::transparent_black())
-            .focus_visible(|s| s.border_color(theme::link()))
-            .cursor_pointer()
-            .hover(|s| s.bg(theme::border()))
-            .text_size(px(11.))
-            .text_color(theme::muted())
-            .child(sort.label())
-            .child(icon(icons::CHEVRON_DOWN, 10.).text_color(theme::muted()))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if this.sort_menu {
-                    this.close_sort_menu(window, cx);
-                } else {
-                    this.sort_menu = true;
-                    window.focus(&this.sort_items[sort_ix(sort)], cx);
-                    cx.notify();
-                }
-            }))
-    }
-
-    fn close_sort_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if std::mem::take(&mut self.sort_menu) {
-            window.focus(&self.sort_button, cx);
-            cx.notify();
-        }
-    }
-
-    fn on_sort_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let at = self.sort_items.iter().position(|h| h.is_focused(window));
-        let next = match (ev.keystroke.key.as_str(), at) {
-            ("escape", _) => {
-                self.close_sort_menu(window, cx);
-                return cx.stop_propagation();
-            }
-            ("down", Some(i)) => (i + 1).min(SORT_MODES.len() - 1),
-            ("up", Some(i)) => i.saturating_sub(1),
-            ("down" | "up", None) => 0,
-            _ => return,
-        };
-        window.focus(&self.sort_items[next], cx);
-        cx.stop_propagation();
-    }
-
-    fn sort_menu(&self, sort: SortMode, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.sort_menu {
-            return None;
-        }
-        let items = SORT_MODES.into_iter().enumerate().map(|(i, mode)| {
-            Button::new(("repo-sort-choice", i))
-                .track_focus(&self.sort_items[i])
-                .tab_stop(false)
-                .role(gpui_kit::Role::MenuItemRadio)
-                .aria_toggled((mode == sort).into())
-                .accessibility_label(mode.label())
-                .h(px(28.))
-                .px(px(10.))
-                .justify_between()
-                .gap(px(12.))
-                .rounded(px(5.))
-                .cursor_pointer()
-                .text_color(theme::text())
-                .hover(|s| s.bg(theme::selected()))
-                .focus(|s| s.bg(theme::selected()))
-                .child(mode.label())
-                .when(mode == sort, |d| {
-                    d.child(div().text_color(theme::link()).child("✓"))
-                })
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    shell::set_repo_sort(mode, cx);
-                    this.close_sort_menu(window, cx);
-                }))
-        });
-        Some(
-            deferred(
-                anchored().anchor(Anchor::TopRight).snap_to_window().child(
-                    div()
-                        .id("repo-sort-menu")
-                        .role(gpui_kit::Role::Menu)
-                        .key_context(details_view::MENU_CONTEXT)
-                        .on_key_down(cx.listener(Self::on_sort_key))
-                        .on_action(cx.listener(|this, _: &LeaveMenu, window, cx| {
-                            this.close_sort_menu(window, cx);
-                            window.focus_next(cx);
-                        }))
-                        .on_action(cx.listener(|this, _: &LeaveMenuBack, window, cx| {
-                            this.close_sort_menu(window, cx);
-                            window.focus_prev(cx);
-                        }))
-                        // Outside click closes the menu and is swallowed, like a native menu.
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                            this.sort_menu = false;
-                            cx.stop_propagation();
-                            cx.notify();
-                        }))
-                        .mt(px(4.))
-                        .min_w(px(120.))
-                        .p(px(4.))
-                        .flex()
-                        .flex_col()
-                        .rounded(px(8.))
-                        .border_1()
-                        .border_color(theme::border_strong())
-                        .bg(theme::raised())
-                        .shadow_lg()
-                        .occlude()
-                        .text_size(px(13.))
-                        .child(
-                            div()
-                                .px(px(10.))
-                                .py(px(4.))
-                                .text_size(px(11.))
-                                .text_color(theme::faint())
-                                .child("SORT BY"),
-                        )
-                        .children(items)
-                        .test_support(),
-                ),
-            )
-            .with_priority(1)
-            .into_any_element(),
-        )
-    }
-}
-
-/// The repo sort menu's items, in order.
-const SORT_MODES: [SortMode; 2] = [SortMode::Recent, SortMode::Name];
-
-fn sort_ix(mode: SortMode) -> usize {
-    SORT_MODES.iter().position(|m| *m == mode).unwrap_or(0)
 }
 
 /// "PINNED · 2", "REPOSITORIES · 40".
@@ -2454,11 +2327,12 @@ mod tests {
         let file = settings_file(&tmp, Settings::default());
         fake_launcher(cx, Ok(Outcome::Opened));
         let w = two_repos(cx, &file);
-        let ids: [gpui_kit::ElementId; 14] = [
+        let ids: [gpui_kit::ElementId; 15] = [
             "jump-to".into(),
             "fetch-all".into(),
             "open-settings".into(),
             "repo-sort".into(),
+            "tree-sort".into(),
             ("repo", 0usize).into(),
             ("repo", 1usize).into(),
             "change-code-folder".into(),
@@ -3017,6 +2891,96 @@ mod tests {
         assert_eq!(
             main.read_with(cx, |m, cx| m.tree.read(cx).repo_name().map(str::to_string)),
             Some("r00".into())
+        );
+    }
+
+    /// Branch rows top to bottom.
+    fn tree_branches(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> Vec<String> {
+        main.read_with(cx, |m, cx| {
+            m.tree
+                .read(cx)
+                .tree()
+                .rows
+                .iter()
+                .filter_map(|r| match &r.kind {
+                    RowKind::Branch { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+    }
+
+    #[gpui_kit::test]
+    fn tree_sort_menu_reorders_persists_and_keeps_selection(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        // Saved from a previous run.
+        let file = settings_file(
+            &tmp,
+            Settings {
+                tree_sort: SortMode::Name,
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        repo.worktrees[2].head_time = Some(1_600_000_000); // feature/y
+        repo.worktrees[3].head_time = Some(1_700_000_000); // fix/z
+        let (w, main) = launch_repo(cx, &file, repo);
+        let by_name = ["main", "feature/x", "feature/y", "fix/z"];
+        let recent = ["main", "fix/z", "feature/y", "feature/x"];
+        assert_eq!(tree_branches(cx, &main), by_name);
+        assert_eq!(label_of(cx, w, "tree-sort"), "Sort branches: Name");
+
+        // main, its worktree, feature/, feature/x, its worktree, feature/y.
+        keys(cx, w, &["down"; 5]);
+        let selected = |cx: &mut TestAppContext| {
+            main.read_with(cx, |m, cx| m.tree.read(cx).selected().cloned())
+        };
+        let y = Some(RowId::Branch("feature/y".into()));
+        assert_eq!(selected(cx), y);
+
+        click(cx, w, "tree-sort");
+        assert!(found(cx, w, "tree-sort-menu"));
+        click(cx, w, ("tree-sort-choice", 0usize));
+        assert!(!found(cx, w, "tree-sort-menu"));
+        assert_eq!(tree_branches(cx, &main), recent);
+        assert_eq!(selected(cx), y);
+        assert_eq!(label_of(cx, w, "tree-sort"), "Sort branches: Recent");
+        assert_eq!(file.load().unwrap().tree_sort, SortMode::Recent);
+        // The repo sort is separate.
+        assert_eq!(file.load().unwrap().repo_sort, SortMode::Recent);
+
+        // From the keyboard.
+        tab_to(cx, w, "tree-sort");
+        keys(cx, w, &["enter", "down", "enter"]);
+        assert!(!found(cx, w, "tree-sort-menu"));
+        assert_eq!(tree_branches(cx, &main), by_name);
+        assert_eq!(selected(cx), y);
+        assert_eq!(file.load().unwrap().tree_sort, SortMode::Name);
+    }
+
+    #[gpui_kit::test]
+    fn recent_tree_reorders_live_and_keeps_selection(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        assert_eq!(
+            tree_branches(cx, &main),
+            ["main", "feature/x", "feature/y", "fix/z"]
+        );
+        // main, its worktree, feature/, feature/x.
+        keys(cx, w, &["down"; 3]);
+        // Opening fix/z's worktree from elsewhere makes it the newest.
+        cx.update(|cx| shell::record_open(Path::new("/c/wt/api-z"), cx));
+        cx.run_until_parked();
+        assert_eq!(
+            tree_branches(cx, &main),
+            ["main", "fix/z", "feature/x", "feature/y"]
+        );
+        assert_eq!(
+            main.read_with(cx, |m, cx| m.tree.read(cx).selected().cloned()),
+            Some(RowId::Branch("feature/x".into()))
         );
     }
 }

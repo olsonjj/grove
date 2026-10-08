@@ -1053,6 +1053,7 @@ mod tests {
             shell::record_open(Path::new("/c/wt/api-x"), cx);
             shell::toggle_pin(Path::new("/c/api"), cx);
             shell::set_repo_sort(grove_core::SortMode::Name, cx);
+            shell::set_tree_sort(grove_core::SortMode::Name, cx);
         });
         click(cx, w, "settings-save");
         assert!(!is_open(cx, w));
@@ -1067,6 +1068,7 @@ mod tests {
         assert!(s.last_opened.contains_key(Path::new("/c/wt/api-x")));
         assert_eq!(s.pinned_repos, [PathBuf::from("/c/api")]);
         assert_eq!(s.repo_sort, grove_core::SortMode::Name);
+        assert_eq!(s.tree_sort, grove_core::SortMode::Name);
         assert_eq!(file.load().unwrap(), s);
         // What the popover, switcher and main window open with.
         let names = cx.update(|cx| {
