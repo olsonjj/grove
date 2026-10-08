@@ -26,13 +26,14 @@ pub use git::{
     recent_commits,
 };
 pub use launch::{
-    Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, execute, execute_with, plan,
+    Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, command_line, execute,
+    execute_with, plan,
 };
 pub use menu::{MenuGroup, MenuRow, StateLine, menu};
 pub use search::{Hit, Matches, search};
 pub use settings::{
-    CustomCommand, LoginItemHost, LoginItemStatus, MAX_RECENTS, Settings, SettingsFile,
-    TerminalOpensIn, is_installed_location,
+    CustomCommand, LoginItemHost, LoginItemStatus, MAX_RECENTS, Preferences, Settings,
+    SettingsFile, TerminalOpensIn, is_installed_location,
 };
 pub use snapshot::{
     FetchRead, FetchReport, FetchResult, Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead,

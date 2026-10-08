@@ -15,6 +15,7 @@ pub const TERMINAL: &str = "grove/terminal.svg";
 pub const LOCK: &str = "grove/lock.svg";
 pub const SEARCH: &str = "grove/search.svg";
 pub const REFRESH: &str = "grove/refresh.svg";
+pub const SETTINGS: &str = "grove/settings.svg";
 
 const ICONS: &[(&str, &str)] = &[
     (
@@ -56,6 +57,10 @@ const ICONS: &[(&str, &str)] = &[
     (
         REFRESH,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 4v5h-5"/></svg>"#,
+    ),
+    (
+        SETTINGS,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h10"/><path d="M18 6h2"/><circle cx="16" cy="6" r="2"/><path d="M4 12h4"/><path d="M12 12h8"/><circle cx="10" cy="12" r="2"/><path d="M4 18h12"/><circle cx="18" cy="18" r="2"/></svg>"#,
     ),
 ];
 

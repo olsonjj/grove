@@ -1,11 +1,14 @@
-//! Launch flow: git check → saved code folder → main window, or the setup window.
+//! Launch flow: git check → saved code folder → main window, or the setup window. The same
+//! folder picker and preview change the code folder later (settings, sidebar).
 
 use std::path::PathBuf;
 
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, AppContext, Bounds, ClickEvent, Context, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, PathPromptOptions, Render, StatefulInteractiveElement, Styled, TitlebarOptions,
-    Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
+    AnyWindowHandle, App, AppContext, Bounds, ClickEvent, Context, FontWeight, Global,
+    InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Render,
+    StatefulInteractiveElement, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::git::{self, GitError};
 use grove_core::{
@@ -47,8 +50,10 @@ fn boot() -> Boot {
     });
     let mut setup = Setup {
         stage: Stage::Choose,
-        settings_file,
-        settings,
+        mode: Mode::FirstRun {
+            settings_file,
+            settings,
+        },
         folder: None,
         scanned: None,
     };
@@ -65,11 +70,19 @@ fn boot() -> Boot {
         return Boot::Setup(setup);
     }
 
-    let Some(dir) = setup.settings.code_dir.clone() else {
+    let Mode::FirstRun {
+        settings_file,
+        settings,
+    } = &setup.mode
+    else {
+        unreachable!("boot is first run");
+    };
+    let (settings_file, settings) = (settings_file.clone(), settings.clone());
+    let Some(dir) = settings.code_dir.clone() else {
         return Boot::Setup(setup);
     };
     // A folder that's gone falls through to the scan, which sends it back to setup.
-    let cached = SnapshotCache::beside(&setup.settings_file)
+    let cached = SnapshotCache::beside(&settings_file)
         .load(&dir)
         .filter(|s| !s.repos.is_empty() && dir.is_dir());
     if let Some(snapshot) = cached {
@@ -80,8 +93,8 @@ fn boot() -> Boot {
         );
         return Boot::Ready(
             Library {
-                settings_file: setup.settings_file,
-                settings: setup.settings,
+                settings_file,
+                settings,
                 store: SnapshotStore::from_snapshot(snapshot),
                 saves: Default::default(),
             },
@@ -102,8 +115,8 @@ fn boot() -> Boot {
     }
     Boot::Ready(
         Library {
-            settings_file: setup.settings_file,
-            settings: setup.settings,
+            settings_file,
+            settings,
             store: SnapshotStore::from_snapshot(snapshot),
             saves: Default::default(),
         },
@@ -126,10 +139,24 @@ enum Stage {
     Choose,
 }
 
+/// Change…'s Continue, given the chosen folder's scan.
+type ChangeDone = Box<dyn FnOnce(Snapshot, &mut App) + Send>;
+
+/// What Continue does with the chosen folder.
+#[expect(clippy::large_enum_variant, reason = "one per window")]
+enum Mode {
+    /// Saves it and starts Grove.
+    FirstRun {
+        settings_file: SettingsFile,
+        settings: Settings,
+    },
+    /// Hands its scan to `done` (settings, sidebar) and closes. `None` once used.
+    Change(Option<ChangeDone>),
+}
+
 pub struct Setup {
     stage: Stage,
-    settings_file: SettingsFile,
-    settings: Settings,
+    mode: Mode,
     folder: Option<PathBuf>,
     /// Scan of `folder`; `None` while scanning.
     scanned: Option<Snapshot>,
@@ -137,6 +164,10 @@ pub struct Setup {
 
 impl Setup {
     fn choose_folder(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.prompt(cx);
+    }
+
+    fn prompt(&mut self, cx: &mut Context<Self>) {
         cx.activate(true);
         let paths = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -193,25 +224,37 @@ impl Setup {
         let Some(snapshot) = self.scanned.take().filter(|s| !s.repos.is_empty()) else {
             return;
         };
-        self.settings.code_dir = Some(snapshot.code_dir.clone());
-        if let Err(e) = self.settings_file.save(&self.settings) {
-            eprintln!(
-                "[grove] saving settings to {}: {e}",
-                self.settings_file.path().display()
-            );
-        }
         eprintln!(
-            "[grove] setup done: {} ({} repos)",
+            "[grove] code folder chosen: {} ({} repos)",
             snapshot.code_dir.display(),
             snapshot.repos.len()
         );
-        let library = Library {
-            settings_file: self.settings_file.clone(),
-            settings: self.settings.clone(),
-            store: SnapshotStore::from_snapshot(snapshot),
-            saves: Default::default(),
-        };
-        shell::start(library, false, cx);
+        match &mut self.mode {
+            Mode::FirstRun {
+                settings_file,
+                settings,
+            } => {
+                settings.code_dir = Some(snapshot.code_dir.clone());
+                if let Err(e) = settings_file.save(settings) {
+                    eprintln!(
+                        "[grove] saving settings to {}: {e}",
+                        settings_file.path().display()
+                    );
+                }
+                let library = Library {
+                    settings_file: settings_file.clone(),
+                    settings: settings.clone(),
+                    store: SnapshotStore::from_snapshot(snapshot),
+                    saves: Default::default(),
+                };
+                shell::start(library, false, cx);
+            }
+            Mode::Change(done) => {
+                if let Some(done) = done.take() {
+                    done(snapshot, cx);
+                }
+            }
+        }
         window.remove_window();
     }
 
@@ -350,18 +393,26 @@ impl Setup {
             ),
         };
 
+        let changing = matches!(self.mode, Mode::Change(_));
         div()
             .size_full()
             .flex()
             .flex_col()
             .gap(px(20.))
             .p(px(32.))
-            .child(header("Setup · 1 step"))
+            .child(header(if changing {
+                "Code folder"
+            } else {
+                "Setup · 1 step"
+            }))
             .child(title("Where do you keep your code?"))
-            .child(paragraph(
+            .child(paragraph(if changing {
                 "Pick the one folder that holds your Git repos. Grove reads only this folder — \
-                 nothing else on your Mac is scanned. You can change it later in settings.",
-            ))
+                 repos outside it disappear from Grove."
+            } else {
+                "Pick the one folder that holds your Git repos. Grove reads only this folder — \
+                 nothing else on your Mac is scanned. You can change it later in settings."
+            }))
             .child(field)
             .child(div().flex_1().min_h_0().flex().flex_col().children(result))
             .child(
@@ -380,12 +431,27 @@ impl Setup {
                                 "Grove never changes your repos."
                             }),
                     )
-                    .child(button(
-                        "continue",
-                        "Continue",
-                        ButtonKind::Primary,
-                        has_repos.then(|| cx.listener(Self::finish)),
-                    )),
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .when(changing, |d| {
+                                d.child(button(
+                                    "cancel",
+                                    "Cancel",
+                                    ButtonKind::Secondary,
+                                    Some(|_: &ClickEvent, window: &mut Window, _: &mut App| {
+                                        window.remove_window()
+                                    }),
+                                ))
+                            })
+                            .child(button(
+                                "continue",
+                                "Continue",
+                                ButtonKind::Primary,
+                                has_repos.then(|| cx.listener(Self::finish)),
+                            )),
+                    ),
             )
     }
 
@@ -525,15 +591,63 @@ fn paragraph(text: impl Into<gpui_kit::SharedString>) -> gpui_kit::Div {
         .child(text.into())
 }
 
-fn open(setup: Setup, cx: &mut App) {
-    let options = WindowOptions {
+/// The open Change… window, so a second Change… brings it forward instead.
+struct Changing(AnyWindowHandle, WeakEntity<Setup>);
+
+impl Global for Changing {}
+
+/// Change…: the first-run picker and preview for another code folder. `done` gets the
+/// chosen folder's scan on Continue; Cancel or closing the window drops it. If the picker
+/// is already open, the latest Change…'s `done` replaces the earlier one.
+pub fn change_code_dir(done: impl FnOnce(Snapshot, &mut App) + Send + 'static, cx: &mut App) {
+    let done: ChangeDone = Box::new(done);
+    let open = cx
+        .try_global::<Changing>()
+        .filter(|c| cx.windows().contains(&c.0))
+        .and_then(|c| Some((c.0, c.1.upgrade()?)));
+    if let Some((w, setup)) = open {
+        setup.update(cx, |setup, _| setup.mode = Mode::Change(Some(done)));
+        cx.activate(true);
+        let _ = w.update(cx, |_, window, _| window.activate_window());
+        return;
+    }
+    let setup = Setup {
+        stage: Stage::Choose,
+        mode: Mode::Change(Some(done)),
+        folder: None,
+        scanned: None,
+    };
+    let options = window_options("Choose Code Folder", cx);
+    cx.activate(true);
+    match gpui_kit::open_window(options, cx, |_, cx| {
+        cx.new(|cx| {
+            let mut setup = setup;
+            setup.prompt(cx);
+            setup
+        })
+    }) {
+        Ok((handle, setup)) => cx.set_global(Changing(handle, setup.downgrade())),
+        Err(e) => eprintln!("[grove] code folder window: {e:#}"),
+    }
+}
+
+/// The Change… window, if open.
+#[cfg(test)]
+pub fn changing(cx: &App) -> Option<AnyWindowHandle> {
+    cx.try_global::<Changing>()
+        .map(|c| c.0)
+        .filter(|w| cx.windows().contains(w))
+}
+
+fn window_options(title: &'static str, cx: &App) -> WindowOptions {
+    WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
             size(px(640.), px(600.)),
             cx,
         ))),
         titlebar: Some(TitlebarOptions {
-            title: Some("Grove Setup".into()),
+            title: Some(title.into()),
             ..Default::default()
         }),
         focus: true,
@@ -541,7 +655,11 @@ fn open(setup: Setup, cx: &mut App) {
         kind: WindowKind::Normal,
         is_resizable: false,
         ..Default::default()
-    };
+    }
+}
+
+fn open(setup: Setup, cx: &mut App) {
+    let options = window_options("Grove Setup", cx);
     cx.activate(true);
     if let Err(e) = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| setup)) {
         eprintln!("[grove] setup window: {e:#}");

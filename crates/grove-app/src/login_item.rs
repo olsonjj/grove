@@ -2,15 +2,18 @@
 //! `cargo run` or tests nothing is touched. Tests swap in a fake service.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use gpui_kit::{App, AppContext, Global};
+use gpui_kit::{App, AppContext, Global, Task};
 use grove_core::{LoginItemHost, LoginItemStatus, Settings, home_dir, is_installed_location};
 use objc2_foundation::NSBundle;
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
+use crate::main_window::tilde;
 use crate::shell::{self, Library};
+
+pub const LOGIN_ITEMS: &str = "System Settings → General → Login Items";
 
 pub type Status = Arc<dyn Fn() -> LoginItemStatus + Send + Sync>;
 /// Registers (`true`) or unregisters, returning the status after.
@@ -77,20 +80,68 @@ fn set(on: bool) -> Result<LoginItemStatus, String> {
 
 /// At launch, once setup is done (see `Settings::sync_login_item`).
 pub fn sync(cx: &mut App) {
-    reconcile(Settings::sync_login_item, cx);
+    reconcile(Settings::sync_login_item, |_, _| {}, cx);
 }
 
-/// On settings Save: makes this copy's login item match `launch_at_login`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "called on settings Save (ticket 13)")
-)]
+/// On settings Save: this copy takes over the login item and makes it match
+/// `launch_at_login`. Posts what the user still has to do, if anything.
 pub fn apply(cx: &mut App) {
-    reconcile(|s, host, now| s.apply_login_item(host.bundle, now), cx);
+    let Some(bundle) = cx.default_global::<LoginItems>().bundle.clone() else {
+        return;
+    };
+    let previous = shell::library(cx).settings.login_item_path.clone();
+    reconcile(
+        |s, host, now| s.apply_login_item(host.bundle, now),
+        move |result, cx| {
+            let settings = &shell::library(cx).settings;
+            let on = settings.launch_at_login;
+            // Unavailable leaves the owner alone.
+            let replaced = previous
+                .filter(|p| settings.login_item_path.as_ref() == Some(&bundle) && *p != bundle);
+            if let Some(text) = apply_notice(replaced.as_deref(), on, result) {
+                crate::launcher::Notice { text, warn: true }.post(false, cx);
+            }
+        },
+        cx,
+    );
 }
 
+/// What to tell the user after a Save: a failure, approval still needed, or that the copy
+/// it `replaced` as owner may stay a login item.
+fn apply_notice(
+    replaced: Option<&Path>,
+    on: bool,
+    result: Result<LoginItemStatus, String>,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    match result {
+        Err(e) => lines.push(format!("Couldn't change launch at login: {e}.")),
+        Ok(LoginItemStatus::RequiresApproval) if on => lines.push(format!(
+            "To launch Grove at login, allow it in {LOGIN_ITEMS}."
+        )),
+        Ok(_) => {}
+    }
+    if let Some(other) = replaced {
+        lines.push(format!(
+            "Launch at login now uses this copy of Grove; {} may still open at login too \
+             (remove it in {LOGIN_ITEMS}).",
+            tilde(other)
+        ));
+    }
+    (!lines.is_empty()).then(|| lines.join(" "))
+}
+
+/// macOS's current status for this copy; `None` when not running from Grove.app.
+pub fn status_now(cx: &mut App) -> Task<Option<LoginItemStatus>> {
+    let items = cx.default_global::<LoginItems>();
+    let status = items.bundle.is_some().then(|| items.status.clone());
+    cx.background_spawn(async move { status.map(|s| s()) })
+}
+
+/// `decide` picks the change; `done` gets the status after it (or the one found, if none).
 fn reconcile(
     decide: fn(&mut Settings, LoginItemHost<'_>, LoginItemStatus) -> Option<bool>,
+    done: impl FnOnce(Result<LoginItemStatus, String>, &mut App) + 'static,
     cx: &mut App,
 ) {
     let items = cx.default_global::<LoginItems>();
@@ -121,15 +172,18 @@ fn reconcile(
             )
         });
         let Some(on) = change else {
-            return;
+            return cx.update(|cx| done(Ok(now), cx));
         };
         let result = cx.background_spawn(async move { set(on) }).await;
-        cx.update(|cx| match result {
-            Ok(after) => {
-                eprintln!("[grove] login item {after:?}");
-                update_settings(cx, |s| s.login_item_registered(&bundle, after), |_| {});
+        cx.update(|cx| {
+            match &result {
+                Ok(after) => {
+                    eprintln!("[grove] login item {after:?}");
+                    update_settings(cx, |s| s.login_item_registered(&bundle, *after), |_| {});
+                }
+                Err(e) => eprintln!("[grove] login item: {e}"),
             }
-            Err(e) => eprintln!("[grove] login item: {e}"),
+            done(result, cx);
         });
     })
     .detach();
@@ -159,7 +213,7 @@ mod tests {
     use std::sync::Mutex;
 
     use gpui_kit::TestAppContext;
-    use grove_core::LoginItemStatus::{Enabled, NotRegistered};
+    use grove_core::LoginItemStatus::{Enabled, NotRegistered, RequiresApproval};
     use grove_core::SettingsFile;
     use tempfile::TempDir;
 
@@ -267,6 +321,50 @@ mod tests {
         let (_tmp, file) = run(cx, settings, apply);
         assert_eq!(*fake.calls.lock().unwrap(), [false]);
         assert_eq!(owner(&file), Some(APP.into()));
+    }
+
+    fn notice(cx: &mut TestAppContext) -> Option<String> {
+        cx.update(|cx| {
+            cx.try_global::<shell::Notices>()
+                .and_then(|n| n.last.clone())
+                .map(|s| s.text)
+        })
+    }
+
+    #[gpui_kit::test]
+    fn apply_from_another_copy_says_the_old_one_may_stay(cx: &mut TestAppContext) {
+        fake(cx, Enabled, Enabled);
+        let settings = Settings {
+            login_item_path: Some("/Users/me/Downloads/Grove.app".into()),
+            ..Default::default()
+        };
+        let (_tmp, _file) = run(cx, settings, apply);
+        assert_eq!(
+            notice(cx).unwrap(),
+            "Launch at login now uses this copy of Grove; /Users/me/Downloads/Grove.app may \
+             still open at login too (remove it in System Settings → General → Login Items)."
+        );
+    }
+
+    #[gpui_kit::test]
+    fn apply_needing_approval_says_where_to_allow_it(cx: &mut TestAppContext) {
+        fake(cx, NotRegistered, RequiresApproval);
+        let (_tmp, _file) = run(cx, Settings::default(), apply);
+        assert_eq!(
+            notice(cx).unwrap(),
+            "To launch Grove at login, allow it in System Settings → General → Login Items."
+        );
+    }
+
+    #[gpui_kit::test]
+    fn apply_by_the_owner_says_nothing(cx: &mut TestAppContext) {
+        fake(cx, Enabled, Enabled);
+        let settings = Settings {
+            login_item_path: Some(APP.into()),
+            ..Default::default()
+        };
+        let (_tmp, _file) = run(cx, settings, apply);
+        assert_eq!(notice(cx), None);
     }
 
     #[gpui_kit::test]

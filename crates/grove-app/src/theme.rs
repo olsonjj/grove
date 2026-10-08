@@ -2,7 +2,7 @@
 
 use gpui_kit::{
     App, ClickEvent, Div, ElementId, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Rgba, SharedString, StatefulInteractiveElement, Styled, Window, div, px, rgb,
+    Rgba, SharedString, StatefulInteractiveElement, Styled, TestSupportExt, Window, div, px, rgb,
 };
 
 pub fn bg() -> Rgba {
@@ -116,7 +116,8 @@ pub fn button(
         .items_center()
         .rounded(px(8.))
         .text_size(px(13.))
-        .child(label.into());
+        .child(label.into())
+        .test_support();
     let styled = match (kind, enabled) {
         (ButtonKind::Primary, true) => base
             .bg(accent())

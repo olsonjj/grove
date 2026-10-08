@@ -49,6 +49,19 @@ impl Default for Settings {
     }
 }
 
+/// What the settings window edits. The rest of `Settings` (recents, collapse state, the
+/// login item's owner) keeps changing underneath it while it's open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preferences {
+    pub code_dir: Option<PathBuf>,
+    pub default_editor: Option<String>,
+    pub default_terminal: Option<String>,
+    pub terminal_opens_in: Option<TerminalOpensIn>,
+    pub show_menu_bar_icon: bool,
+    pub background_fetch: bool,
+    pub launch_at_login: bool,
+}
+
 /// macOS's record of Grove's login item (`SMAppService`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginItemStatus {
@@ -138,6 +151,38 @@ impl Settings {
         if status.is_registered() && self.login_item_path.is_none() {
             self.login_item_path = Some(bundle.to_path_buf());
         }
+    }
+
+    pub fn preferences(&self) -> Preferences {
+        Preferences {
+            code_dir: self.code_dir.clone(),
+            default_editor: self.default_editor.clone(),
+            default_terminal: self.default_terminal.clone(),
+            terminal_opens_in: self.terminal_opens_in,
+            show_menu_bar_icon: self.show_menu_bar_icon,
+            background_fetch: self.background_fetch,
+            launch_at_login: self.launch_at_login,
+        }
+    }
+
+    /// Settings Save. Leaves everything the window doesn't edit as it is now.
+    pub fn set_preferences(&mut self, p: Preferences) {
+        let Preferences {
+            code_dir,
+            default_editor,
+            default_terminal,
+            terminal_opens_in,
+            show_menu_bar_icon,
+            background_fetch,
+            launch_at_login,
+        } = p;
+        self.code_dir = code_dir;
+        self.default_editor = default_editor;
+        self.default_terminal = default_terminal;
+        self.terminal_opens_in = terminal_opens_in;
+        self.show_menu_bar_icon = show_menu_bar_icon;
+        self.background_fetch = background_fetch;
+        self.launch_at_login = launch_at_login;
     }
 
     pub fn collapsed(&self, repo: &str) -> &[String] {

@@ -72,6 +72,22 @@ pub fn plan(target: &OpenTarget, worktree: &Path, settings: &Settings) -> Launch
     }
 }
 
+/// What an editor runs, as settings shows it (`{path}` for the worktree): the CLI by name
+/// (even when it's the one inside the app), else `open -a`. `None` for terminals.
+pub fn command_line(target: &OpenTarget) -> Option<String> {
+    let TargetKind::Editor(editor) = target.kind else {
+        return None;
+    };
+    let program = match &target.cli {
+        Some(_) => std::iter::once(editor.cli_name())
+            .chain(editor.new_window_args().iter().copied())
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => format!("open -a {}", target.name()),
+    };
+    Some(format!("{program} {{path}}"))
+}
+
 fn terminal_plan(
     terminal: Terminal,
     target: &OpenTarget,
@@ -760,6 +776,32 @@ mod tests {
             panic!("Warp plans a spawn");
         };
         assert!(args.iter().any(|a| a.to_string_lossy().contains("new_tab")));
+    }
+
+    #[test]
+    fn command_line_names_the_cli_or_open_a() {
+        use Editor::*;
+        let line = |t: OpenTarget| command_line(&t);
+        let zed_app = Some("/Applications/Zed.app");
+        let bundled = Some("/Applications/Zed.app/Contents/MacOS/cli");
+        assert_eq!(
+            line(editor(VsCode, Some("/opt/homebrew/bin/code"), None)).as_deref(),
+            Some("code --new-window {path}")
+        );
+        assert_eq!(
+            line(editor(Zed, bundled, zed_app)).as_deref(),
+            Some("zed --new {path}")
+        );
+        assert_eq!(
+            line(editor(
+                IntelliJ,
+                None,
+                Some("/Applications/IntelliJ IDEA.app")
+            ))
+            .as_deref(),
+            Some("open -a IntelliJ IDEA {path}")
+        );
+        assert_eq!(line(term(Terminal::Warp, None, None)), None);
     }
 
     /// (path, shell-quoted `cd` as an AppleScript literal, Warp `path=` value)

@@ -132,6 +132,11 @@ impl Terminal {
         }
     }
 
+    /// Kitty opens windows only (see `plan`).
+    pub fn supports_tabs(self) -> bool {
+        self != Terminal::Kitty
+    }
+
     /// Detection order; Terminal.app ships with macOS, so it's the usual default.
     pub const ALL: [Terminal; 5] = [
         Terminal::Terminal,

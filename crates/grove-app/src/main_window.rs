@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use gpui_kit::base::Button;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, FontWeight,
@@ -10,6 +12,7 @@ use gpui_kit::{
 use grove_core::RepoSnapshot;
 
 use crate::details_view::{self, DetailsView};
+use crate::icons::{self, icon};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
 
@@ -132,15 +135,20 @@ impl MainWindow {
         .detach();
     }
 
-    /// Pushes fresher snapshot data for the shown repo into the tree.
+    /// Pushes fresher snapshot data for the shown repo into the tree, or shows another if
+    /// it's gone (e.g. outside a new code folder).
     fn sync_repo(&mut self, cx: &mut Context<Self>) {
         if !cx.has_global::<shell::Library>() {
             return;
         }
         let name = self.tree.read(cx).repo_name().map(str::to_string);
         let snapshot = shell::library(cx).store.snapshot().clone();
-        let repo = name.as_deref().and_then(|n| snapshot.repo(n));
-        self.tree.update(cx, |tree, cx| tree.update_repo(repo, cx));
+        match name.as_deref().and_then(|n| snapshot.repo(n)) {
+            Some(repo) => self
+                .tree
+                .update(cx, |tree, cx| tree.update_repo(Some(repo), cx)),
+            None => self.show_repo(selected_repo(cx), cx),
+        }
         cx.notify();
     }
 
@@ -301,6 +309,25 @@ impl MainWindow {
             })
             .child(jump)
             .child(div().ml_auto().flex_none().child(fetch))
+            .child(
+                Button::new("open-settings")
+                    .accessibility_label("Open-with settings")
+                    .flex_none()
+                    .size(px(32.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.))
+                    .border_1()
+                    .border_color(theme::border_strong())
+                    .focus_visible(|s| s.border_color(theme::link()))
+                    .bg(theme::raised())
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::border()))
+                    .child(icon(icons::SETTINGS, 16.).text_color(theme::text()))
+                    .tooltip(|window, cx| Tooltip::new("Open-with settings").build(window, cx))
+                    .on_click(|_, _, cx| shell::open_settings(cx)),
+            )
             .into_any_element()
     }
 
@@ -321,14 +348,8 @@ impl MainWindow {
                         })
                         .child(s.text.clone()),
                 )
-                // Placeholder until the settings window exists (ticket 13).
                 .when(s.settings, |d| {
-                    d.child(
-                        div()
-                            .flex_none()
-                            .text_color(theme::link())
-                            .child("Settings…"),
-                    )
+                    d.child(link("status-settings", "Settings…", shell::open_settings))
                 }),
             None => div(),
         };
@@ -461,9 +482,20 @@ impl Render for MainWindow {
                             .child("CODE FOLDER"),
                     )
                     .child(
-                        theme::path_text(tilde(&snapshot.code_dir))
-                            .text_size(px(13.))
-                            .text_color(theme::text()),
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.))
+                            .child(
+                                theme::path_text(tilde(&snapshot.code_dir))
+                                    .text_size(px(13.))
+                                    .text_color(theme::text()),
+                            )
+                            .child(
+                                link("change-code-folder", "Change…", shell::choose_code_dir)
+                                    .text_size(px(12.)),
+                            ),
                     )
                     .child(
                         div()
@@ -514,6 +546,22 @@ impl Render for MainWindow {
             )
             .child(self.status_bar(cx))
     }
+}
+
+/// Inline text link.
+fn link(id: &'static str, text: &'static str, action: fn(&mut App)) -> Button {
+    Button::new(id)
+        .flex_none()
+        .px(px(2.))
+        .rounded(px(4.))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
+        .focus_visible(|s| s.border_color(theme::link()))
+        .text_color(theme::link())
+        .cursor_pointer()
+        .hover(|s| s.underline())
+        .child(text)
+        .on_click(move |_, _, cx| action(cx))
 }
 
 /// "Last fetch 3 minutes ago" or "Not fetched yet". The Fetch all button shows progress.

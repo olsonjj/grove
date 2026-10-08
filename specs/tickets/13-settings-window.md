@@ -6,10 +6,10 @@
 
 **Status:** ready-for-agent
 
-- [ ] Opens from top bar button, popover Settings…, and error-line links
-- [ ] Code directory Change… reuses first-run picker and preview; repos outside new folder disappear everywhere
-- [ ] Sidebar footer shows code directory with Change link to same picker
-- [ ] Editor and terminal defaults; tab/window option where supported
-- [ ] Show menu bar icon toggle; off hides icon, main window and ⌥⌘K still work
-- [ ] Background fetch toggle; launch at login toggle (Save calls `login_item::apply`; hint to allow it in System Settings when status is `RequiresApproval`; Save from a copy that isn't the recorded `login_item_path` should say so, since the old copy may stay a second login item)
-- [ ] Save applies immediately to all surfaces; Cancel discards
+- [x] Opens from top bar button, popover Settings…, and error-line links
+- [x] Code directory Change… reuses first-run picker and preview; repos outside new folder disappear everywhere
+- [x] Sidebar footer shows code directory with Change link to same picker
+- [x] Editor and terminal defaults; tab/window option where supported
+- [x] Show menu bar icon toggle; off hides icon, main window and ⌥⌘K still work
+- [x] Background fetch toggle; launch at login toggle (Save calls `login_item::apply`; hint to allow it in System Settings when status is `RequiresApproval`; Save from a copy that isn't the recorded `login_item_path` should say so, since the old copy may stay a second login item)
+- [x] Save applies immediately to all surfaces; Cancel discards

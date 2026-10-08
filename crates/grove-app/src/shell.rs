@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use async_channel::Sender;
 use global_hotkey::GlobalHotKeyManager;
 use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
 use gpui_kit::{
@@ -10,14 +11,17 @@ use gpui_kit::{
     WindowId,
 };
 use grove_core::{
-    Changes, FetchReport, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore,
-    StatusReads, Watcher,
+    Changes, FetchReport, Preferences, Settings, SettingsFile, Snapshot, SnapshotCache,
+    SnapshotStore, StatusReads, Watcher,
 };
 use objc2::rc::Retained;
 use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
 
-use crate::{PlatformEvent, hotkeys, macos, main_window, popover, status_item, switcher, windows};
+use crate::{
+    PlatformEvent, hotkeys, login_item, macos, main_window, popover, settings_window, setup,
+    status_item, switcher, windows,
+};
 
 /// A status-item click that arrives right after the popover closed on deactivation is the
 /// same click that deactivated it; ignore it so the click toggles instead of reopening.
@@ -115,7 +119,10 @@ struct Live {
 impl Global for Live {}
 
 struct Shell {
-    _tray: Option<TrayIcon>,
+    /// `None` while the menu bar icon is off in settings (or couldn't be installed).
+    tray: Option<TrayIcon>,
+    /// For a status item installed later; `None` in tests.
+    events: Option<Sender<PlatformEvent>>,
     _hotkeys: Option<GlobalHotKeyManager>,
     popover: Option<AnyWindowHandle>,
     popover_closed_at: Option<Instant>,
@@ -126,9 +133,14 @@ struct Shell {
 impl Global for Shell {}
 
 impl Shell {
-    fn new(tray: Option<TrayIcon>, hotkeys: Option<GlobalHotKeyManager>) -> Self {
+    fn new(
+        tray: Option<TrayIcon>,
+        events: Option<Sender<PlatformEvent>>,
+        hotkeys: Option<GlobalHotKeyManager>,
+    ) -> Self {
         Self {
-            _tray: tray,
+            tray,
+            events,
             _hotkeys: hotkeys,
             popover: None,
             popover_closed_at: None,
@@ -144,10 +156,12 @@ impl Shell {
 pub fn start(library: Library, cached: bool, cx: &mut App) {
     let (tx, rx) = async_channel::unbounded::<PlatformEvent>();
     // Either can fail, e.g. a second Grove can't take the same hotkeys; keep running.
-    let tray = status_item::install(tx.clone())
-        .inspect_err(|e| eprintln!("[grove] status item unavailable: {e}"))
-        .ok();
-    let hotkeys = hotkeys::install(tx)
+    let tray = library
+        .settings
+        .show_menu_bar_icon
+        .then(|| install_tray(tx.clone()))
+        .flatten();
+    let hotkeys = hotkeys::install(tx.clone())
         .inspect_err(|e| eprintln!("[grove] global hotkeys unavailable: {e}"))
         .ok();
     cx.set_global(Live {
@@ -169,7 +183,7 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
     start_watching(cx);
     start_background_fetch(cx);
     crate::launcher::install(cx);
-    cx.set_global(Shell::new(tray, hotkeys));
+    cx.set_global(Shell::new(tray, Some(tx), hotkeys));
     windows::warm_up(cx);
     cx.spawn(async move |cx| {
         while let Ok(event) = rx.recv().await {
@@ -252,6 +266,31 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
+fn install_tray(tx: Sender<PlatformEvent>) -> Option<TrayIcon> {
+    status_item::install(tx)
+        .inspect_err(|e| eprintln!("[grove] status item unavailable: {e}"))
+        .ok()
+}
+
+/// Shows or removes the menu bar icon per settings. The main window and hotkeys don't
+/// depend on it.
+fn apply_menu_bar_icon(cx: &mut App) {
+    let show = library(cx).settings.show_menu_bar_icon;
+    if !is_running(cx) {
+        return;
+    }
+    let shell = cx.global_mut::<Shell>();
+    if show && shell.tray.is_none() {
+        shell.tray = shell.events.clone().and_then(install_tray);
+    } else if !show && shell.tray.is_some() {
+        shell.tray = None;
+        eprintln!("[grove] status item removed");
+        if let Some(popover) = shell.popover {
+            close(popover, cx);
+        }
+    }
+}
+
 fn open_switcher(cx: &App) -> Option<AnyWindowHandle> {
     switcher::window(cx).filter(|w| cx.windows().contains(w))
 }
@@ -282,7 +321,7 @@ pub fn reopen(cx: &mut App) {
 /// Running as after `start`, minus the status item, hotkeys and background work.
 #[cfg(test)]
 pub fn start_bare(cx: &mut App) {
-    cx.set_global(Shell::new(None, None));
+    cx.set_global(Shell::new(None, None, None));
 }
 
 pub fn is_running(cx: &App) -> bool {
@@ -461,7 +500,7 @@ fn apply_changes(changes: Changes, cx: &mut App) {
 /// After repos or worktrees may have come or gone: re-aim the watcher, update the cache.
 fn snapshot_changed(cx: &mut App) {
     let snapshot = library(cx).store.snapshot().clone();
-    if let Some(watch) = &cx.global::<Live>().watch {
+    if let Some(watch) = cx.try_global::<Live>().and_then(|l| l.watch.as_ref()) {
         let _ = watch.try_send(snapshot);
     }
     save_cache_soon(cx);
@@ -534,9 +573,48 @@ pub fn show_main(cx: &mut App) {
     }
 }
 
-/// Settings…: shows the main window until the settings window exists (ticket 13).
+/// Settings… (top bar, popover, status-line links).
 pub fn open_settings(cx: &mut App) {
-    show_main(cx);
+    settings_window::open(cx);
+}
+
+/// The sidebar's Change…: the first-run picker; Continue switches right away.
+pub fn choose_code_dir(cx: &mut App) {
+    setup::change_code_dir(change_code_dir, cx);
+}
+
+/// Switches to another code folder, given its fresh scan: repos outside it drop out of
+/// every surface, and the watcher and cache follow.
+pub fn change_code_dir(snapshot: Snapshot, cx: &mut App) {
+    switch_code_dir(snapshot, cx);
+    if cx.has_global::<Live>() {
+        cx.global_mut::<Live>().last_scan = Some(Instant::now());
+    }
+}
+
+/// As `change_code_dir`, but `snapshot` may be old, so the next refresh still rescans.
+fn switch_code_dir(snapshot: Snapshot, cx: &mut App) {
+    let library = cx.global_mut::<Library>();
+    if library.settings.code_dir.as_ref() != Some(&snapshot.code_dir) {
+        library.settings.code_dir = Some(snapshot.code_dir.clone());
+        save_settings(cx);
+    }
+    eprintln!("[grove] code dir now {}", snapshot.code_dir.display());
+    cx.global_mut::<Library>().store.replace(snapshot);
+    read_statuses(cx);
+    snapshot_changed(cx);
+}
+
+/// Settings Save: every surface picks the change up at once. `scanned` is the new code
+/// folder's scan, if it changed.
+pub fn save_preferences(prefs: Preferences, scanned: Option<Snapshot>, cx: &mut App) {
+    cx.global_mut::<Library>().settings.set_preferences(prefs);
+    save_settings(cx);
+    if let Some(snapshot) = scanned {
+        switch_code_dir(snapshot, cx);
+    }
+    apply_menu_bar_icon(cx);
+    login_item::apply(cx);
 }
 
 pub(crate) fn save_settings(cx: &mut App) {
@@ -911,5 +989,35 @@ mod tests {
         running(cx, &file);
         cx.quit();
         assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-y")]);
+    }
+
+    /// Its scan dates from when the folder was picked, so it mustn't hold off a refresh.
+    #[gpui_kit::test]
+    fn settings_save_of_a_new_code_folder_lets_refresh_rescan(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let code = TempDir::new().unwrap();
+        cx.update(|cx| {
+            cx.set_global(Live {
+                watch: None,
+                cache: SnapshotCache::beside(&file),
+                cache_saves: Saves::default(),
+                cache_pending: false,
+                scanning: false,
+                last_scan: None,
+            });
+            let snapshot = Snapshot {
+                code_dir: code.path().into(),
+                code_dir_exists: true,
+                repos: vec![],
+                last_fetch: None,
+            };
+            let prefs = library(cx).settings.preferences();
+            save_preferences(prefs, Some(snapshot), cx);
+            refresh_all(cx);
+            assert!(cx.global::<Live>().scanning);
+        });
+        cx.run_until_parked();
     }
 }

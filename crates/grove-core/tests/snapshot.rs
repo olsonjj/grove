@@ -227,6 +227,46 @@ fn record_open_moves_to_front_and_keeps_last_ten() {
 }
 
 #[test]
+fn settings_save_keeps_what_changed_while_the_window_was_open() {
+    let mut s = Settings::default();
+    let mut edited = s.preferences();
+    edited.default_editor = Some("zed".into());
+    edited.background_fetch = true;
+    edited.code_dir = Some("/code/acme".into());
+    s.record_open(&PathBuf::from("/w/api"));
+    s.set_collapsed("api", "fix/", true);
+    s.set_preferences(edited.clone());
+    assert_eq!(s.preferences(), edited);
+    assert_eq!(s.recents, [PathBuf::from("/w/api")]);
+    assert_eq!(s.collapsed("api"), ["fix/"]);
+}
+
+#[test]
+fn changing_code_dir_drops_repos_outside_it() {
+    let f = Fixture::new();
+    init_repo(&f.code().join("api"));
+    init_repo(&f.code().join("acme/web"));
+    let mut store = SnapshotStore::new(&f.code());
+    assert_eq!(
+        summary(store.snapshot()),
+        pairs(&[("api", 1), ("acme/web", 1)])
+    );
+    let api_git_dir = store.snapshot().repos[0].repo.git_dir.clone();
+    let old_rescan = store.scan_read();
+
+    store.replace(scan(&f.code().join("acme")));
+    assert_eq!(summary(store.snapshot()), pairs(&[("web", 1)]));
+    assert!(
+        !store.apply_scan(old_rescan.run()),
+        "old folder's rescan lands"
+    );
+    assert!(store.repo_read(&api_git_dir).is_none());
+
+    store.refresh_all();
+    assert_eq!(summary(store.snapshot()), pairs(&[("web", 1)]));
+}
+
+#[test]
 fn snapshot_cache_round_trips_with_statuses() {
     let f = Fixture::new();
     let api = init_repo(&f.code().join("api"));
