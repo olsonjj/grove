@@ -135,9 +135,9 @@ fn untracked_files_are_counted_one_by_one_even_in_new_folders() {
     );
 }
 
-#[test]
-fn worktree_with_submodules_is_not_removable() {
-    let f = Fixture::new();
+/// `api` with an initialized submodule in linked worktree `api-feature`, added with
+/// `add_config` (e.g. relative paths).
+fn submodule_worktree(f: &Fixture, add_config: &[&str]) -> PathBuf {
     let sub = init_repo(&f.tmp.path().join("sub"));
     let api = init_repo(&f.code().join("api"));
     let allow = ["-c", "protocol.file.allow=always"];
@@ -151,16 +151,108 @@ fn worktree_with_submodules_is_not_removable() {
     );
     git(&api, &["commit", "-q", "-m", "sub"]);
     let wt = f.outside("api-feature");
-    add_worktree(&api, &wt, "feature");
+    git(
+        &api,
+        &[
+            add_config,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature",
+                wt.to_str().unwrap(),
+            ],
+        ]
+        .concat(),
+    );
     git(
         &wt,
         &[&allow[..], &["submodule", "-q", "update", "--init"]].concat(),
     );
+    wt
+}
+
+#[test]
+fn worktree_with_submodules_is_not_removable() {
+    let f = Fixture::new();
+    let wt = submodule_worktree(&f, &[]);
 
     // Clean as far as status goes, but --force would delete the submodule's repo.
     assert_eq!(
         plan(&f, &wt),
         not_allowed("it contains submodules (remove it with git)")
+    );
+}
+
+#[test]
+fn submodules_are_found_through_relative_gitdirs() {
+    let f = Fixture::new();
+    let wt = submodule_worktree(&f, &["-c", "worktree.useRelativePaths=true"]);
+    // Dirty otherwise, so --force would take the submodule along.
+    fs::write(wt.join("wip.txt"), "w").unwrap();
+
+    assert_eq!(
+        plan(&f, &wt),
+        not_allowed("it contains submodules (remove it with git)")
+    );
+}
+
+#[test]
+fn missing_worktree_with_relative_gitdir_and_submodules_is_not_removable() {
+    let f = Fixture::new();
+    let wt = submodule_worktree(&f, &["-c", "worktree.useRelativePaths=true"]);
+    fs::remove_dir_all(&wt).unwrap();
+    let missing = worktrees(&f)[1].clone();
+
+    assert_eq!(
+        plan(&f, &missing),
+        not_allowed("it contains submodules (remove it with git)")
+    );
+}
+
+#[test]
+fn ignored_folder_holding_another_repo_is_not_removable() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    fs::write(api.join(".gitignore"), "vendor/\nnode_modules/\n").unwrap();
+    git(&api, &["add", ".gitignore"]);
+    git(&api, &["commit", "-q", "-m", "ignore"]);
+    let wt = f.outside("api-feature");
+    add_worktree(&api, &wt, "feature");
+    fs::create_dir_all(wt.join("node_modules/pkg")).unwrap();
+    fs::write(wt.join("node_modules/pkg/index.js"), "").unwrap();
+    init_repo(&wt.join("vendor/deep/lib"));
+
+    // Clean to status, so a plain remove would delete the repo unseen.
+    assert_eq!(
+        plan(&f, &wt),
+        not_allowed("vendor/deep/lib/ inside it is a separate Git repository (remove it with git)")
+    );
+}
+
+#[test]
+fn a_missing_folder_that_came_back_is_read_fresh() {
+    let f = Fixture::new();
+    let (_, wt) = linked(&f);
+    let away = f.outside("away");
+    fs::rename(&wt, &away).unwrap();
+    let snapshot = f.scan();
+    let repo = snapshot.repo("api").unwrap();
+    let stale = &repo.worktrees[1];
+    assert_eq!(
+        read_removal_plan(&repo.repo.git_dir, stale),
+        RemovalPlan::Missing
+    );
+    fs::rename(&away, &wt).unwrap();
+    fs::write(wt.join("wip.txt"), "w").unwrap();
+
+    assert_eq!(
+        read_removal_plan(&repo.repo.git_dir, stale),
+        RemovalPlan::Dirty {
+            modified: 0,
+            untracked: 1
+        }
     );
 }
 

@@ -59,7 +59,7 @@ struct MainWindow {
     _subs: [Subscription; 12],
 }
 
-/// A worktree to remove or prune, and its repo.
+/// A worktree to remove, and its repo.
 #[derive(Clone)]
 struct Target {
     repo: PathBuf,
@@ -476,6 +476,7 @@ impl MainWindow {
                 r.plan = plan;
                 r.confirm = confirm;
                 r.running = false;
+                window.focus(&r.cancel.clone(), cx);
                 window.refresh();
             }
             None => {
@@ -3659,6 +3660,8 @@ mod tests {
         let message = label_of(cx, w, "remove-message");
         assert!(message.contains("1 untracked file will be"), "{message}");
         assert_eq!(label_of(cx, w, "remove-confirm"), "Discard and remove");
+        // Back on Cancel, so a second Enter doesn't discard what it just revealed.
+        assert!(focused(cx, w, "remove-cancel"));
         click(cx, w, "remove-confirm");
         assert_eq!(*removals.lock().unwrap(), [(a.clone(), true)]);
         assert!(!a.exists());

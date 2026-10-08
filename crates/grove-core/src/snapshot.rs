@@ -118,7 +118,7 @@ fn changes_time_after(status: &StatusResult, prev: Option<&Worktree>) -> Option<
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Presence {
     Present,
-    /// Folder deleted; git keeps the entry until `git worktree prune`.
+    /// Folder deleted; git keeps the entry until it's removed or pruned.
     Missing,
     /// On a volume that isn't mounted.
     Unavailable,

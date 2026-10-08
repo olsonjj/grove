@@ -34,8 +34,9 @@ A "Remove worktree…" action on linked worktrees, in the details pane and the t
 
 - **Git writer (core)** — `remove_worktree(repo, path, force)` runs `git worktree remove [--force] -- <path>` from the main worktree, with no timeout (killing it mid-delete would leave a half-deleted worktree). Errors return git's brief reason, as fetch does.
 - **Removal plan (core)** — from the worktree, its admin folder (`<git dir>/worktrees/<id>`) and a fresh `status -uall`, returns `NotAllowed(reason)` (main, locked, unavailable, submodules, nested repo, unreadable status), `Missing`, `Clean`, or `Dirty { modified, untracked }`. `force` is used only for `Dirty`.
-  - Submodules: a changed submodule (`S…` in status) or an admin `modules/` folder (initialized submodules' repos, which `--force` deletes).
-  - Nested repo: an untracked folder entry (git lists files under `-uall`, so a folder is a repo it won't enter) with a `.git`.
+  - Presence is rechecked first: a missing folder that came back is read like any other.
+  - Submodules: a changed submodule (`S…` in status) or an admin `modules/` folder (initialized submodules' repos, which `--force` deletes). The admin folder comes from the worktree's `.git` file, else the admin folder whose `gitdir` points back; either may be relative (`worktree.useRelativePaths`) and is resolved lexically.
+  - Nested repo: an untracked folder entry (git lists files under `-uall`, so a folder is a repo it won't enter) with a `.git`, or any folder at or under an ignored folder entry (`--ignored=matching`) holding a `.git`; ignored files go even on a plain remove. The walk doesn't follow symlinks and stops at the first hit.
 - The plan is reread when the confirm opens and when it's confirmed; a changed plan refreshes the confirm instead of removing.
 - After a successful removal, `last_opened` drops the path (saved) and the repo is reread through the existing single-repo refresh path, at app level so closing the window mid-removal doesn't skip it.
 - **UI** — details pane button and tree context-menu item call the same action. Confirm is a modal over the main window, Cancel focused by default, destructive styling for Dirty. Removal runs off the main thread; the confirm's button shows progress and the modal closes on completion. Selection moves to the next row (previous if last).
@@ -50,6 +51,7 @@ A "Remove worktree…" action on linked worktrees, in the details pane and the t
 
 - Counts come from `git status`, so assume-unchanged and skip-worktree files are invisible to them (git's behavior), though `--force` deletes them. Deleted, renamed and type-changed files count as modified.
 - A worktree dirtied between the confirm's last check and git running is refused by git (no `--force` for `Clean`) and kept. A `Dirty` one gaining files in that window loses them.
+- The confirm-time reread compares the plan only (counts, not file lists): swapping one changed file for another between opening and confirming passes unnoticed.
 
 ## Out of Scope
 

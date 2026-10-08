@@ -9,7 +9,7 @@ use grove_core::{GitError, RemovalPlan, Worktree, remove_worktree};
 
 use crate::main_window::tilde;
 
-/// The tree's menu item or the details pane's button asked to remove (or prune) a worktree.
+/// The tree's menu item or the details pane's button asked to remove a worktree (or a missing one's entry).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoveRequested {
     pub path: PathBuf,

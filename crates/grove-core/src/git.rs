@@ -25,8 +25,7 @@ const QUICK: Duration = Duration::from_secs(5);
 const READ: Duration = Duration::from_secs(15);
 /// Generous: a first fetch of a big repo is slow, and it runs off the UI thread.
 const FETCH: Duration = Duration::from_secs(5 * 60);
-/// Removing a worktree deletes its folder, build output and dependencies included.
-/// Worktree removal: unbounded.
+/// Worktree removal, unbounded: killing it mid-delete would leave a half-deleted worktree.
 const WRITE: Duration = Duration::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -249,18 +248,26 @@ pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
 }
 
 /// What `git worktree remove` would lose: changed entries, each untracked file (a nested
-/// repo stays one `dir/` entry), and whether any submodule changed.
+/// repo stays one `dir/` entry), ignored paths (an ignored folder is one `dir/` entry), and
+/// whether any submodule changed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct RemovalStatus {
     pub modified: usize,
     pub untracked: Vec<String>,
+    pub ignored: Vec<String>,
     pub submodule_changed: bool,
 }
 
 pub(crate) fn read_removal_status(path: &Path) -> Result<RemovalStatus, GitError> {
     let out = run(
         Some(path),
-        &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+        &[
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ],
         READ,
     )?;
     Ok(parse_removal_status(&out))
@@ -275,6 +282,7 @@ fn parse_removal_status(out: &str) -> RemovalStatus {
         };
         match tag {
             "?" => status.untracked.push(body.to_string()),
+            "!" => status.ignored.push(body.to_string()),
             "1" | "2" | "u" => {
                 if tag == "2" {
                     fields.next();
@@ -680,12 +688,14 @@ mod tests {
             "old name.txt",
             "? notes/one.txt",
             "? nested/",
+            "! node_modules/",
         ]);
         assert_eq!(
             parse_removal_status(&out),
             RemovalStatus {
                 modified: 2,
                 untracked: vec!["notes/one.txt".into(), "nested/".into()],
+                ignored: vec!["node_modules/".into()],
                 submodule_changed: false,
             }
         );
