@@ -805,6 +805,11 @@ mod tests {
         assert_eq!(*launches.lock().unwrap(), [code("/c/wt/api-y")]);
         assert!(!is_open(cx, w));
         assert_eq!(recents(&file), paths(&["/c/wt/api-y"]));
+        let opened = file.load().unwrap().last_opened;
+        assert_eq!(
+            opened.keys().collect::<Vec<_>>(),
+            [Path::new("/c/wt/api-y")]
+        );
         assert!(posted(cx).is_some_and(|s| s.text.starts_with("Opening ") && !s.error));
         // Seen in the switcher: a main window opened next doesn't replay it as in progress.
         assert_eq!(cx.update(|cx| shell::unseen_notice(cx)), None);
@@ -1079,6 +1084,7 @@ mod tests {
                     upstream: Upstream::None,
                     head: None,
                     head_time: None,
+                    changes_time: None,
                 }),
             );
         });

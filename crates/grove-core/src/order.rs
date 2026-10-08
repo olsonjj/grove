@@ -3,7 +3,7 @@
 use std::cmp::Reverse;
 use std::path::PathBuf;
 
-use crate::settings::SortMode;
+use crate::settings::{LastOpened, SortMode};
 use crate::snapshot::{RepoSnapshot, Snapshot, Worktree};
 
 /// Repos split into the pinned group and the rest; each repo is in exactly one.
@@ -23,7 +23,12 @@ impl<'a> RepoOrder<'a> {
 }
 
 /// `pinned` holds repo paths; pins for repos not in `snapshot` are ignored.
-pub fn repo_order<'a>(snapshot: &'a Snapshot, pinned: &[PathBuf], sort: SortMode) -> RepoOrder<'a> {
+pub fn repo_order<'a>(
+    snapshot: &'a Snapshot,
+    pinned: &[PathBuf],
+    last_opened: &LastOpened,
+    sort: SortMode,
+) -> RepoOrder<'a> {
     // The snapshot is already in name order, and the sort is stable.
     let (pinned, mut others): (Vec<_>, Vec<_>) = snapshot
         .repos
@@ -32,19 +37,30 @@ pub fn repo_order<'a>(snapshot: &'a Snapshot, pinned: &[PathBuf], sort: SortMode
     if sort == SortMode::Recent {
         // Newest first, unknown last.
         others.sort_by_cached_key(|r| {
-            let t = repo_activity(r);
+            let t = repo_activity(r, last_opened);
             (t.is_none(), Reverse(t))
         });
     }
     RepoOrder { pinned, others }
 }
 
-/// When the worktree was last worked in: the latest of its known activity signals.
-pub fn activity_time(wt: &Worktree) -> Option<i64> {
-    [wt.head_time].into_iter().flatten().max()
+/// When the worktree was last worked in: the latest of when Grove opened it, its HEAD
+/// commit and its newest changed file.
+pub fn activity_time(wt: &Worktree, last_opened: &LastOpened) -> Option<i64> {
+    [
+        last_opened.get(&wt.path).copied(),
+        wt.head_time,
+        wt.changes_time,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
 }
 
 /// The latest activity among the repo's worktrees.
-pub fn repo_activity(repo: &RepoSnapshot) -> Option<i64> {
-    repo.worktrees.iter().filter_map(activity_time).max()
+pub fn repo_activity(repo: &RepoSnapshot, last_opened: &LastOpened) -> Option<i64> {
+    repo.worktrees
+        .iter()
+        .filter_map(|wt| activity_time(wt, last_opened))
+        .max()
 }

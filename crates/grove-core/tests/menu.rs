@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::{Fixture, add_worktree, commit_at, git, init_repo};
-use grove_core::{MenuRow, Presence, Snapshot, SnapshotStore, SortMode, StateLine, menu};
+use grove_core::{
+    LastOpened, MenuRow, Presence, Snapshot, SnapshotStore, SortMode, StateLine, menu,
+};
 
 fn store(f: &Fixture) -> SnapshotStore {
     let mut store = SnapshotStore::new(&f.code());
@@ -16,7 +18,7 @@ fn store(f: &Fixture) -> SnapshotStore {
 
 /// The popover row of the worktree in folder `folder`.
 fn row(s: &Snapshot, folder: &str) -> MenuRow {
-    menu(s, &[], SortMode::Name, &[])
+    menu(s, &[], &LastOpened::new(), SortMode::Name, &[])
         .into_iter()
         .flat_map(|g| g.rows)
         .find(|r| r.path.file_name().is_some_and(|n| n == folder))
@@ -270,6 +272,7 @@ fn groups_by_repo_main_first_then_branches_then_detached_and_marks_last_opened()
     let groups = menu(
         s,
         &[],
+        &LastOpened::new(),
         SortMode::Name,
         &[recent, PathBuf::from("/elsewhere")],
     );
@@ -312,7 +315,7 @@ fn pinned_repos_groups_come_first() {
         s.repo("web").unwrap().repo.path.clone(),
         PathBuf::from("/gone"),
     ];
-    let repos: Vec<String> = menu(&s, &pinned, SortMode::Name, &[])
+    let repos: Vec<String> = menu(&s, &pinned, &LastOpened::new(), SortMode::Name, &[])
         .into_iter()
         .map(|g| g.repo)
         .collect();
@@ -330,12 +333,23 @@ fn groups_follow_repo_sort_after_pins() {
     }
     let s = store(&f).snapshot().clone();
     let pinned = [s.repo("api").unwrap().repo.path.clone()];
-    let repos = |sort| -> Vec<String> {
-        menu(&s, &pinned, sort, &[])
+    let repos = |opened: &LastOpened, sort| -> Vec<String> {
+        menu(&s, &pinned, opened, sort, &[])
             .into_iter()
             .map(|g| g.repo)
             .collect()
     };
-    assert_eq!(repos(SortMode::Recent), ["api", "zeta", "beta", "web"]);
-    assert_eq!(repos(SortMode::Name), ["api", "beta", "web", "zeta"]);
+    let none = LastOpened::new();
+    assert_eq!(
+        repos(&none, SortMode::Recent),
+        ["api", "zeta", "beta", "web"]
+    );
+    assert_eq!(repos(&none, SortMode::Name), ["api", "beta", "web", "zeta"]);
+
+    let web = s.repo("web").unwrap().worktrees[0].path.clone();
+    let opened = LastOpened::from([(web, 1_700_000_500)]);
+    assert_eq!(
+        repos(&opened, SortMode::Recent),
+        ["api", "web", "zeta", "beta"]
+    );
 }

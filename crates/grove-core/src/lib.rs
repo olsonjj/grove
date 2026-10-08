@@ -34,7 +34,7 @@ pub use menu::{MenuGroup, MenuRow, StateLine, menu};
 pub use order::{RepoOrder, activity_time, repo_activity, repo_order};
 pub use search::{Hit, Matches, search};
 pub use settings::{
-    CustomCommand, LoginItemHost, LoginItemStatus, MAX_RECENTS, Preferences, Settings,
+    CustomCommand, LastOpened, LoginItemHost, LoginItemStatus, MAX_RECENTS, Preferences, Settings,
     SettingsFile, SortMode, TerminalOpensIn, is_installed_location,
 };
 pub use snapshot::{

@@ -1064,6 +1064,7 @@ mod tests {
         assert!(s.background_fetch);
         assert!(!s.show_menu_bar_icon);
         assert_eq!(s.recents, [PathBuf::from("/c/wt/api-x")]);
+        assert!(s.last_opened.contains_key(Path::new("/c/wt/api-x")));
         assert_eq!(s.pinned_repos, [PathBuf::from("/c/api")]);
         assert_eq!(s.repo_sort, grove_core::SortMode::Name);
         assert_eq!(file.load().unwrap(), s);

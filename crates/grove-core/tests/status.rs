@@ -478,3 +478,60 @@ fn repo_and_full_rereads_keep_head_time_when_status_fails() {
     assert!(matches!(x(&store).status, Some(Err(_))));
     assert_eq!(x(&store).head_time, Some(1_700_000_500));
 }
+
+fn mtime(path: &Path) -> i64 {
+    let t = fs::metadata(path).unwrap().modified().unwrap();
+    t.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
+
+#[test]
+fn editing_a_file_sets_changes_time() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    fs::write(api.join("old.txt"), "x").unwrap();
+    git(&api, &["add", "old.txt"]);
+    commit(&api, "old");
+    assert_eq!(worktree(&read(&f), "api").changes_time, None, "clean");
+
+    fs::write(api.join("new.txt"), "x").unwrap();
+    let s = read(&f);
+    assert!(worktree(&s, "api").changes_time >= Some(mtime(&api.join("new.txt"))));
+
+    // A deleted path has no time; the untracked one still counts.
+    fs::remove_file(api.join("old.txt")).unwrap();
+    let s = read(&f);
+    assert_eq!(
+        worktree(&s, "api").changes_time,
+        Some(mtime(&api.join("new.txt")))
+    );
+
+    fs::remove_file(api.join("new.txt")).unwrap();
+    assert_eq!(
+        worktree(&read(&f), "api").changes_time,
+        None,
+        "only deletions"
+    );
+}
+
+#[test]
+fn editing_an_already_changed_file_moves_changes_time() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    fs::write(api.join("wip.txt"), "1").unwrap();
+    let mut store = SnapshotStore::new(&f.code());
+    store.refresh_statuses();
+    let before = worktree(store.snapshot(), "api").clone();
+
+    // Same `git status` output, newer file.
+    let later = std::time::UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000);
+    fs::File::options()
+        .write(true)
+        .open(api.join("wip.txt"))
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    store.refresh_statuses();
+    let after = worktree(store.snapshot(), "api");
+    assert_eq!(after.changes_time, Some(4_000_000_000));
+    assert_ne!(before.changes_time, after.changes_time);
+}

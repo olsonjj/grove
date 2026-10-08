@@ -173,19 +173,26 @@ fn fetch_report_names_the_first_failure_and_counts_the_rest() {
 }
 
 #[test]
-fn fetch_leaves_head_time_unchanged() {
+fn fetch_leaves_activity_unchanged() {
     let f = Fixture::new();
-    let (_, _, other) = tracked_repo(&f);
+    let (api, _, other) = tracked_repo(&f);
+    fs::write(api.join("wip.txt"), "w").unwrap();
     let mut store = store(&f);
-    let head_time = |s: &Snapshot| s.repo("api").unwrap().worktrees[0].head_time;
-    let before = head_time(store.snapshot());
-    assert!(before.is_some());
+    let times = |s: &Snapshot| {
+        let wt = &s.repo("api").unwrap().worktrees[0];
+        (wt.head_time, wt.changes_time)
+    };
+    let before = times(store.snapshot());
+    assert!(before.0.is_some() && before.1.is_some());
     // Dated later than api's HEAD, so a fetch that moved HEAD would show it.
     commit_at(&other, 4_000_000_000);
     git(&other, &["push", "-q"]);
 
     store.fetch_all();
 
-    assert_eq!(badges(store.snapshot(), "api"), ["main worktree", "↓1"]);
-    assert_eq!(head_time(store.snapshot()), before);
+    assert_eq!(
+        badges(store.snapshot(), "api"),
+        ["main worktree", "1 changed", "↓1"]
+    );
+    assert_eq!(times(store.snapshot()), before);
 }

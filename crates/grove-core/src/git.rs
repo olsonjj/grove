@@ -104,6 +104,9 @@ pub struct WorktreeStatus {
     /// HEAD's committer time, Unix seconds; `None` on an unborn branch or if unreadable.
     #[serde(default)]
     pub head_time: Option<i64>,
+    /// Newest modified time among `files` still on disk, Unix seconds; `None` if none are.
+    #[serde(default)]
+    pub changes_time: Option<i64>,
 }
 
 impl WorktreeStatus {
@@ -236,7 +239,7 @@ pub fn common_dir(path: &Path) -> Result<PathBuf, GitError> {
 }
 
 /// Changed files and ahead/behind vs `@{u}` (any remote) from a read-only `git status`,
-/// plus the time of the HEAD commit it reports.
+/// plus the time of the HEAD commit it reports and of the newest changed file.
 pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
     let out = run(
         Some(path),
@@ -248,7 +251,23 @@ pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
         .head
         .as_deref()
         .and_then(|oid| commit_time(path, oid));
+    status.changes_time = changes_time(path, &status.files);
     Ok(status)
+}
+
+/// Stats only the listed paths (an untracked folder is one entry); deleted ones are skipped.
+fn changes_time(worktree: &Path, files: &[ChangedFile]) -> Option<i64> {
+    files
+        .iter()
+        .filter_map(|f| {
+            std::fs::symlink_metadata(worktree.join(&f.path))
+                .ok()?
+                .modified()
+                .ok()
+        })
+        .max()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
 }
 
 fn commit_time(path: &Path, oid: &str) -> Option<i64> {
@@ -450,6 +469,7 @@ fn parse_status(out: &str) -> WorktreeStatus {
         upstream,
         head,
         head_time: None,
+        changes_time: None,
     }
 }
 
@@ -568,6 +588,7 @@ mod tests {
                 },
                 head: Some("abc".into()),
                 head_time: None,
+                changes_time: None,
             }
         );
         let unborn = parse_status("# branch.oid (initial)\0# branch.head main\0");

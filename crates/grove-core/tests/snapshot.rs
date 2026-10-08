@@ -249,17 +249,72 @@ fn collapse_state_per_repo() {
 fn record_open_moves_to_front_and_keeps_last_ten() {
     let mut s = Settings::default();
     for i in 0..12 {
-        assert!(s.record_open(&PathBuf::from(format!("/w/{i}"))));
+        assert!(s.record_open(&PathBuf::from(format!("/w/{i}")), 1_700_000_000 + i));
     }
     assert_eq!(s.recents.len(), MAX_RECENTS);
     assert_eq!(s.recents[0], PathBuf::from("/w/11"));
     assert_eq!(s.recents[9], PathBuf::from("/w/2"));
 
-    assert!(!s.record_open(&PathBuf::from("/w/11")));
-    assert!(s.record_open(&PathBuf::from("/w/5")));
+    assert!(!s.record_open(&PathBuf::from("/w/11"), 1_700_000_011));
+    assert!(s.record_open(&PathBuf::from("/w/5"), 1_700_000_100));
     assert_eq!(s.recents[0], PathBuf::from("/w/5"));
     assert_eq!(s.recents.iter().filter(|p| p.ends_with("5")).count(), 1);
     assert_eq!(s.recents.len(), MAX_RECENTS);
+}
+
+#[test]
+fn record_open_stamps_last_opened_for_every_worktree() {
+    let mut s = Settings::default();
+    for i in 0..12 {
+        s.record_open(&PathBuf::from(format!("/w/{i}")), 1_700_000_000 + i);
+    }
+    // Not capped like recents.
+    assert_eq!(s.last_opened.len(), 12);
+    assert_eq!(s.last_opened[&PathBuf::from("/w/0")], 1_700_000_000);
+
+    // Reopening the most recent one still stamps it.
+    assert!(s.record_open(&PathBuf::from("/w/11"), 1_700_000_500));
+    assert_eq!(s.last_opened[&PathBuf::from("/w/11")], 1_700_000_500);
+}
+
+#[test]
+fn rescan_prunes_last_opened_for_vanished_worktrees() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let wt = f.outside("api-x");
+    add_worktree(&api, &wt, "x");
+    let mut store = SnapshotStore::new(&f.code());
+    let paths: Vec<PathBuf> = store.snapshot().repos[0]
+        .worktrees
+        .iter()
+        .map(|w| w.path.clone())
+        .collect();
+    let mut s = Settings::default();
+    for p in &paths {
+        s.record_open(p, 1_700_000_000);
+    }
+    s.record_open(&PathBuf::from("/gone"), 1_700_000_000);
+    assert!(s.prune_last_opened(store.snapshot()));
+    assert_eq!(
+        s.last_opened.keys().collect::<Vec<_>>(),
+        paths.iter().collect::<Vec<_>>()
+    );
+    assert!(
+        !s.prune_last_opened(store.snapshot()),
+        "nothing left to prune"
+    );
+
+    git(&api, &["worktree", "remove", wt.to_str().unwrap()]);
+    store.refresh_all();
+    s.prune_last_opened(store.snapshot());
+    assert_eq!(s.last_opened.keys().collect::<Vec<_>>(), [&paths[0]]);
+
+    // A code dir that's gone (volume unmounted) prunes nothing.
+    fs::rename(f.code(), f.tmp.path().join("away")).unwrap();
+    store.refresh_all();
+    assert!(!store.snapshot().code_dir_exists);
+    assert!(!s.prune_last_opened(store.snapshot()));
+    assert_eq!(s.last_opened.len(), 1);
 }
 
 #[test]
@@ -269,7 +324,7 @@ fn settings_save_keeps_what_changed_while_the_window_was_open() {
     edited.default_editor = Some("zed".into());
     edited.background_fetch = true;
     edited.code_dir = Some("/code/acme".into());
-    s.record_open(&PathBuf::from("/w/api"));
+    s.record_open(&PathBuf::from("/w/api"), 1_700_000_000);
     s.set_collapsed("api", "fix/", true);
     s.toggle_pin(&PathBuf::from("/w/api"));
     s.set_repo_sort(SortMode::Name);
@@ -279,6 +334,7 @@ fn settings_save_keeps_what_changed_while_the_window_was_open() {
     assert_eq!(s.collapsed("api"), ["fix/"]);
     assert_eq!(s.pinned_repos, [PathBuf::from("/w/api")]);
     assert_eq!(s.repo_sort, SortMode::Name);
+    assert_eq!(s.last_opened[&PathBuf::from("/w/api")], 1_700_000_000);
 }
 
 #[test]
@@ -324,31 +380,44 @@ fn snapshot_cache_round_trips_with_statuses() {
 }
 
 #[test]
-fn snapshot_cache_keeps_head_times_and_loads_without_them() {
+fn snapshot_cache_keeps_activity_times_and_loads_without_them() {
     let f = Fixture::new();
-    init_repo(&f.code().join("api"));
+    let api = init_repo(&f.code().join("api"));
+    fs::write(api.join("wip.txt"), "w").unwrap();
     let mut store = SnapshotStore::new(&f.code());
     store.refresh_statuses();
     let cache = SnapshotCache::new(f.tmp.path().join("snapshot.json"));
     cache.save(store.snapshot()).unwrap();
-    let head_time = |s: &Snapshot| s.repos[0].worktrees[0].head_time;
+    let times = |s: &Snapshot| {
+        let wt = &s.repos[0].worktrees[0];
+        (wt.head_time, wt.changes_time)
+    };
     let cached = cache.load(&f.code()).unwrap();
-    assert!(head_time(&cached).is_some());
-    assert_eq!(head_time(&cached), head_time(store.snapshot()));
+    assert!(times(&cached).0.is_some() && times(&cached).1.is_some());
+    assert_eq!(times(&cached), times(store.snapshot()));
 
-    // As written before HEAD and its time were read.
+    // As written before HEAD and the activity times were read.
     let json = fs::read_to_string(cache.path()).unwrap();
-    let no_time = without_field(&json, r#","head_time":"#);
-    let old = without_field(&no_time, r#","head":"#);
-    assert_ne!(no_time, json);
-    assert_ne!(old, no_time);
+    let mut old = json.clone();
+    for key in [r#","head_time":"#, r#","changes_time":"#, r#","head":"#] {
+        let without = without_field(&old, key);
+        assert_ne!(without, old, "{key} not in cache");
+        old = without;
+    }
     fs::write(cache.path(), old).unwrap();
     let cached = cache.load(&f.code()).expect("old cache loads");
-    assert_eq!(head_time(&cached), None);
+    assert_eq!(times(&cached), (None, None));
     let Some(Ok(status)) = &cached.repos[0].worktrees[0].status else {
         panic!("status not cached");
     };
-    assert_eq!((status.head.as_deref(), status.head_time), (None, None));
+    assert_eq!(
+        (
+            status.head.as_deref(),
+            status.head_time,
+            status.changes_time
+        ),
+        (None, None, None)
+    );
 }
 
 /// `json` without each `<key><number or string>` field.

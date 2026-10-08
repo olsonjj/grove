@@ -78,6 +78,7 @@ fn selected_repo(cx: &App) -> Option<String> {
             repo_order(
                 snapshot,
                 &library.settings.pinned_repos,
+                &library.settings.last_opened,
                 library.settings.repo_sort,
             )
             .iter()
@@ -412,14 +413,15 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let library = shell::library(cx);
         let snapshot = library.store.snapshot().clone();
-        let (pinned, sort) = (
+        let (pinned, last_opened, sort) = (
             library.settings.pinned_repos.clone(),
+            library.settings.last_opened.clone(),
             library.settings.repo_sort,
         );
         let selected = self.selected(cx);
         let top_bar = self.top_bar(selected.as_deref().and_then(|n| snapshot.repo(n)), cx);
 
-        let order = repo_order(&snapshot, &pinned, sort);
+        let order = repo_order(&snapshot, &pinned, &last_opened, sort);
         self.repo_focus
             .retain(|name, _| order.iter().any(|r| r.name() == name));
         let mut rows: Vec<AnyElement> = Vec::new();
@@ -622,6 +624,7 @@ impl MainWindow {
         let names: Vec<String> = repo_order(
             library.store.snapshot(),
             &library.settings.pinned_repos,
+            &library.settings.last_opened,
             library.settings.repo_sort,
         )
         .iter()
@@ -1513,6 +1516,7 @@ mod tests {
                     },
                     head: None,
                     head_time: None,
+                    changes_time: None,
                 }),
             );
         });
@@ -1792,6 +1796,7 @@ mod tests {
             },
             head: None,
             head_time: None,
+            changes_time: None,
         }));
         let (w, _) = launch_at(cx, &file, repo, MIN_SIZE);
         keys(cx, w, &["down"; 4]);
@@ -1968,6 +1973,7 @@ mod tests {
             },
             head: None,
             head_time: None,
+            changes_time: None,
         }));
         let (w, main) = launch_repo(cx, &file, repo);
         let fields = main.read_with(cx, |m, cx| m.details.read(cx).status_fields());
@@ -2383,15 +2389,22 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn tree_and_details_opens_are_recorded_to_recents(cx: &mut TestAppContext) {
+    fn tree_and_details_opens_are_recorded_to_recents_and_last_opened(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         fake_launcher(cx, Ok(Outcome::Opened));
         fake_presence(cx, "/c/wt/api-y", Presence::Missing);
         let (w, _) = launch(cx, &file);
         let recents = || file.load().unwrap().recents;
+        let opened = || {
+            let last_opened = file.load().unwrap().last_opened;
+            let since = grove_core::unix_now() - 60;
+            assert!(last_opened.values().all(|&t| t >= since), "{last_opened:?}");
+            last_opened.into_keys().collect::<Vec<_>>()
+        };
         keys(cx, w, &["enter"]);
         assert_eq!(recents(), [PathBuf::from("/c/api")]);
+        assert_eq!(opened(), [PathBuf::from("/c/api")]);
 
         keys(cx, w, &["down", "down", "down", "down"]);
         click(cx, w, "details-open-terminal");
@@ -2399,10 +2412,15 @@ mod tests {
             recents(),
             [PathBuf::from("/c/wt/api-x"), PathBuf::from("/c/api")]
         );
+        assert_eq!(
+            opened(),
+            [PathBuf::from("/c/api"), PathBuf::from("/c/wt/api-x")]
+        );
 
         // A refused open isn't one.
         keys(cx, w, &["down", "down", "enter"]);
         assert_eq!(recents().len(), 2);
+        assert_eq!(opened().len(), 2);
     }
 
     fn two_repos(cx: &mut TestAppContext, file: &SettingsFile) -> AnyWindowHandle {
@@ -2852,6 +2870,7 @@ mod tests {
                     upstream: Upstream::None,
                     head: Some(format!("{head_time:x}")),
                     head_time: Some(head_time),
+                    changes_time: None,
                 }),
             );
         });
@@ -2860,6 +2879,43 @@ mod tests {
 
     fn sidebar(cx: &mut TestAppContext, w: AnyWindowHandle, n: usize) -> Vec<String> {
         (0..n).map(|ix| label_of(cx, w, ("repo", ix))).collect()
+    }
+
+    #[gpui_kit::test]
+    fn opening_a_worktree_lifts_its_repo_in_recent_order(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                last_selected_repo: Some("api".into()),
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut web = repo_named("web");
+        web.worktrees[0].head_time = Some(1_700_000_000);
+        let (w, _) = launch_repos(
+            cx,
+            &file,
+            vec![repo_named("api"), web],
+            size(px(1180.), px(720.)),
+        );
+        assert_eq!(
+            sidebar(cx, w, 2),
+            ["web, 1 worktree", "api, 1 worktree, selected"]
+        );
+
+        keys(cx, w, &["enter"]);
+        assert!(
+            file.load()
+                .unwrap()
+                .last_opened
+                .contains_key(Path::new("/c/api"))
+        );
+        assert_eq!(
+            sidebar(cx, w, 2),
+            ["api, 1 worktree, selected", "web, 1 worktree"]
+        );
     }
 
     #[gpui_kit::test]

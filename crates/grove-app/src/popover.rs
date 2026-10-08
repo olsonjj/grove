@@ -468,6 +468,7 @@ impl Popover {
         let groups = menu(
             library.store.snapshot(),
             &library.settings.pinned_repos,
+            &library.settings.last_opened,
             library.settings.repo_sort,
             &library.settings.recents,
         );
@@ -785,6 +786,11 @@ mod tests {
         click(cx, w, ("popover-editor", API_X));
         assert_eq!(*launches.lock().unwrap(), [code("/c/wt/api-x")]);
         assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-x")]);
+        let opened = file.load().unwrap().last_opened;
+        assert_eq!(
+            opened.keys().collect::<Vec<_>>(),
+            [Path::new("/c/wt/api-x")]
+        );
         assert_eq!(
             highlighted(cx, w),
             ["feature/x, checking status…, last opened"]
@@ -1039,6 +1045,7 @@ mod tests {
                     upstream,
                     head: None,
                     head_time: None,
+                    changes_time: None,
                 }),
             );
         });

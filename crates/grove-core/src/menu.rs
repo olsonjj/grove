@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::badge::Badge;
 use crate::order::repo_order;
-use crate::settings::SortMode;
+use crate::settings::{LastOpened, SortMode};
 use crate::snapshot::{Presence, RepoSnapshot, Snapshot, Worktree};
 use crate::tree::by_name;
 
@@ -43,11 +43,12 @@ pub struct StateLine {
 pub fn menu(
     snapshot: &Snapshot,
     pinned: &[PathBuf],
+    last_opened: &LastOpened,
     repo_sort: SortMode,
     recents: &[PathBuf],
 ) -> Vec<MenuGroup> {
     let last = recents.first().map(PathBuf::as_path);
-    repo_order(snapshot, pinned, repo_sort)
+    repo_order(snapshot, pinned, last_opened, repo_sort)
         .iter()
         .filter(|r| !r.worktrees.is_empty())
         .map(|repo| {

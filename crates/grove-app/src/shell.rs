@@ -397,7 +397,12 @@ fn rescan(cx: &mut App) {
         let result = cx.background_spawn(async move { read.run() }).await;
         cx.update(|cx| {
             cx.global_mut::<Live>().scanning = false;
-            if cx.global_mut::<Library>().store.apply_scan(result) {
+            let library = cx.global_mut::<Library>();
+            if library.store.apply_scan(result) {
+                let snapshot = library.store.snapshot().clone();
+                if library.settings.prune_last_opened(&snapshot) {
+                    save_settings(cx);
+                }
                 snapshot_changed(cx);
             }
         });
@@ -559,9 +564,15 @@ pub fn toggle_pin(repo: &Path, cx: &mut App) {
     }
 }
 
-/// Puts `worktree` first in recents (the switcher's empty search) and saves.
+/// Puts `worktree` first in recents (the switcher's empty search), stamps it opened now
+/// (Recent sort) and saves.
 pub fn record_open(worktree: &Path, cx: &mut App) {
-    if cx.global_mut::<Library>().settings.record_open(worktree) {
+    let now = grove_core::unix_now();
+    if cx
+        .global_mut::<Library>()
+        .settings
+        .record_open(worktree, now)
+    {
         save_settings(cx);
     }
 }

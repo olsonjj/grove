@@ -1,11 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::snapshot::Snapshot;
+
 pub const MAX_RECENTS: usize = 10;
+
+/// Worktree path → when Grove last opened it, Unix seconds.
+pub type LastOpened = BTreeMap<PathBuf, i64>;
 
 /// Everything Grove persists in `settings.json`; missing fields take their defaults.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +33,8 @@ pub struct Settings {
     pub login_item_path: Option<PathBuf>,
     /// Opened worktrees, most recent first, at most `MAX_RECENTS`.
     pub recents: Vec<PathBuf>,
+    /// Worktree path → when Grove last opened it, Unix seconds. Uncapped; pruned on rescan.
+    pub last_opened: LastOpened,
     /// Repo name → collapsed prefix folders.
     pub collapsed: BTreeMap<String, Vec<String>>,
     /// `RepoRef::path`s. Kept while a repo is absent, so it comes back pinned.
@@ -50,6 +57,7 @@ impl Default for Settings {
             launch_at_login: true,
             login_item_path: None,
             recents: Vec::new(),
+            last_opened: BTreeMap::new(),
             collapsed: BTreeMap::new(),
             pinned_repos: Vec::new(),
             repo_sort: SortMode::Recent,
@@ -58,8 +66,9 @@ impl Default for Settings {
     }
 }
 
-/// What the settings window edits. The rest of `Settings` (recents, collapse state, pins,
-/// sort modes, the login item's owner) keeps changing underneath it while it's open.
+/// What the settings window edits. The rest of `Settings` (recents, last opened, collapse
+/// state, pins, sort modes, the login item's owner) keeps changing underneath it while it's
+/// open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preferences {
     pub code_dir: Option<PathBuf>,
@@ -237,15 +246,35 @@ impl Settings {
         std::mem::replace(&mut self.repo_sort, mode) != mode
     }
 
-    /// Moves `worktree` to the front of recents. Returns whether anything changed.
-    pub fn record_open(&mut self, worktree: &Path) -> bool {
+    /// Moves `worktree` to the front of recents and stamps it opened `at` (Unix seconds).
+    /// Returns whether anything changed.
+    pub fn record_open(&mut self, worktree: &Path, at: i64) -> bool {
+        let stamped = self.last_opened.insert(worktree.to_path_buf(), at) != Some(at);
         if self.recents.first().is_some_and(|p| p == worktree) {
-            return false;
+            return stamped;
         }
         self.recents.retain(|p| p != worktree);
         self.recents.insert(0, worktree.to_path_buf());
         self.recents.truncate(MAX_RECENTS);
         true
+    }
+
+    /// After a full rescan: forgets when worktrees no longer in `snapshot` were opened. Skipped
+    /// while the code dir is missing, so an unmounted volume doesn't wipe the history.
+    /// Returns whether anything changed.
+    pub fn prune_last_opened(&mut self, snapshot: &Snapshot) -> bool {
+        if !snapshot.code_dir_exists {
+            return false;
+        }
+        let known: HashSet<&Path> = snapshot
+            .repos
+            .iter()
+            .flat_map(|r| &r.worktrees)
+            .map(|w| w.path.as_path())
+            .collect();
+        let before = self.last_opened.len();
+        self.last_opened.retain(|p, _| known.contains(p.as_path()));
+        self.last_opened.len() != before
     }
 }
 

@@ -21,6 +21,7 @@ fn wt(path: &str, branch: Option<&str>) -> Worktree {
         presence: Presence::Present,
         status: None,
         head_time: None,
+        changes_time: None,
     }
 }
 
@@ -196,6 +197,7 @@ fn hits_carry_presence_and_badges() {
         upstream: Upstream::None,
         head: None,
         head_time: None,
+        changes_time: None,
     }));
     s.repos[0].worktrees[2].presence = Presence::Missing;
     let hits = search(&s, &[], "");
