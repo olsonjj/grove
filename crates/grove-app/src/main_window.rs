@@ -449,10 +449,9 @@ impl Render for MainWindow {
 
         self.repo_focus
             .retain(|name, _| order.iter().any(|r| r.name() == name));
-        let mut rows: Vec<AnyElement> = Vec::new();
-        let mut selected_row = None;
+        let mut pinned_rows: Vec<AnyElement> = Vec::new();
         if !order.pinned.is_empty() {
-            rows.push(
+            pinned_rows.push(
                 group_header("pinned-header", format!("PINNED · {}", order.pinned.len()))
                     .px(px(8.))
                     .pb(px(6.))
@@ -461,13 +460,10 @@ impl Render for MainWindow {
         }
         for (ix, repo) in order.pinned.iter().enumerate() {
             let is_selected = selected.as_deref() == Some(repo.name());
-            if is_selected {
-                selected_row = Some(rows.len());
-            }
-            rows.push(self.repo_row(ix, repo, true, is_selected, window, cx));
+            pinned_rows.push(self.repo_row(ix, repo, true, is_selected, window, cx));
         }
         if !order.pinned.is_empty() && !order.others.is_empty() {
-            rows.push(
+            pinned_rows.push(
                 div()
                     .flex_none()
                     .h(px(1.))
@@ -477,6 +473,8 @@ impl Render for MainWindow {
                     .into_any_element(),
             );
         }
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut selected_row = None;
         for (i, repo) in order.others.iter().enumerate() {
             let is_selected = selected.as_deref() == Some(repo.name());
             let ix = order.pinned.len() + i;
@@ -522,17 +520,36 @@ impl Render for MainWindow {
             )
             .child(
                 div()
-                    .id("repo-list")
-                    .track_scroll(&self.repo_scroll)
                     .on_key_down(cx.listener(Self::on_repo_key))
                     .flex_1()
-                    .overflow_y_scroll()
-                    .px(px(10.))
+                    .min_h_0()
                     .flex()
                     .flex_col()
-                    .gap(px(2.))
-                    .children(rows)
-                    .test_support(),
+                    // Pins stay put; only the rest scrolls.
+                    .child(
+                        div()
+                            .id("pinned-list")
+                            .flex_none()
+                            .px(px(10.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .children(pinned_rows)
+                            .test_support(),
+                    )
+                    .child(
+                        div()
+                            .id("repo-list")
+                            .track_scroll(&self.repo_scroll)
+                            .flex_1()
+                            .overflow_y_scroll()
+                            .px(px(10.))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.))
+                            .children(rows)
+                            .test_support(),
+                    ),
             )
             .child(
                 div()
@@ -2640,13 +2657,12 @@ mod tests {
         );
         cx.update_window(w, |_, window, cx| {
             window.render_frame(cx);
-            let in_list = |id: &'static str| {
-                let list: gpui_kit::ElementId = "repo-list".into();
-                window.find(id).path().contains(&list)
-            };
-            // REPOSITORIES stays fixed above the scrolling list; PINNED scrolls with it.
-            assert!(!in_list("repos-header"));
-            assert!(in_list("pinned-header"));
+            let list: gpui_kit::ElementId = "repo-list".into();
+            let in_list = |id: gpui_kit::ElementId| window.find(id).path().contains(&list);
+            // REPOSITORIES and PINNED stay fixed above the scrolling list.
+            assert!(!in_list("repos-header".into()));
+            assert!(!in_list("pinned-header".into()));
+            assert!(!in_list(("repo", 0usize).into()));
             assert!(
                 window.find("repos-header").bounds().origin.y
                     < window.find("pinned-header").bounds().origin.y

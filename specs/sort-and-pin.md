@@ -109,7 +109,7 @@ Activity counts work I did anywhere: opening the worktree from Grove, committing
 
 ### UI
 
-- Sidebar header: the "REPOSITORIES · N" label on the left and a sort menu button ("Recent ▾" / "Name ▾") on the right. This header is fixed above the scrolling list. If anything is pinned, the list starts with a "PINNED · N" header and the pinned rows, then a separator, then the rest.
+- Sidebar header: the "REPOSITORIES · N" label on the left and a sort menu button ("Recent ▾" / "Name ▾") on the right. This header is fixed above the scrolling list. If anything is pinned, a "PINNED · N" header and the pinned rows sit below it, also fixed, then a separator, then the scrolling rest.
 - Repo row: a pin button appears on hover or selection and is always shown filled on pinned rows. The context menu has Pin / Unpin.
 - Tree header: a sort menu button after the legend.
 - Selection is held by identity (repo name, `RowId`) as it is today, so reorders keep it. After a reorder, the selected row is scrolled into view.
