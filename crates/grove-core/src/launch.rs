@@ -12,11 +12,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::env::ShellEnv;
-use crate::settings::{Settings, TerminalOpensIn};
-use crate::targets::{OpenTarget, TargetKind, Terminal};
+use crate::settings::{CustomCommand, Settings, TerminalOpensIn};
+use crate::targets::{NoTarget, OpenTarget, TargetKind, Terminal, default_terminal};
 
 const OPEN: &str = "/usr/bin/open";
 const OSASCRIPT: &str = "/usr/bin/osascript";
+const SH: &str = "/bin/sh";
+/// For terminals started with a program: runs `$1` in the user's login shell, then stays in
+/// an interactive one, as if it had been typed.
+const IN_LOGIN_SHELL: &str = r#"s="${SHELL:-/bin/zsh}"; "$s" -lc "$1"; exec "$s" -l"#;
 /// Editor CLIs hand off to the app and exit; one still running after this is left running.
 const EXIT_WAIT: Duration = Duration::from_secs(5);
 /// osascript blocks while macOS shows the Automation prompt; give the user time to answer.
@@ -67,7 +71,80 @@ pub fn plan(target: &OpenTarget, worktree: &Path, settings: &Settings) -> Launch
             let opens_in = settings
                 .terminal_opens_in
                 .unwrap_or(terminal.default_opens_in());
-            terminal_plan(terminal, target, worktree, opens_in)
+            terminal_plan(terminal, target, worktree, opens_in, None)
+        }
+    }
+}
+
+/// How to run `cmd` on `worktree`, `{path}` replaced with the shell-quoted path.
+///
+/// Run in terminal: a new tab or window of the default terminal (as `plan` opens it) at
+/// `worktree`, running the command in the user's shell. Otherwise `/bin/sh -c` in the
+/// background in `worktree`, resolved PATH applied.
+pub fn plan_command(
+    cmd: &CustomCommand,
+    worktree: &Path,
+    settings: &Settings,
+    targets: &[OpenTarget],
+) -> Result<LaunchPlan, CommandError> {
+    let line = cmd.template.replace("{path}", &shell_quote(worktree));
+    if !cmd.run_in_terminal {
+        return Ok(spawn(SH.into(), vec!["-c".into(), line.into()], worktree));
+    }
+    // Some terminals get the command typed in; refused for all, to behave the same.
+    if has_control(worktree) {
+        return Err(CommandError::ControlChars(worktree.to_path_buf()));
+    }
+    let target = default_terminal(settings, targets)?;
+    let TargetKind::Terminal(terminal) = target.kind else {
+        unreachable!("default_terminal returns terminals");
+    };
+    if !terminal.runs_commands() {
+        return Err(NoTarget::CantRunCommands(terminal).into());
+    }
+    let opens_in = settings
+        .terminal_opens_in
+        .unwrap_or(terminal.default_opens_in());
+    Ok(terminal_plan(
+        terminal,
+        target,
+        worktree,
+        opens_in,
+        Some(&line),
+    ))
+}
+
+/// Why a custom command can't run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommandError {
+    Target(NoTarget),
+    /// Run in terminal, but the path has control characters, which typed into a shell
+    /// would act as keystrokes.
+    ControlChars(PathBuf),
+}
+
+impl CommandError {
+    /// Fixable in settings.
+    pub fn in_settings(&self) -> bool {
+        matches!(self, CommandError::Target(_))
+    }
+}
+
+impl From<NoTarget> for CommandError {
+    fn from(e: NoTarget) -> Self {
+        CommandError::Target(e)
+    }
+}
+
+impl fmt::Display for CommandError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CommandError::Target(e) => e.fmt(f),
+            CommandError::ControlChars(p) => write!(
+                f,
+                "Can't run a command in a terminal at {}: the path has control characters",
+                p.to_string_lossy().escape_debug()
+            ),
         }
     }
 }
@@ -88,14 +165,28 @@ pub fn command_line(target: &OpenTarget) -> Option<String> {
     Some(format!("{program} {{path}}"))
 }
 
+/// `command`, if given, runs in the new tab or window (not for Warp, see `runs_commands`);
+/// the `open -a` fallbacks only open the folder.
 fn terminal_plan(
     terminal: Terminal,
     target: &OpenTarget,
     worktree: &Path,
     opens_in: TerminalOpensIn,
+    command: Option<&str>,
 ) -> LaunchPlan {
     let tab = opens_in == TerminalOpensIn::Tab;
     let path = OsString::from(worktree);
+    let program_args = || -> Vec<OsString> {
+        command.map_or_else(Vec::new, |c| {
+            vec![
+                SH.into(),
+                "-c".into(),
+                IN_LOGIN_SHELL.into(),
+                "sh".into(),
+                c.into(),
+            ]
+        })
+    };
     // LaunchServices opens a folder in Terminal / iTerm2 as a new window at that folder.
     let open_a = || {
         spawn(
@@ -105,8 +196,14 @@ fn terminal_plan(
         )
     };
     match terminal {
+        // Typed into the shell, a control character would act as a keystroke (^U, Enter…).
+        Terminal::Terminal | Terminal::ITerm2 if has_control(worktree) => open_a(),
         Terminal::Terminal | Terminal::ITerm2 => {
-            let cd = applescript_string(&format!("cd {}", shell_quote(worktree)));
+            let mut typed = format!("cd {}", shell_quote(worktree));
+            if let Some(c) = command {
+                typed = format!("{typed} && {c}");
+            }
+            let cd = applescript_string(&typed);
             let script = match (terminal, tab) {
                 (Terminal::Terminal, _) => terminal_app_script(&cd, tab),
                 _ => iterm_script(&cd, tab),
@@ -114,6 +211,7 @@ fn terminal_plan(
             applescript(script, worktree, open_a())
         }
         Terminal::Warp => {
+            debug_assert!(command.is_none(), "Warp can't run commands");
             let action = if tab { "new_tab" } else { "new_window" };
             let url = format!("warp://action/{action}?path={}", percent_encode(worktree));
             spawn(OPEN.into(), vec![url.into()], worktree)
@@ -123,16 +221,21 @@ fn terminal_plan(
             wd.push(&path);
             // `open -n` starts a new Ghostty process; Ghostty's documented way to pass
             // CLI config on macOS. It always gives a window.
-            let window = spawn(
-                OPEN.into(),
-                vec!["-na".into(), app_arg(target), "--args".into(), wd],
-                worktree,
-            );
+            let mut args = vec!["-na".into(), app_arg(target), "--args".into(), wd];
+            if command.is_some() {
+                args.push("-e".into());
+                args.extend(program_args());
+            }
+            let window = spawn(OPEN.into(), args, worktree);
             if tab {
                 // Tabs need Ghostty's AppleScript dictionary (1.3+); older versions fail
                 // to compile the script (`Fallback::Unsupported`) and get the window.
                 let dir = applescript_string(&worktree.to_string_lossy());
-                applescript(GHOSTTY_TAB.replace("{dir}", &dir), worktree, window)
+                let input = command.map_or_else(String::new, |c| {
+                    let input = applescript_string(&format!("{c}\n"));
+                    format!("\tset initial input of cfg to {input}\n")
+                });
+                applescript(ghostty_tab_script(&dir, &input), worktree, window)
             } else {
                 window
             }
@@ -140,11 +243,12 @@ fn terminal_plan(
         // Window only: tabs need `kitty @ launch`, which requires remote control to be
         // enabled in kitty.conf. `--single-instance` adds the window to a running kitty.
         Terminal::Kitty => {
-            let kitty_args: Vec<OsString> = vec![
+            let mut kitty_args: Vec<OsString> = vec![
                 "--single-instance".into(),
                 "--directory".into(),
                 path.clone(),
             ];
+            kitty_args.extend(program_args());
             match (&target.app, &target.cli) {
                 (None, Some(cli)) => spawn(cli.clone(), kitty_args, worktree),
                 _ => {
@@ -267,17 +371,27 @@ const ITERM_TAB: &str = r#"		tell current window to set t to (create tab with de
 const NOT_RUNNING: &str = "(9001)";
 
 /// Not running → the `open -na` fallback, so a cold launch makes one window, not two.
-const GHOSTTY_TAB: &str = r#"if not (application id "com.mitchellh.ghostty" is running) then error "Ghostty isn't running" number 9001
+/// `input` is empty or a whole `set initial input` line. One pass, so neither argument's
+/// text is scanned for placeholders.
+fn ghostty_tab_script(dir: &str, input: &str) -> String {
+    format!(
+        r#"if not (application id "com.mitchellh.ghostty" is running) then error "Ghostty isn't running" number 9001
 tell application id "com.mitchellh.ghostty"
 	activate
 	set cfg to new surface configuration
 	set initial working directory of cfg to {dir}
-	if (count of windows) is 0 then
+{input}	if (count of windows) is 0 then
 		new window with configuration cfg
 	else
 		new tab in front window with configuration cfg
 	end if
-end tell"#;
+end tell"#
+    )
+}
+
+fn has_control(path: &Path) -> bool {
+    path.to_string_lossy().chars().any(char::is_control)
+}
 
 /// POSIX single-quoted shell word: `it's` → `'it'\''s'`.
 pub(crate) fn shell_quote(path: &Path) -> String {
@@ -1111,5 +1225,230 @@ mod tests {
         assert!(script.starts_with(
             r#"if not (application id "com.mitchellh.ghostty" is running) then error "Ghostty isn't running" number 9001"#
         ));
+    }
+
+    fn command(template: &str, run_in_terminal: bool) -> CustomCommand {
+        CustomCommand {
+            label: "Mine".into(),
+            template: template.into(),
+            run_in_terminal,
+        }
+    }
+
+    /// (path, as `{path}` becomes)
+    const QUOTED: &[(&str, &str)] = &[
+        ("/Users/me/code/api", "'/Users/me/code/api'"),
+        ("/Users/me/my code/api x", "'/Users/me/my code/api x'"),
+        ("/c/it's", r"'/c/it'\''s'"),
+        ("/c/\"q\" x", "'/c/\"q\" x'"),
+        ("/c/$HOME `x` $(no)", "'/c/$HOME `x` $(no)'"),
+        (r"/c/back\slash", r"'/c/back\slash'"),
+        ("/c/{input}{dir}", "'/c/{input}{dir}'"),
+    ];
+
+    /// Fine for background commands; refused when typed into a terminal.
+    const CONTROL: &[(&str, &str)] = &[
+        ("/c/line\nbreak", "'/c/line\nbreak'"),
+        ("/c/x\u{15}\nrm -rf ~", "'/c/x\u{15}\nrm -rf ~'"),
+        ("/c/tab\there", "'/c/tab\there'"),
+    ];
+
+    #[test]
+    fn command_off_runs_sh_in_the_background() {
+        let cmd = command("subl -n {path} && echo {path}", false);
+        // No terminal needed.
+        for (path, q) in QUOTED.iter().chain(CONTROL) {
+            let p = plan_command(&cmd, Path::new(path), &Settings::default(), &[]).unwrap();
+            assert_eq!(
+                argv(&p),
+                ["/bin/sh", "-c", &format!("subl -n {q} && echo {q}")]
+            );
+            assert_eq!(cwd(&p), Path::new(path));
+        }
+    }
+
+    fn with_terminal(t: OpenTarget, o: TerminalOpensIn) -> (Settings, Vec<OpenTarget>) {
+        let s = Settings {
+            default_terminal: Some(t.id().into()),
+            terminal_opens_in: Some(o),
+            ..Default::default()
+        };
+        (s, vec![editor(Editor::Zed, Some("/bin/zed"), None), t])
+    }
+
+    #[test]
+    fn command_on_types_it_into_terminal_and_iterm() {
+        let cmd = command("nvim {path}", true);
+        let cases = [
+            (
+                term(Terminal::Terminal, Some("/Apps/Terminal.app"), None),
+                r#"keystroke "t" using command down"#,
+            ),
+            (
+                term(Terminal::ITerm2, Some("/Apps/iTerm.app"), None),
+                "create tab with default profile",
+            ),
+        ];
+        for (target, new_tab) in cases {
+            let app = target.app.clone().unwrap();
+            for o in TABS {
+                let (s, targets) = with_terminal(target.clone(), o);
+                for (path, q) in QUOTED {
+                    let p = plan_command(&cmd, Path::new(path), &s, &targets).unwrap();
+                    let LaunchPlan::AppleScript {
+                        script, fallback, ..
+                    } = &p
+                    else {
+                        panic!("{p:?}");
+                    };
+                    let typed = applescript_string(&format!("cd {q} && nvim {q}"));
+                    assert!(script.contains(&typed), "{script}\nmissing {typed}");
+                    assert_eq!(script.contains(new_tab), o == TerminalOpensIn::Tab);
+                    assert_eq!(cwd(&p), Path::new(path));
+                    let app = app.to_str().unwrap();
+                    assert_eq!(argv(fallback), ["/usr/bin/open", "-a", app, path]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn command_on_runs_it_in_ghostty_and_kitty() {
+        let cmd = command("nvim {path}", true);
+        let ghostty = term(Terminal::Ghostty, Some("/Apps/Ghostty.app"), None);
+        let kitty = term(Terminal::Kitty, None, Some("/bin/kitty"));
+        for (path, q) in QUOTED {
+            let line = format!("nvim {q}");
+            let run = ["/bin/sh", "-c", IN_LOGIN_SHELL, "sh", &line].map(String::from);
+            let mut window = vec![
+                "/usr/bin/open".to_string(),
+                "-na".into(),
+                "/Apps/Ghostty.app".into(),
+                "--args".into(),
+                format!("--working-directory={path}"),
+                "-e".into(),
+            ];
+            window.extend(run.clone());
+
+            let (s, targets) = with_terminal(ghostty.clone(), TerminalOpensIn::Window);
+            let p = plan_command(&cmd, Path::new(path), &s, &targets).unwrap();
+            assert_eq!(argv(&p), window);
+
+            let (s, targets) = with_terminal(ghostty.clone(), TerminalOpensIn::Tab);
+            let p = plan_command(&cmd, Path::new(path), &s, &targets).unwrap();
+            let LaunchPlan::AppleScript {
+                script, fallback, ..
+            } = &p
+            else {
+                panic!("{p:?}");
+            };
+            let input = applescript_string(&format!("{line}\n"));
+            assert!(
+                script.contains(&format!("set initial input of cfg to {input}")),
+                "{script}"
+            );
+            assert_eq!(argv(fallback), window);
+
+            for o in TABS {
+                let (s, targets) = with_terminal(kitty.clone(), o);
+                let p = plan_command(&cmd, Path::new(path), &s, &targets).unwrap();
+                let mut want = vec![
+                    "/bin/kitty".to_string(),
+                    "--single-instance".into(),
+                    "--directory".into(),
+                    path.to_string(),
+                ];
+                want.extend(run.clone());
+                assert_eq!(argv(&p), want);
+                assert_eq!(cwd(&p), Path::new(path));
+            }
+        }
+    }
+
+    #[test]
+    fn command_on_needs_a_terminal_that_runs_commands() {
+        let cmd = command("nvim {path}", true);
+        let dir = Path::new("/c");
+        let (s, targets) = with_terminal(term(Terminal::Warp, None, None), TerminalOpensIn::Tab);
+        let err = plan_command(&cmd, dir, &s, &targets).unwrap_err();
+        assert_eq!(err, NoTarget::CantRunCommands(Terminal::Warp).into());
+        assert!(err.in_settings());
+        assert!(
+            err.to_string()
+                .starts_with("Warp can't run custom commands")
+        );
+        assert_eq!(
+            plan_command(&cmd, dir, &Settings::default(), &targets[..1]),
+            Err(NoTarget::NoneDetected(crate::targets::Role::Terminal).into())
+        );
+    }
+
+    #[test]
+    fn control_characters_are_never_typed_into_a_terminal() {
+        let cmd = command("nvim {path}", true);
+        let terminals = [
+            term(Terminal::Terminal, Some("/Apps/Terminal.app"), None),
+            term(Terminal::ITerm2, Some("/Apps/iTerm.app"), None),
+            term(Terminal::Ghostty, Some("/Apps/Ghostty.app"), None),
+            term(Terminal::Kitty, None, Some("/bin/kitty")),
+        ];
+        for target in terminals {
+            for o in TABS {
+                let (s, targets) = with_terminal(target.clone(), o);
+                for (path, _) in CONTROL {
+                    let err = plan_command(&cmd, Path::new(path), &s, &targets).unwrap_err();
+                    assert_eq!(err, CommandError::ControlChars(path.into()));
+                    assert!(!err.in_settings());
+                    assert!(!err.to_string().chars().any(char::is_control), "{err}");
+                    // A plain open of Terminal / iTerm2 just opens the folder.
+                    let p = plan(&target, Path::new(path), &s);
+                    if let TargetKind::Terminal(Terminal::Terminal | Terminal::ITerm2) = target.kind
+                    {
+                        let app = target.app.as_ref().unwrap().to_str().unwrap();
+                        assert_eq!(argv(&p), ["/usr/bin/open", "-a", app, path]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The background command and the in-terminal wrapper really get the path as one word.
+    #[test]
+    fn command_quoting_round_trips_through_sh() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let cmd = command("printf '%s' {path} > out", false);
+        for name in [
+            "my code",
+            "it's \"q\"",
+            "$HOME `x` $(echo no)",
+            r"back\slash",
+            "café; & |",
+        ] {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = plan_command(&cmd, &dir, &Settings::default(), &[]).unwrap();
+            let env = ShellEnv {
+                path: "/usr/bin:/bin".into(),
+                source: crate::PathSource::Fallback,
+                shell: SH.into(),
+            };
+            execute(&p, &env).unwrap();
+            let out = std::fs::read_to_string(dir.join("out")).unwrap();
+            assert_eq!(Path::new(&out), dir);
+
+            let line = cmd.template.replace("{path}", &shell_quote(&dir));
+            std::fs::remove_file(dir.join("out")).unwrap();
+            let ok = std::process::Command::new(SH)
+                .args(["-c", IN_LOGIN_SHELL, "sh", &line])
+                .env("SHELL", SH)
+                .current_dir(&dir)
+                .stdin(Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok);
+            let out = std::fs::read_to_string(dir.join("out")).unwrap();
+            assert_eq!(Path::new(&out), dir);
+        }
     }
 }

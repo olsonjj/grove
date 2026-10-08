@@ -1,19 +1,20 @@
-//! Settings: code folder, default editor and terminal, and the general toggles. Edits a
-//! draft; Save applies it to every surface, Cancel drops it.
+//! Settings: code folder, default editor and terminal, custom commands, and the general
+//! toggles. Edits a draft; Save applies it to every surface, Cancel drops it.
 
 use std::path::Path;
 
 use gpui_kit::base::Button;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, Bounds, ClickEvent, Context, ElementId, Entity,
     FocusHandle, FontWeight, Global, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, TitlebarOptions, Window,
-    WindowBounds, WindowKind, WindowOptions, div, px, size,
+    Render, SharedString, StatefulInteractiveElement, Styled, TestSupportExt, TitlebarOptions,
+    Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::{
-    LoginItemStatus, NoTarget, OpenTarget, Preferences, Role, Snapshot, TargetKind,
-    TerminalOpensIn, command_line,
+    CustomCommand, LoginItemStatus, NoTarget, Opener, Preferences, Role, Settings, Snapshot,
+    TargetKind, TerminalOpensIn, command_line,
 };
 
 use crate::icons::{self, icon};
@@ -79,7 +80,18 @@ pub struct SettingsWindow {
     scanned: Option<Snapshot>,
     /// macOS's login item status for this copy; `None` until read, or when unbundled.
     login_status: Option<LoginItemStatus>,
+    /// The custom command being added or edited.
+    form: Option<CommandForm>,
     focus: FocusHandle,
+}
+
+struct CommandForm {
+    /// Index in the draft's commands; `None` adds one.
+    index: Option<usize>,
+    label: Entity<InputState>,
+    template: Entity<InputState>,
+    run_in_terminal: bool,
+    problem: Option<&'static str>,
 }
 
 impl SettingsWindow {
@@ -99,11 +111,15 @@ impl SettingsWindow {
             draft: shell::library(cx).settings.preferences(),
             scanned: None,
             login_status: None,
+            form: None,
             focus,
         }
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.finish_form(cx) {
+            return;
+        }
         let mut prefs = self.draft.clone();
         // Only a folder chosen here changes it (the sidebar may have meanwhile).
         if self.scanned.is_none() {
@@ -139,18 +155,93 @@ impl SettingsWindow {
         cx.stop_propagation();
     }
 
-    /// The draft's default for `role`, as Enter or ⌘Enter would use it after Save.
-    fn default_for<'a>(
-        &self,
-        role: Role,
-        targets: &'a [OpenTarget],
-    ) -> Result<&'a OpenTarget, NoTarget> {
-        let settings = grove_core::Settings {
+    /// What decides the defaults once saved.
+    fn draft_settings(&self) -> Settings {
+        Settings {
             default_editor: self.draft.default_editor.clone(),
             default_terminal: self.draft.default_terminal.clone(),
+            custom_commands: self.draft.custom_commands.clone(),
             ..Default::default()
+        }
+    }
+
+    fn edit_command(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let existing = index
+            .and_then(|i| self.draft.custom_commands.get(i))
+            .cloned();
+        let input = |value: Option<&String>,
+                     placeholder: &'static str,
+                     window: &mut Window,
+                     cx: &mut Context<Self>| {
+            let value = value.cloned().unwrap_or_default();
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder(placeholder)
+                    .default_value(value)
+            })
         };
-        grove_core::default_target(role, &settings, targets)
+        let label = input(existing.as_ref().map(|c| &c.label), "Neovim", window, cx);
+        let template = input(
+            existing.as_ref().map(|c| &c.template),
+            "nvim {path}",
+            window,
+            cx,
+        );
+        label.update(cx, |input, cx| input.focus(window, cx));
+        self.form = Some(CommandForm {
+            index,
+            label,
+            template,
+            run_in_terminal: existing.is_none_or(|c| c.run_in_terminal),
+            problem: None,
+        });
+        cx.notify();
+    }
+
+    /// Puts the form's command in the draft, keeping it the default if it was. False (and
+    /// the form stays, saying why) when it's not valid.
+    fn finish_form(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(form) = &mut self.form else {
+            return true;
+        };
+        let cmd = CustomCommand {
+            label: form.label.read(cx).value().trim().to_string(),
+            template: form.template.read(cx).value().trim().to_string(),
+            run_in_terminal: form.run_in_terminal,
+        };
+        let commands = &mut self.draft.custom_commands;
+        let others: Vec<CustomCommand> = commands
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != form.index)
+            .map(|(_, c)| c.clone())
+            .collect();
+        if let Some(problem) = cmd.problem(&others) {
+            form.problem = Some(problem);
+            cx.notify();
+            return false;
+        }
+        match form.index {
+            Some(i) => {
+                if self.draft.default_editor == Some(commands[i].id()) {
+                    self.draft.default_editor = Some(cmd.id());
+                }
+                commands[i] = cmd;
+            }
+            None => commands.push(cmd),
+        }
+        self.form = None;
+        cx.notify();
+        true
+    }
+
+    /// Removing the default editor hands the default back to the first detected editor.
+    fn remove_command(&mut self, index: usize, cx: &mut Context<Self>) {
+        let cmd = self.draft.custom_commands.remove(index);
+        if self.draft.default_editor == Some(cmd.id()) {
+            self.draft.default_editor = None;
+        }
+        cx.notify();
     }
 
     fn opens_in(&self, kind: TargetKind) -> Option<TerminalOpensIn> {
@@ -244,18 +335,24 @@ impl SettingsWindow {
         let Some(targets) = targets else {
             return col.child(note("Looking for apps…")).into_any_element();
         };
-        let chosen = self.default_for(role, &targets);
-        if let Err(e @ NoTarget::NoneDetected(_)) = &chosen {
-            return col.child(note(e.to_string())).into_any_element();
+        let settings = self.draft_settings();
+        let chosen = grove_core::default_opener(role, &settings, &targets);
+        let selected = chosen.as_ref().ok().map(Opener::id);
+        let selected_kind = match chosen {
+            Ok(Opener::App(t)) => Some(t.kind),
+            _ => None,
+        };
+        match &chosen {
+            Err(e @ NoTarget::NoneDetected(_)) => col = col.child(note(e.to_string())),
+            Err(e) => {
+                col = col.child(note(format!("{e}. Pick another.")).text_color(theme::warn_text()));
+            }
+            Ok(_) => {}
         }
-        if let Err(e) = &chosen {
-            col = col.child(note(format!("{e}. Pick another.")).text_color(theme::warn_text()));
-        }
-        let selected = chosen.ok().map(|t| t.kind);
         let rows = targets.iter().filter(|t| t.role() == role).enumerate();
         for (ix, target) in rows {
             let kind = target.kind;
-            let on = selected == Some(kind);
+            let on = selected.as_deref() == Some(kind.id());
             let detail = match self.opens_in(kind) {
                 Some(TerminalOpensIn::Tab) => "new tab".to_string(),
                 Some(TerminalOpensIn::Window) => "new window".to_string(),
@@ -268,19 +365,7 @@ impl SettingsWindow {
             );
             col = col.child(
                 choice((id, ix), on, a11y)
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(14.))
-                            .rounded(px(7.))
-                            .border_1()
-                            .border_color(if on {
-                                theme::accent()
-                            } else {
-                                theme::border_strong()
-                            })
-                            .when(on, |d| d.border_4()),
-                    )
+                    .child(radio(on))
                     .child(
                         div()
                             .flex_1()
@@ -304,10 +389,181 @@ impl SettingsWindow {
                     })),
             );
         }
-        if let (Role::Terminal, Some(TargetKind::Terminal(t))) = (role, selected) {
+        if let (Role::Terminal, Some(TargetKind::Terminal(t))) = (role, selected_kind) {
             col = col.child(self.opens_in_picker(t, cx));
         }
+        if role == Role::Editor {
+            col = col.child(self.commands(selected.as_deref(), cx));
+        }
         col.into_any_element()
+    }
+
+    /// Custom commands, each selectable as the default editor, and the add / edit form.
+    fn commands(&self, selected: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
+        let editing = self.form.is_some();
+        let mut col = div()
+            .mt(px(6.))
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(label("CUSTOM COMMANDS"));
+        for (ix, cmd) in self.draft.custom_commands.iter().enumerate() {
+            let on = selected == Some(cmd.id().as_str());
+            let detail = if cmd.run_in_terminal {
+                "in terminal"
+            } else {
+                "background"
+            };
+            let a11y = format!(
+                "{}, {}, {detail}{}",
+                cmd.label,
+                cmd.template,
+                if on { ", selected" } else { "" }
+            );
+            let row = choice(("settings-command", ix), on, a11y)
+                .flex_1()
+                .min_w_0()
+                .child(radio(on))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(div().text_size(px(14.)).child(cmd.label.clone()))
+                        .child(
+                            theme::mono(format!("{} · {detail}", cmd.template))
+                                .truncate()
+                                .text_size(px(12.))
+                                .text_color(theme::muted()),
+                        ),
+                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    this.draft.default_editor =
+                        this.draft.custom_commands.get(ix).map(CustomCommand::id);
+                    cx.notify();
+                }));
+            col = col.child(div().flex().items_center().gap(px(6.)).child(row).when(
+                !editing,
+                |d| {
+                    d.child(button(
+                        ("settings-command-edit", ix),
+                        "Edit",
+                        ButtonKind::Secondary,
+                        Some(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.edit_command(Some(ix), window, cx)
+                        })),
+                    ))
+                    .child(button(
+                        ("settings-command-remove", ix),
+                        "Remove",
+                        ButtonKind::Secondary,
+                        Some(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            this.remove_command(ix, cx)
+                        })),
+                    ))
+                },
+            ));
+        }
+        match &self.form {
+            Some(form) => col.child(self.command_form(form, cx)),
+            None => col.child(div().flex().child(button(
+                "settings-command-add",
+                "Add command…",
+                ButtonKind::Secondary,
+                Some(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.edit_command(None, window, cx)
+                })),
+            ))),
+        }
+        .into_any_element()
+    }
+
+    fn command_form(&self, form: &CommandForm, cx: &mut Context<Self>) -> impl IntoElement {
+        let field = |id: &'static str, title: &'static str, state: &Entity<InputState>| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .child(label(title))
+                .child(
+                    div()
+                        .id(id)
+                        .child(
+                            Input::new(state)
+                                .font_family(theme::MONO)
+                                .text_size(px(13.)),
+                        )
+                        .test_support(),
+                )
+        };
+        let on = form.run_in_terminal;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .p(px(12.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(theme::border_strong())
+            .child(field("settings-command-label", "NAME", &form.label))
+            .child(field(
+                "settings-command-template",
+                "COMMAND ({path} is the worktree, quoted)",
+                &form.template,
+            ))
+            .child(
+                choice(
+                    "settings-command-terminal",
+                    false,
+                    format!("Run in terminal, {}", if on { "on" } else { "off" }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(div().text_size(px(14.)).child("Run in terminal"))
+                        .child(note(
+                            "On: a new tab in your terminal. Off: runs in the background.",
+                        )),
+                )
+                .child(switch(on))
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    if let Some(form) = &mut this.form {
+                        form.run_in_terminal = !form.run_in_terminal;
+                    }
+                    cx.notify();
+                })),
+            )
+            .when_some(form.problem, |d, problem| {
+                d.child(note(problem).text_color(theme::warn_text()))
+            })
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.))
+                    .child(button(
+                        "settings-command-discard",
+                        "Discard",
+                        ButtonKind::Secondary,
+                        Some(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.form = None;
+                            cx.notify();
+                        })),
+                    ))
+                    .child(button(
+                        "settings-command-done",
+                        "Done",
+                        ButtonKind::Primary,
+                        Some(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            this.finish_form(cx);
+                        })),
+                    )),
+            )
     }
 
     /// New tab or new window, for the default terminal where it supports both.
@@ -482,9 +738,10 @@ impl SettingsWindow {
             .try_global::<crate::launcher::Launcher>()
             .and_then(|l| l.targets.clone())
             .unwrap_or_default();
+        let settings = self.draft_settings();
         let name = |role| {
-            self.default_for(role, &targets)
-                .map_or("—".to_string(), |t| t.name().to_string())
+            grove_core::default_opener(role, &settings, &targets)
+                .map_or("—".to_string(), |o| o.name().to_string())
         };
         let summary = format!(
             "↵ opens in {} · ⌘↵ opens in {}",
@@ -645,6 +902,20 @@ fn choice(id: impl Into<ElementId>, selected: bool, a11y: String) -> Button {
         )
 }
 
+fn radio(on: bool) -> impl IntoElement {
+    div()
+        .flex_none()
+        .size(px(14.))
+        .rounded(px(7.))
+        .border_1()
+        .border_color(if on {
+            theme::accent()
+        } else {
+            theme::border_strong()
+        })
+        .when(on, |d| d.border_4())
+}
+
 fn switch(on: bool) -> impl IntoElement {
     div()
         .flex_none()
@@ -799,7 +1070,7 @@ mod tests {
         cx.update(|cx| {
             let launcher = cx.global_mut::<crate::launcher::Launcher>();
             if let Some(targets) = &mut launcher.targets {
-                targets.push(OpenTarget {
+                targets.push(grove_core::OpenTarget {
                     kind: TargetKind::Terminal(grove_core::Terminal::Kitty),
                     app: Some("/Applications/kitty.app".into()),
                     cli: None,
@@ -1029,6 +1300,152 @@ mod tests {
         cx.update(open);
         assert_eq!(cx.update(|cx| window(cx)), Some(first));
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+    }
+
+    fn typed(cx: &mut TestAppContext, w: AnyWindowHandle, text: &str) {
+        cx.update_window(w, |_, window, cx| window.input(text, cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    fn found(cx: &mut TestAppContext, w: AnyWindowHandle, id: impl Into<ElementId>) -> bool {
+        let id = id.into();
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    }
+
+    /// Types into the open form's empty fields.
+    fn fill(cx: &mut TestAppContext, w: AnyWindowHandle, name: &str, template: &str) {
+        click(cx, w, "settings-command-label");
+        typed(cx, w, name);
+        click(cx, w, "settings-command-template");
+        typed(cx, w, template);
+    }
+
+    fn nvim() -> CustomCommand {
+        CustomCommand {
+            label: "Neovim".into(),
+            template: "nvim {path}".into(),
+            run_in_terminal: true,
+        }
+    }
+
+    #[gpui_kit::test]
+    fn add_command_and_make_it_the_default_editor(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let w = open_settings(cx);
+        click(cx, w, "settings-command-add");
+        fill(cx, w, "Neovim", "nvim {path}");
+        click(cx, w, "settings-command-done");
+        assert!(!found(cx, w, "settings-command-done"));
+        click(cx, w, "settings-command-add");
+        fill(cx, w, "Sublime", "subl -n {path}");
+        click(cx, w, "settings-command-terminal");
+        click(cx, w, "settings-command-done");
+        click(cx, w, ("settings-command", 0usize));
+        assert_eq!(
+            settings(cx),
+            Settings::default(),
+            "nothing applied before Save"
+        );
+
+        click(cx, w, "settings-save");
+        let s = settings(cx);
+        let sublime = CustomCommand {
+            label: "Sublime".into(),
+            template: "subl -n {path}".into(),
+            run_in_terminal: false,
+        };
+        assert_eq!(s.custom_commands, [nvim(), sublime]);
+        assert_eq!(s.default_editor.as_deref(), Some("custom:Neovim"));
+        assert_eq!(file.load().unwrap(), s);
+        let name = cx.update(|cx| crate::launcher::target_name(Role::Editor, cx));
+        assert_eq!(name.as_deref(), Some("Neovim"));
+    }
+
+    #[gpui_kit::test]
+    fn cancel_discards_command_changes(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let saved = Settings {
+            custom_commands: vec![nvim()],
+            ..Default::default()
+        };
+        let file = settings_file(&tmp, saved.clone());
+        running(cx, &file);
+        let w = open_settings(cx);
+        click(cx, w, ("settings-command-remove", 0usize));
+        click(cx, w, "settings-command-add");
+        fill(cx, w, "Helix", "hx {path}");
+        click(cx, w, "settings-command-done");
+        click(cx, w, "settings-cancel");
+        assert_eq!(settings(cx), saved);
+        assert_eq!(file.load().unwrap(), saved);
+    }
+
+    #[gpui_kit::test]
+    fn invalid_commands_are_flagged_not_added(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let (w, view) = open_settings_view(cx);
+        let problem = |cx: &mut TestAppContext| {
+            view.read_with(cx, |v, _| v.form.as_ref().and_then(|f| f.problem))
+        };
+        click(cx, w, "settings-command-add");
+        click(cx, w, "settings-command-done");
+        assert_eq!(problem(cx), Some("Give the command a name."));
+        fill(cx, w, "  Neovim ", "nvim .");
+        click(cx, w, "settings-command-done");
+        assert!(problem(cx).unwrap().contains("{path}"));
+        // Save refuses too, keeping the window open on the problem.
+        click(cx, w, "settings-save");
+        assert!(is_open(cx, w));
+        assert!(settings(cx).custom_commands.is_empty());
+
+        click(cx, w, "settings-command-discard");
+        click(cx, w, "settings-save");
+        assert!(!is_open(cx, w));
+        assert!(settings(cx).custom_commands.is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn edit_keeps_the_default_and_remove_hands_it_back(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                default_editor: Some("custom:Neovim".into()),
+                custom_commands: vec![nvim()],
+                ..Default::default()
+            },
+        );
+        running(cx, &file);
+        let w = open_settings(cx);
+        click(cx, w, ("settings-command-edit", 0usize));
+        // The name field has focus.
+        cx.update_window(w, |_, window, cx| window.press("cmd-a", cx))
+            .unwrap();
+        typed(cx, w, "Neovim (tab)");
+        click(cx, w, "settings-command-done");
+        click(cx, w, "settings-save");
+        let s = settings(cx);
+        assert_eq!(s.custom_commands[0].label, "Neovim (tab)");
+        assert_eq!(s.custom_commands[0].template, "nvim {path}");
+        assert_eq!(s.default_editor.as_deref(), Some("custom:Neovim (tab)"));
+
+        let w = open_settings(cx);
+        click(cx, w, ("settings-command-remove", 0usize));
+        click(cx, w, "settings-save");
+        let s = settings(cx);
+        assert!(s.custom_commands.is_empty());
+        assert_eq!(s.default_editor, None);
+        let name = cx.update(|cx| crate::launcher::target_name(Role::Editor, cx));
+        assert_eq!(name.as_deref(), Some("VS Code"));
     }
 
     /// Fake login item service at `/Applications/Grove.app`, recording register calls.

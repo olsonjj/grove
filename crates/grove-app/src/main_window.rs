@@ -209,7 +209,7 @@ impl MainWindow {
     fn open(&mut self, req: &OpenRequested, cx: &mut Context<Self>) {
         self.open_seq += 1;
         let seq = self.open_seq;
-        match launcher::open_worktree(&req.path, req.presence, req.role, req.target, cx) {
+        match launcher::open_worktree(&req.path, req.presence, req.role, req.target.as_ref(), cx) {
             Err(e) => self.set_status(e.message, true, e.settings, cx),
             Ok(opening) => {
                 self.set_status(opening.message.clone(), false, false, cx);
@@ -818,6 +818,99 @@ mod tests {
         let s = status(cx, &main).unwrap();
         assert_eq!(s.text, "code failed: bad option");
         assert!(s.error);
+    }
+
+    fn with_commands(tmp: &TempDir, default_editor: &str) -> SettingsFile {
+        let cmd = |label: &str, template: &str, run_in_terminal| grove_core::CustomCommand {
+            label: label.into(),
+            template: template.into(),
+            run_in_terminal,
+        };
+        settings_file(
+            tmp,
+            Settings {
+                default_editor: Some(default_editor.into()),
+                custom_commands: vec![
+                    cmd("Neovim", "nvim {path}", true),
+                    cmd("Sublime", "subl -n {path}", false),
+                ],
+                ..Default::default()
+            },
+        )
+    }
+
+    #[gpui_kit::test]
+    fn custom_commands_open_from_enter_and_the_menu(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = with_commands(&tmp, "custom:Sublime");
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+
+        keys(cx, w, &["enter"]);
+        assert_eq!(
+            *launches.lock().unwrap(),
+            [vec!["/bin/sh", "-c", "subl -n '/c/api'"]]
+        );
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Opening /c/api in Sublime…"
+        );
+
+        // Detected editors first, then the commands.
+        click(cx, w, "details-menu-editor");
+        assert!(has(cx, w, "editor-choice", 3));
+        click(cx, w, ("editor-choice", 2usize));
+        let launch = launches.lock().unwrap()[1].clone();
+        assert_eq!(launch[0], "osascript");
+        assert!(
+            launch[1].contains(r#"do script "cd '/c/api' && nvim '/c/api'""#),
+            "{}",
+            launch[1]
+        );
+        assert_eq!(status(cx, &main).unwrap().text, "Opening /c/api in Neovim…");
+    }
+
+    #[gpui_kit::test]
+    fn custom_command_failures_show_in_status_line(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = with_commands(&tmp, "custom:Sublime");
+        let fail = LaunchError::Exit {
+            program: "sh".into(),
+            status: "exit status: 127".into(),
+            stderr: "sh: subl: command not found".into(),
+        };
+        fake_launcher(cx, Err(fail));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["enter"]);
+        let s = status(cx, &main).unwrap();
+        assert_eq!(s.text, "Sublime failed: sh: subl: command not found");
+        assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn custom_command_in_terminal_reports_fallback_and_warp(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = with_commands(&tmp, "custom:Neovim");
+        let denied = Outcome::FellBack(Fallback::Denied(Permission::Automation));
+        let launches = fake_launcher(cx, Ok(denied));
+        let (w, main) = launch(cx, &file);
+        keys(cx, w, &["enter"]);
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            "Opened /c/api in a new Terminal window without running Neovim. For commands, \
+             allow Grove in System Settings → Privacy & Security → Automation"
+        );
+
+        cx.update(|cx| cx.global_mut::<Library>().settings.default_terminal = Some("warp".into()));
+        keys(cx, w, &["enter"]);
+        assert_eq!(launches.lock().unwrap().len(), 1);
+        let s = status(cx, &main).unwrap();
+        assert!(
+            s.text.starts_with("Warp can't run custom commands"),
+            "{}",
+            s.text
+        );
+        assert!(s.error && s.settings);
     }
 
     #[gpui_kit::test]

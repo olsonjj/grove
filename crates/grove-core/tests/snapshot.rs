@@ -197,6 +197,16 @@ fn settings_tolerate_missing_fields() {
 }
 
 #[test]
+fn custom_command_run_in_terminal_defaults_on() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("settings.json");
+    let json = r#"{"custom_commands":[{"label":"Neovim","template":"nvim {path}"}]}"#;
+    fs::write(&path, json).unwrap();
+    let s = SettingsFile::new(&path).load().unwrap();
+    assert!(s.custom_commands[0].run_in_terminal);
+}
+
+#[test]
 fn collapse_state_per_repo() {
     let mut s = Settings::default();
     assert!(s.set_collapsed("api", "fix/", true));

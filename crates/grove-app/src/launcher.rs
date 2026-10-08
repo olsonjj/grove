@@ -7,8 +7,8 @@ use std::sync::Arc;
 use async_channel::Receiver;
 use gpui_kit::{App, AppContext, Global, Task};
 use grove_core::{
-    Fallback, LaunchError, LaunchPlan, OpenTarget, Outcome, Presence, Role, TargetKind, Terminal,
-    default_target, plan,
+    Fallback, LaunchError, LaunchPlan, OpenTarget, Opener, Outcome, Presence, Role, TargetKind,
+    Terminal, default_opener, default_terminal, openers, plan, plan_command,
 };
 
 use crate::main_window::tilde;
@@ -92,37 +92,55 @@ pub fn reveal(path: &Path, cx: &App) {
     }
 }
 
-/// Name of the app Enter (editor) or ⌘Enter (terminal) opens with, if there is one.
+/// Name of the app or custom command Enter (editor) or ⌘Enter (terminal) opens with, if
+/// there is one.
 pub fn target_name(role: Role, cx: &App) -> Option<String> {
-    target(role, None, cx).ok().map(|t| t.name().to_string())
+    target(role, None, cx).ok().map(|o| o.name().to_string())
 }
 
-/// Every detected app for `role`, in detection order (the ▾ menu).
-pub fn targets_for(role: Role, cx: &App) -> Vec<TargetKind> {
-    cx.try_global::<Launcher>()
+/// A ▾ menu entry: a detected app or custom command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub id: String,
+    pub name: String,
+}
+
+/// Every detected app for `role` in detection order, then custom commands (the ▾ menu),
+/// each with whether it's the default.
+pub fn choices(role: Role, cx: &App) -> Vec<(Choice, bool)> {
+    let Some(targets) = cx
+        .try_global::<Launcher>()
         .and_then(|l| l.targets.as_deref())
-        .unwrap_or_default()
+    else {
+        return Vec::new();
+    };
+    let settings = &shell::library(cx).settings;
+    let default = default_opener(role, settings, targets).ok().map(|o| o.id());
+    openers(role, settings, targets)
         .iter()
-        .filter(|t| t.role() == role)
-        .map(|t| t.kind)
+        .map(|o| {
+            let id = o.id();
+            let is_default = default.as_ref() == Some(&id);
+            let name = o.name().to_string();
+            (Choice { id, name }, is_default)
+        })
         .collect()
 }
 
 /// `chosen` if given (a one-off pick from the ▾ menu), else the default for `role`.
-fn target(role: Role, chosen: Option<TargetKind>, cx: &App) -> Result<&OpenTarget, String> {
+fn target<'a>(role: Role, chosen: Option<&Choice>, cx: &'a App) -> Result<Opener<'a>, String> {
     let launcher = cx.try_global::<Launcher>().ok_or("Launcher not ready")?;
     let targets = launcher
         .targets
         .as_deref()
         .ok_or("Still looking for apps… try again in a moment")?;
+    let settings = &shell::library(cx).settings;
     match chosen {
-        Some(kind) => targets
-            .iter()
-            .find(|t| t.kind == kind)
-            .ok_or_else(|| format!("{} isn't installed anymore", kind.name())),
-        None => {
-            default_target(role, &shell::library(cx).settings, targets).map_err(|e| e.to_string())
-        }
+        Some(choice) => openers(role, settings, targets)
+            .into_iter()
+            .find(|o| o.id() == choice.id)
+            .ok_or_else(|| format!("{} isn't available anymore", choice.name)),
+        None => default_opener(role, settings, targets).map_err(|e| e.to_string()),
     }
 }
 
@@ -188,7 +206,7 @@ pub fn open_worktree(
     worktree: &Path,
     scanned: Presence,
     role: Role,
-    chosen: Option<TargetKind>,
+    chosen: Option<&Choice>,
     cx: &mut App,
 ) -> Result<Opening, OpenError> {
     let now = presence(worktree, cx);
@@ -215,21 +233,60 @@ pub fn open_worktree(
 /// off the main thread. A one-off choice never changes the default.
 fn open(
     role: Role,
-    chosen: Option<TargetKind>,
+    chosen: Option<&Choice>,
     worktree: &Path,
     cx: &mut App,
 ) -> Result<Opening, OpenError> {
-    let target = target(role, chosen, cx).map_err(|message| OpenError {
+    let in_settings = |message| OpenError {
         message,
         settings: true,
-    })?;
-    let p = plan(target, worktree, &shell::library(cx).settings);
-    let (path, app, kind) = (tilde(worktree), target.name().to_string(), target.kind);
-    let message = format!("Opening {path} in {app}…");
+    };
+    let opener = target(role, chosen, cx).map_err(in_settings)?;
+    let settings = &shell::library(cx).settings;
+    let targets = cx
+        .global::<Launcher>()
+        .targets
+        .as_deref()
+        .unwrap_or_default();
+    let path = tilde(worktree);
+    let message = format!("Opening {path} in {}…", opener.name());
+    // What the outcome is about: the app, or for a command the terminal it runs in.
+    // `background` names a command run without a terminal, for its failures.
+    let (p, app, kind, skipped, background) = match opener {
+        Opener::App(t) => (
+            plan(t, worktree, settings),
+            t.name(),
+            Some(t.kind),
+            None,
+            None,
+        ),
+        Opener::Command(c) => {
+            let p = plan_command(c, worktree, settings, targets).map_err(|e| OpenError {
+                message: e.to_string(),
+                settings: e.in_settings(),
+            })?;
+            match default_terminal(settings, targets) {
+                Ok(t) if c.run_in_terminal => {
+                    // Their `open -a` fallback opens the folder only.
+                    let skipped = matches!(
+                        t.kind,
+                        TargetKind::Terminal(Terminal::Terminal | Terminal::ITerm2)
+                    )
+                    .then(|| c.label.clone());
+                    (p, t.name(), Some(t.kind), skipped, None)
+                }
+                _ => (p, c.label.as_str(), None, None, Some(c.label.clone())),
+            }
+        }
+    };
+    let app = app.to_string();
     let follow_up = Box::new(move |outcome: &Outcome| {
         let privacy =
             |pane: &str| format!("allow Grove in System Settings → Privacy & Security → {pane}");
-        let window = format!("Opened {path} in a new {app} window");
+        let mut window = format!("Opened {path} in a new {app} window");
+        if let Some(label) = &skipped {
+            window.push_str(&format!(" without running {label}"));
+        }
         let (text, warn) = match outcome {
             Outcome::Opened | Outcome::FellBack(Fallback::NotRunning) => return None,
             Outcome::TimedOut => (
@@ -240,11 +297,19 @@ fn open(
                 true,
             ),
             Outcome::FellBack(Fallback::Denied(perm)) => (
-                format!("{window}. For tabs, {}", privacy(perm.pane())),
+                format!(
+                    "{window}. For {}, {}",
+                    if skipped.is_some() {
+                        "commands"
+                    } else {
+                        "tabs"
+                    },
+                    privacy(perm.pane())
+                ),
                 true,
             ),
             Outcome::FellBack(Fallback::Unsupported(e)) => match kind {
-                TargetKind::Terminal(Terminal::Ghostty) => {
+                Some(TargetKind::Terminal(Terminal::Ghostty)) => {
                     (format!("{window} (tabs need Ghostty 1.3 or later)"), false)
                 }
                 _ => (format!("{window} (new tab failed: {e})"), true),
@@ -259,11 +324,20 @@ fn open(
     eprintln!("[grove] launch: {p:?}");
     let rx = executor(p);
     let done = cx.background_spawn(async move {
-        rx.recv().await.unwrap_or_else(|_| {
+        let result = rx.recv().await.unwrap_or_else(|_| {
             Err(LaunchError::Spawn {
                 program: "launcher".into(),
                 error: "launch thread ended without a result".into(),
             })
+        });
+        // "Sublime failed: …" rather than "sh failed: …".
+        result.map_err(|e| match (e, background) {
+            (LaunchError::Exit { status, stderr, .. }, Some(label)) => LaunchError::Exit {
+                program: label,
+                status,
+                stderr,
+            },
+            (e, _) => e,
         })
     });
     Ok(Opening {

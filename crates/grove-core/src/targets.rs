@@ -1,5 +1,5 @@
-//! App detection: which editors and terminals (later custom commands) Grove can open a
-//! worktree in.
+//! App detection: which editors and terminals Grove can open a worktree in, plus the
+//! user's custom commands.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::env::{ShellEnv, resolved_env};
 use crate::process;
-use crate::settings::{Settings, TerminalOpensIn};
+use crate::settings::{CustomCommand, Settings, TerminalOpensIn, custom_label};
 
 const SPOTLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const BUNDLE_ID_ATTR: &str = "kMDItemCFBundleIdentifier";
@@ -135,6 +135,11 @@ impl Terminal {
     /// Kitty opens windows only (see `plan`).
     pub fn supports_tabs(self) -> bool {
         self != Terminal::Kitty
+    }
+
+    /// Warp's URI scheme opens a tab or window but can't run a command in it.
+    pub fn runs_commands(self) -> bool {
+        self != Terminal::Warp
     }
 
     /// Detection order; Terminal.app ships with macOS, so it's the usual default.
@@ -400,17 +405,26 @@ fn parse_mdfind(out: &str) -> Vec<(PathBuf, String)> {
 /// Why there's no editor or terminal to open with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NoTarget {
-    /// The configured default names an app that is no longer installed.
+    /// The configured default names an app that is no longer installed (or a custom
+    /// command that's gone).
     Uninstalled(Role, String),
     NoneDetected(Role),
+    /// A Run in terminal command, but the default terminal can't be told to run one.
+    CantRunCommands(Terminal),
 }
 
 impl std::fmt::Display for NoTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NoTarget::Uninstalled(role, id) => {
-                let name: &str = TargetKind::from_id(*role, id).map_or(id, |k| k.name());
                 let noun = role.noun();
+                if let Some(label) = custom_label(id) {
+                    return write!(
+                        f,
+                        "Your default {noun}, {label}, isn't a custom command anymore"
+                    );
+                }
+                let name: &str = TargetKind::from_id(*role, id).map_or(id, |k| k.name());
                 write!(f, "Your default {noun}, {name}, isn't installed anymore")
             }
             NoTarget::NoneDetected(role) => {
@@ -425,6 +439,11 @@ impl std::fmt::Display for NoTarget {
                     names.join(", ")
                 )
             }
+            NoTarget::CantRunCommands(t) => write!(
+                f,
+                "{} can't run custom commands. Pick another terminal or turn off Run in terminal",
+                t.name()
+            ),
         }
     }
 }
@@ -446,6 +465,68 @@ pub fn default_target<'a>(
             .find(|t| t.id() == id)
             .ok_or_else(|| NoTarget::Uninstalled(role, id.to_string())),
         None => of_role.next().ok_or(NoTarget::NoneDetected(role)),
+    }
+}
+
+/// What a worktree opens with: a detected app or, for editors, a custom command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opener<'a> {
+    App(&'a OpenTarget),
+    Command(&'a CustomCommand),
+}
+
+impl Opener<'_> {
+    /// Stable key, as stored in settings.
+    pub fn id(&self) -> String {
+        match self {
+            Opener::App(t) => t.id().to_string(),
+            Opener::Command(c) => c.id(),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Opener::App(t) => t.name(),
+            Opener::Command(c) => &c.label,
+        }
+    }
+}
+
+/// Everything `role` can open with: detected apps, then (editors) custom commands.
+pub fn openers<'a>(
+    role: Role,
+    settings: &'a Settings,
+    targets: &'a [OpenTarget],
+) -> Vec<Opener<'a>> {
+    let commands = match role {
+        Role::Editor => settings.custom_commands.as_slice(),
+        Role::Terminal => &[],
+    };
+    targets
+        .iter()
+        .filter(|t| t.role() == role)
+        .map(Opener::App)
+        .chain(commands.iter().map(Opener::Command))
+        .collect()
+}
+
+/// `default_target`, with a custom command allowed as the default editor (never picked
+/// unless configured).
+pub fn default_opener<'a>(
+    role: Role,
+    settings: &'a Settings,
+    targets: &'a [OpenTarget],
+) -> Result<Opener<'a>, NoTarget> {
+    let configured = match role {
+        Role::Editor => settings.default_editor.as_deref(),
+        Role::Terminal => settings.default_terminal.as_deref(),
+    };
+    match configured.filter(|id| custom_label(id).is_some()) {
+        Some(id) => openers(role, settings, targets)
+            .into_iter()
+            .find(|o| o.id() == id)
+            .ok_or_else(|| NoTarget::Uninstalled(role, id.to_string())),
+        None => default_target(role, settings, targets).map(Opener::App),
     }
 }
 
@@ -617,5 +698,53 @@ mod tests {
                 .to_string(),
             "No terminal found (looked for Terminal, iTerm2, Warp, Ghostty, Kitty)"
         );
+    }
+
+    #[test]
+    fn custom_commands_are_editor_openers_and_defaults_only_when_chosen() {
+        let targets = [target(Editor::Zed)];
+        let nvim = CustomCommand {
+            label: "Neovim".into(),
+            template: "nvim {path}".into(),
+            run_in_terminal: true,
+        };
+        let mut s = Settings {
+            custom_commands: vec![nvim.clone()],
+            ..Default::default()
+        };
+        let ids =
+            |role| -> Vec<String> { openers(role, &s, &targets).iter().map(Opener::id).collect() };
+        assert_eq!(ids(Role::Editor), ["zed", "custom:Neovim"]);
+        assert!(ids(Role::Terminal).is_empty());
+        assert_eq!(
+            default_opener(Role::Editor, &s, &targets).unwrap().name(),
+            "Zed"
+        );
+
+        s.default_editor = Some(nvim.id());
+        assert_eq!(
+            default_opener(Role::Editor, &s, &targets),
+            Ok(Opener::Command(&nvim))
+        );
+        s.custom_commands.clear();
+        let err = default_opener(Role::Editor, &s, &targets).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Your default editor, Neovim, isn't a custom command anymore"
+        );
+    }
+
+    #[test]
+    fn custom_command_problems() {
+        let cmd = |label: &str, template: &str| CustomCommand {
+            label: label.into(),
+            template: template.into(),
+            run_in_terminal: false,
+        };
+        let others = [cmd("Sublime", "subl {path}")];
+        assert_eq!(cmd("Neovim", "nvim {path}").problem(&others), None);
+        assert!(cmd("", "nvim {path}").problem(&others).is_some());
+        assert!(cmd("Sublime", "subl -n {path}").problem(&others).is_some());
+        assert!(cmd("Neovim", "nvim .").problem(&others).is_some());
     }
 }

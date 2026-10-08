@@ -6,10 +6,10 @@
 
 **Status:** ready-for-agent
 
-- [ ] Add, edit, remove custom commands in settings
-- [ ] `{path}` substituted shell-quoted
-- [ ] Run in terminal on → terminal tab at worktree runs the command
-- [ ] Run in terminal off → background spawn with resolved PATH
-- [ ] Listed in ▾ menus; selectable as default editor
-- [ ] Failures reported in status line
-- [ ] Launch planning table tests: on/off, paths with spaces and quotes
+- [x] Add, edit, remove custom commands in settings
+- [x] `{path}` substituted shell-quoted
+- [x] Run in terminal on → terminal tab at worktree runs the command
+- [x] Run in terminal off → background spawn with resolved PATH
+- [x] Listed in ▾ menus; selectable as default editor
+- [x] Failures reported in status line
+- [x] Launch planning table tests: on/off, paths with spaces and quotes

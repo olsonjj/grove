@@ -8,13 +8,14 @@ use gpui_kit::{
     div, px,
 };
 use grove_core::{
-    ChangedFile, Commit, Details, Role, TargetKind, Worktree, cd_command, recent_commits,
-    relative_time, unix_now,
+    ChangedFile, Commit, Details, Role, Worktree, cd_command, recent_commits, relative_time,
+    unix_now,
 };
 
 use grove_core::git::GitError;
 
 use crate::icons::{self, icon};
+use crate::launcher::Choice;
 use crate::main_window::tilde;
 use crate::tree_view::{OpenRequested, TreeView};
 use crate::{launcher, theme};
@@ -137,11 +138,12 @@ impl DetailsView {
         .detach();
     }
 
-    fn open(&mut self, role: Role, target: Option<TargetKind>, cx: &mut Context<Self>) {
+    fn open(&mut self, role: Role, target: Option<Choice>, cx: &mut Context<Self>) {
         self.menu = None;
         let Some(wt) = self.worktree() else {
             return;
         };
+        let pick = target.is_some();
         let req = OpenRequested {
             path: wt.path.clone(),
             presence: wt.presence,
@@ -149,7 +151,7 @@ impl DetailsView {
             target,
         };
         // A default that's gone falls back to the ▾ menu (the status bar says why).
-        if target.is_none() && launcher::ready(cx) && launcher::target_name(role, cx).is_none() {
+        if !pick && launcher::ready(cx) && launcher::target_name(role, cx).is_none() {
             self.menu = Some(role);
         }
         cx.emit(req);
@@ -277,34 +279,39 @@ impl DetailsView {
 
     fn menu_list(&self, role: Role, cx: &mut Context<Self>) -> impl IntoElement {
         let key = role_key(role);
-        let default = launcher::target_name(role, cx);
-        let kinds = launcher::targets_for(role, cx);
-        let empty = kinds.is_empty();
-        let items = kinds.into_iter().enumerate().map(|(i, kind)| {
-            div()
-                .id((SharedString::from(format!("{key}-choice")), i))
-                .h(px(28.))
-                .px(px(10.))
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(8.))
-                .rounded(px(5.))
-                .cursor_pointer()
-                .text_color(theme::text())
-                .hover(|s| s.bg(theme::selected()))
-                .child(kind.name())
-                .when(default.as_deref() == Some(kind.name()), |d| {
-                    d.child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(theme::faint())
-                            .child("default"),
-                    )
-                })
-                .on_click(cx.listener(move |this, _, _, cx| this.open(role, Some(kind), cx)))
-                .test_support()
-        });
+        let choices = launcher::choices(role, cx);
+        let empty = choices.is_empty();
+        let items =
+            choices
+                .into_iter()
+                .enumerate()
+                .map(|(i, (choice, is_default))| {
+                    div()
+                        .id((SharedString::from(format!("{key}-choice")), i))
+                        .h(px(28.))
+                        .px(px(10.))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(8.))
+                        .rounded(px(5.))
+                        .cursor_pointer()
+                        .text_color(theme::text())
+                        .hover(|s| s.bg(theme::selected()))
+                        .child(choice.name.clone())
+                        .when(is_default, |d| {
+                            d.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme::faint())
+                                    .child("default"),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open(role, Some(choice.clone()), cx)
+                        }))
+                        .test_support()
+                });
         deferred(
             anchored().snap_to_window().child(
                 div()

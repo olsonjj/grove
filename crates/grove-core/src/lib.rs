@@ -26,8 +26,8 @@ pub use git::{
     recent_commits,
 };
 pub use launch::{
-    Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, command_line, execute,
-    execute_with, plan,
+    CommandError, Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, command_line,
+    execute, execute_with, plan, plan_command,
 };
 pub use menu::{MenuGroup, MenuRow, StateLine, menu};
 pub use search::{Hit, Matches, search};
@@ -40,8 +40,8 @@ pub use snapshot::{
     ScanResult, Snapshot, SnapshotStore, StatusReads, StatusResult, Worktree, scan,
 };
 pub use targets::{
-    Editor, NoTarget, OpenTarget, Role, TargetKind, Terminal, default_editor, default_target,
-    default_terminal, detect, detect_in,
+    Editor, NoTarget, OpenTarget, Opener, Role, TargetKind, Terminal, default_editor,
+    default_opener, default_target, default_terminal, detect, detect_in, openers,
 };
 pub use tree::{
     DisplayPath, NavEffect, NavKey, Row, RowId, RowKind, Tree, home_dir, navigate, tilde,

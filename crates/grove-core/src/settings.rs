@@ -57,6 +57,7 @@ pub struct Preferences {
     pub default_editor: Option<String>,
     pub default_terminal: Option<String>,
     pub terminal_opens_in: Option<TerminalOpensIn>,
+    pub custom_commands: Vec<CustomCommand>,
     pub show_menu_bar_icon: bool,
     pub background_fetch: bool,
     pub launch_at_login: bool,
@@ -159,6 +160,7 @@ impl Settings {
             default_editor: self.default_editor.clone(),
             default_terminal: self.default_terminal.clone(),
             terminal_opens_in: self.terminal_opens_in,
+            custom_commands: self.custom_commands.clone(),
             show_menu_bar_icon: self.show_menu_bar_icon,
             background_fetch: self.background_fetch,
             launch_at_login: self.launch_at_login,
@@ -172,6 +174,7 @@ impl Settings {
             default_editor,
             default_terminal,
             terminal_opens_in,
+            custom_commands,
             show_menu_bar_icon,
             background_fetch,
             launch_at_login,
@@ -180,6 +183,7 @@ impl Settings {
         self.default_editor = default_editor;
         self.default_terminal = default_terminal;
         self.terminal_opens_in = terminal_opens_in;
+        self.custom_commands = custom_commands;
         self.show_menu_bar_icon = show_menu_bar_icon;
         self.background_fetch = background_fetch;
         self.launch_at_login = launch_at_login;
@@ -229,7 +233,43 @@ pub struct CustomCommand {
     pub label: String,
     /// `{path}` is replaced with the shell-quoted worktree path.
     pub template: String,
+    #[serde(default = "yes")]
     pub run_in_terminal: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+const CUSTOM_ID_PREFIX: &str = "custom:";
+
+impl CustomCommand {
+    /// Key stored as `default_editor` when this is the default.
+    pub fn id(&self) -> String {
+        custom_id(&self.label)
+    }
+
+    /// Why it can't be saved alongside `others`, if it can't. Expects trimmed fields.
+    pub fn problem(&self, others: &[CustomCommand]) -> Option<&'static str> {
+        if self.label.is_empty() {
+            Some("Give the command a name.")
+        } else if others.iter().any(|c| c.label == self.label) {
+            Some("Another command already has this name.")
+        } else if !self.template.contains("{path}") {
+            Some("The command needs {path} where the worktree path goes.")
+        } else {
+            None
+        }
+    }
+}
+
+pub(crate) fn custom_id(label: &str) -> String {
+    format!("{CUSTOM_ID_PREFIX}{label}")
+}
+
+/// The label in a custom command's id.
+pub(crate) fn custom_label(id: &str) -> Option<&str> {
+    id.strip_prefix(CUSTOM_ID_PREFIX)
 }
 
 /// Settings JSON on disk.

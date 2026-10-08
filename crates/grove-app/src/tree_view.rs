@@ -10,11 +10,11 @@ use gpui_kit::{
     Styled, TestSupportExt, Window, div, px, rgb,
 };
 use grove_core::{
-    Badge, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind, TargetKind, Tree,
-    navigate,
+    Badge, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind, Tree, navigate,
 };
 
 use crate::icons::{self, icon};
+use crate::launcher::Choice;
 use crate::theme;
 
 /// A prefix folder was collapsed or expanded; the owner persists it.
@@ -31,8 +31,8 @@ pub struct OpenRequested {
     pub path: PathBuf,
     pub presence: Presence,
     pub role: Role,
-    /// One-off app from a ▾ menu; `None` uses the default for `role`.
-    pub target: Option<TargetKind>,
+    /// One-off app or custom command from a ▾ menu; `None` uses the default for `role`.
+    pub target: Option<Choice>,
 }
 
 pub struct TreeView {
