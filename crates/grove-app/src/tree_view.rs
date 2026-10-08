@@ -2,12 +2,13 @@
 
 use std::path::PathBuf;
 
+use gpui_kit::base::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    KeyDownEvent, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Styled, TestSupportExt, Window, div, px, rgb,
+    KeyDownEvent, ParentElement, Render, Role as A11yRole, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, TestSupportExt, Window, div, px, rgb,
 };
 use grove_core::{
     Badge, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind, Tree, navigate,
@@ -60,7 +61,8 @@ impl TreeView {
             collapsed: Vec::new(),
             tree: Tree::default(),
             selected: None,
-            focus: cx.focus_handle(),
+            // A tab stop so Tab comes back here from the details pane and top bar.
+            focus: cx.focus_handle().tab_stop(true),
             scroll: ScrollHandle::new(),
         }
     }
@@ -272,6 +274,13 @@ impl TreeView {
         }
         let selected = self.selected.as_ref() == Some(&row.id);
         let is_wt = matches!(row.kind, RowKind::Worktree { .. });
+        let unavailable = matches!(
+            row.kind,
+            RowKind::Worktree {
+                presence: Presence::Unavailable,
+                ..
+            }
+        );
         let bg = match (selected, is_wt) {
             (true, _) => Some(theme::selected()),
             (false, true) => Some(theme::worktree_row()),
@@ -290,8 +299,16 @@ impl TreeView {
             .font_family(theme::MONO)
             .text_size(px(13.))
             .cursor_pointer()
+            .relative()
             .when_some(bg, |d, bg| d.bg(bg))
-            .when(!selected, |d| d.hover(|s| s.bg(theme::raised())))
+            .when_else(
+                selected,
+                |d| d.child(theme::selection_bar()),
+                |d| d.hover(|s| s.bg(theme::raised())),
+            )
+            .role(A11yRole::TreeItem)
+            .aria_label(row_label(row))
+            .aria_selected(selected)
             .on_click(cx.listener(move |this, _, window, cx| this.on_row_click(ix, window, cx)));
 
         match &row.kind {
@@ -300,6 +317,7 @@ impl TreeView {
                 count,
                 collapsed,
             } => base
+                .aria_expanded(!collapsed)
                 .text_color(theme::muted())
                 .child(
                     icon(
@@ -329,14 +347,22 @@ impl TreeView {
                 badges,
                 ..
             } => base
-                .when(*presence == Presence::Unavailable, |d| d.opacity(0.5))
-                .text_color(theme::worktree_text())
+                // Dimmed by color, not opacity, so its words stay readable.
+                .text_color(if unavailable {
+                    theme::faint()
+                } else {
+                    theme::worktree_text()
+                })
                 .child(
                     icon(icons::ELBOW, 14.)
                         .ml(px(-4.))
                         .text_color(theme::connector()),
                 )
-                .child(icon(icons::FOLDER, 15.).text_color(theme::link()))
+                .child(icon(icons::FOLDER, 15.).text_color(if unavailable {
+                    theme::faint()
+                } else {
+                    theme::link()
+                }))
                 .child(
                     div()
                         .flex()
@@ -390,19 +416,14 @@ impl TreeView {
             None => format!("{label} (↵)").into(),
             Some(reason) => format!("Can't open: {reason}").into(),
         };
-        div()
-            .id(("open-editor", ix))
-            .flex_none()
+        inline_button(("open-editor", ix), presence)
             .h(px(24.))
             .px(px(8.))
-            .flex()
-            .items_center()
             .gap(px(6.))
-            .rounded(px(6.))
-            .border_1()
-            .border_color(theme::border_strong())
             .font_family(theme::SANS)
             .text_size(px(12.))
+            .accessibility_label(label.clone())
+            .aria_keyshortcuts("Enter")
             .child(icon(icons::EDITOR, 13.).text_color(if openable {
                 theme::link()
             } else {
@@ -412,55 +433,73 @@ impl TreeView {
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .when_else(
                 openable,
-                |d| {
-                    d.bg(theme::raised())
-                        .text_color(theme::text())
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme::border()))
-                        .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Editor, cx)))
-                },
+                |d| d.text_color(theme::text()),
                 |d| d.text_color(theme::faint()),
             )
-            .test_support()
+            .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Editor, cx)))
             .into_any_element()
     }
-}
 
-impl TreeView {
     /// Inline icon button "Open in <terminal>" next to the editor button.
     fn terminal_button(&self, ix: usize, presence: Presence, cx: &mut Context<Self>) -> AnyElement {
         let openable = presence.is_openable();
+        let label: SharedString = match crate::launcher::target_name(Role::Terminal, cx) {
+            Some(name) => format!("Open in {name}").into(),
+            None => "Open in terminal".into(),
+        };
         let tip: SharedString = match presence.reason() {
-            None => match crate::launcher::target_name(Role::Terminal, cx) {
-                Some(name) => format!("Open in {name} (⌘↵)").into(),
-                None => "Open in terminal (⌘↵)".into(),
-            },
+            None => format!("{label} (⌘↵)").into(),
             Some(reason) => format!("Can't open: {reason}").into(),
         };
-        div()
-            .id(("open-terminal", ix))
-            .flex_none()
+        inline_button(("open-terminal", ix), presence)
             .size(px(24.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.))
-            .border_1()
-            .border_color(theme::border_strong())
+            .accessibility_label(label)
+            .aria_keyshortcuts("Command+Enter")
             .child(icon(icons::TERMINAL, 13.).text_color(if openable {
                 theme::link()
             } else {
                 theme::faint()
             }))
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-            .when(openable, |d| {
-                d.bg(theme::raised())
-                    .cursor_pointer()
-                    .hover(|s| s.bg(theme::border()))
-                    .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Terminal, cx)))
-            })
-            .test_support()
+            .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Terminal, cx)))
             .into_any_element()
+    }
+}
+
+/// A row's open button. Not a tab stop: Enter / ⌘Enter on the focused tree do the same.
+fn inline_button(id: impl Into<gpui_kit::ElementId>, presence: Presence) -> Button {
+    let openable = presence.is_openable();
+    Button::new(id)
+        .focusable(false)
+        .disabled(!openable)
+        .flex_none()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(theme::border_strong())
+        .when_some(presence.reason(), |b, reason| b.aria_description(reason))
+        .when(openable, |b| {
+            b.bg(theme::raised())
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::border()))
+        })
+}
+
+/// What a screen reader says for `row`.
+fn row_label(row: &Row) -> String {
+    match &row.kind {
+        RowKind::Folder { prefix, count, .. } => format!("{prefix}, folder of {count} branches"),
+        RowKind::Branch { label, .. } => format!("{label}, branch"),
+        RowKind::Worktree {
+            display, badges, ..
+        } => {
+            let mut s = format!("{}{}, worktree", display.parent, display.name);
+            for b in badges {
+                s.push_str(", ");
+                s.push_str(&b.description());
+            }
+            s
+        }
+        RowKind::DetachedSection => "Detached worktrees".into(),
     }
 }
 
@@ -551,6 +590,7 @@ impl Render for TreeView {
             .map(|e| e.to_string());
         div()
             .id("tree-view")
+            .test_support()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .flex_1()
@@ -591,6 +631,7 @@ impl Render for TreeView {
             .child(
                 div()
                     .id("tree-rows")
+                    .role(A11yRole::Tree)
                     .track_scroll(&self.scroll)
                     .flex_1()
                     .overflow_y_scroll()

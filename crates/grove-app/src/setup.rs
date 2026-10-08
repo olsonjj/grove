@@ -5,9 +5,9 @@ use std::path::PathBuf;
 
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext, Bounds, ClickEvent, Context, FontWeight, Global,
-    InteractiveElement, IntoElement, ParentElement, PathPromptOptions, Render,
-    StatefulInteractiveElement, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
+    AnyWindowHandle, App, AppContext, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight,
+    Global, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions,
+    Render, StatefulInteractiveElement, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
     WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::git::{self, GitError};
@@ -56,6 +56,7 @@ fn boot() -> Boot {
         },
         folder: None,
         scanned: None,
+        focus: None,
     };
     if let Err(e) = check_git() {
         setup.stage = Stage::GitProblem(e);
@@ -160,9 +161,26 @@ pub struct Setup {
     folder: Option<PathBuf>,
     /// Scan of `folder`; `None` while scanning.
     scanned: Option<Snapshot>,
+    /// Set when the window opens, so keys land here before anything is tabbed to.
+    focus: Option<FocusHandle>,
 }
 
 impl Setup {
+    fn view(mut self, window: &mut Window, cx: &mut App) -> Entity<Self> {
+        cx.new(|cx| {
+            let focus = cx.focus_handle();
+            window.focus(&focus, cx);
+            self.focus = Some(focus);
+            self
+        })
+    }
+
+    fn on_key_down(&mut self, ev: &KeyDownEvent, window: &mut Window, _: &mut Context<Self>) {
+        if ev.keystroke.key == "escape" && matches!(self.mode, Mode::Change(_)) {
+            window.remove_window();
+        }
+    }
+
     fn choose_folder(&mut self, _: &ClickEvent, _: &mut Window, cx: &mut Context<Self>) {
         self.prompt(cx);
     }
@@ -369,7 +387,7 @@ impl Setup {
                                         .justify_between()
                                         .gap(px(8.))
                                         .rounded(px(8.))
-                                        .bg(rgb_card())
+                                        .bg(theme::card())
                                         .child(
                                             theme::mono(r.display_name.clone())
                                                 .min_w_0()
@@ -544,15 +562,14 @@ impl Render for Setup {
             _ => self.render_git_problem(cx).into_any_element(),
         };
         div()
+            .id("setup")
+            .when_some(self.focus.as_ref(), |d, f| d.track_focus(f))
+            .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
             .bg(theme::panel())
             .text_color(theme::text())
             .child(body)
     }
-}
-
-fn rgb_card() -> gpui_kit::Rgba {
-    gpui_kit::rgb(0x1b1f26)
 }
 
 fn header(step: &'static str) -> impl IntoElement {
@@ -616,15 +633,14 @@ pub fn change_code_dir(done: impl FnOnce(Snapshot, &mut App) + Send + 'static, c
         mode: Mode::Change(Some(done)),
         folder: None,
         scanned: None,
+        focus: None,
     };
     let options = window_options("Choose Code Folder", cx);
     cx.activate(true);
-    match gpui_kit::open_window(options, cx, |_, cx| {
-        cx.new(|cx| {
-            let mut setup = setup;
-            setup.prompt(cx);
-            setup
-        })
+    match gpui_kit::open_window(options, cx, |window, cx| {
+        let setup = setup.view(window, cx);
+        setup.update(cx, |setup, cx| setup.prompt(cx));
+        setup
     }) {
         Ok((handle, setup)) => cx.set_global(Changing(handle, setup.downgrade())),
         Err(e) => eprintln!("[grove] code folder window: {e:#}"),
@@ -661,8 +677,118 @@ fn window_options(title: &'static str, cx: &App) -> WindowOptions {
 fn open(setup: Setup, cx: &mut App) {
     let options = window_options("Grove Setup", cx);
     cx.activate(true);
-    if let Err(e) = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| setup)) {
+    if let Err(e) = gpui_kit::open_window(options, cx, |window, cx| setup.view(window, cx)) {
         eprintln!("[grove] setup window: {e:#}");
         shell::quit(cx);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use gpui_kit::TestAppContext;
+    use gpui_kit::test::TestWindowExt;
+    use grove_core::Snapshot;
+
+    use super::*;
+    use crate::test_support::{canned, tab_to};
+
+    fn change(cx: &mut TestAppContext, done: ChangeDone) -> AnyWindowHandle {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let setup = Setup {
+                stage: Stage::Choose,
+                mode: Mode::Change(Some(done)),
+                folder: Some("/c".into()),
+                scanned: Some(Snapshot {
+                    code_dir: "/c".into(),
+                    code_dir_exists: true,
+                    repos: vec![canned()],
+                    last_fetch: None,
+                }),
+                focus: None,
+            };
+            gpui_kit::open_window(
+                window_options("Choose Code Folder", cx),
+                cx,
+                |window, cx| setup.view(window, cx),
+            )
+            .unwrap()
+            .0
+        })
+    }
+
+    fn first_run(cx: &mut TestAppContext, stage: Stage) -> AnyWindowHandle {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let settings_file = SettingsFile::new(tmp.path().join("settings.json"));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let setup = Setup {
+                stage,
+                mode: Mode::FirstRun {
+                    settings_file,
+                    settings: Settings::default(),
+                },
+                folder: Some("/c".into()),
+                scanned: Some(Snapshot {
+                    code_dir: "/c".into(),
+                    code_dir_exists: true,
+                    repos: vec![canned()],
+                    last_fetch: None,
+                }),
+                focus: None,
+            };
+            gpui_kit::open_window(window_options("Grove Setup", cx), cx, |window, cx| {
+                setup.view(window, cx)
+            })
+            .unwrap()
+            .0
+        })
+    }
+
+    #[gpui_kit::test]
+    fn first_run_buttons_are_reachable_by_tab(cx: &mut TestAppContext) {
+        let w = first_run(cx, Stage::Choose);
+        tab_to(cx, w, "choose");
+        tab_to(cx, w, "continue");
+        let w = first_run(
+            cx,
+            Stage::GitProblem(GitError::NotFound {
+                detail: "no git".into(),
+            }),
+        );
+        tab_to(cx, w, "quit");
+        tab_to(cx, w, "recheck");
+    }
+
+    #[gpui_kit::test]
+    fn change_folder_works_from_the_keyboard(cx: &mut TestAppContext) {
+        let chosen = Arc::new(Mutex::new(None));
+        let sink = chosen.clone();
+        let w = change(
+            cx,
+            Box::new(move |s, _| *sink.lock().unwrap() = Some(s.code_dir)),
+        );
+        tab_to(cx, w, "choose");
+        tab_to(cx, w, "cancel");
+        tab_to(cx, w, "continue");
+        cx.update_window(w, |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(*chosen.lock().unwrap(), Some("/c".into()));
+        assert!(!cx.update(|cx| cx.windows().contains(&w)));
+    }
+
+    #[gpui_kit::test]
+    fn escape_cancels_change_folder(cx: &mut TestAppContext) {
+        let w = change(cx, Box::new(|_, _| panic!("cancelled")));
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("escape", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| cx.windows().contains(&w)));
     }
 }

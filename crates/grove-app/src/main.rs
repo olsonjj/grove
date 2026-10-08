@@ -35,6 +35,8 @@ fn main() {
     app.on_reopen(shell::reopen);
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);
+        theme::init(cx);
+        details_view::init(cx);
         macos::use_dark_appearance();
         shell::init(cx);
         setup::launch(cx);

@@ -458,8 +458,9 @@ impl SettingsWindow {
                         ("settings-command-remove", ix),
                         "Remove",
                         ButtonKind::Secondary,
-                        Some(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.remove_command(ix, cx)
+                        Some(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                            this.remove_command(ix, cx);
+                            window.focus(&this.focus, cx);
                         })),
                     ))
                 },
@@ -550,8 +551,9 @@ impl SettingsWindow {
                         "settings-command-discard",
                         "Discard",
                         ButtonKind::Secondary,
-                        Some(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        Some(cx.listener(|this, _: &ClickEvent, window, cx| {
                             this.form = None;
+                            window.focus(&this.focus, cx);
                             cx.notify();
                         })),
                     ))
@@ -559,8 +561,10 @@ impl SettingsWindow {
                         "settings-command-done",
                         "Done",
                         ButtonKind::Primary,
-                        Some(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            this.finish_form(cx);
+                        Some(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            if this.finish_form(cx) {
+                                window.focus(&this.focus, cx);
+                            }
                         })),
                     )),
             )
@@ -593,7 +597,12 @@ impl SettingsWindow {
                 .cursor_pointer()
                 .when_else(
                     on,
-                    |b| b.bg(theme::selected()).text_color(theme::text()),
+                    |b| {
+                        b.bg(theme::selected())
+                            .border_color(theme::text_soft())
+                            .text_color(theme::text())
+                            .font_weight(FontWeight::SEMIBOLD)
+                    },
                     |b| {
                         b.text_color(theme::muted())
                             .hover(|s| s.bg(theme::border()))
@@ -945,7 +954,7 @@ mod tests {
 
     use super::*;
     use crate::main_window::Status;
-    use crate::test_support::{canned, fake_launcher, set_library, settings_file};
+    use crate::test_support::{canned, fake_launcher, set_library, settings_file, tab_to};
 
     /// Grove past setup, with the fake launcher's apps detected.
     fn running(cx: &mut TestAppContext, file: &SettingsFile) {
@@ -1512,5 +1521,41 @@ mod tests {
                 .unwrap()
                 .contains("Grove.app")
         );
+    }
+
+    #[gpui_kit::test]
+    fn every_setting_is_reachable_by_keyboard(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let w = open_settings(cx);
+        let press = |cx: &mut TestAppContext, key: &str| {
+            cx.update_window(w, |_, window, cx| window.press(key, cx))
+                .unwrap();
+            cx.run_until_parked();
+        };
+        for (id, key) in [
+            (ElementId::from(("settings-editor", 1usize)), "space"),
+            (("settings-terminal", 1usize).into(), "enter"),
+            ("settings-opens-window".into(), "space"),
+            ("settings-background-fetch".into(), "space"),
+            ("settings-menu-bar-icon".into(), "enter"),
+            ("settings-command-add".into(), "enter"),
+            ("settings-command-discard".into(), "enter"),
+            ("settings-change-folder".into(), "tab"),
+            ("settings-cancel".into(), "tab"),
+            ("settings-save".into(), "enter"),
+        ] {
+            tab_to(cx, w, id);
+            press(cx, key);
+        }
+        assert!(!is_open(cx, w));
+        let s = settings(cx);
+        assert_eq!(s.default_editor.as_deref(), Some("zed"));
+        assert_eq!(s.default_terminal.as_deref(), Some("warp"));
+        assert_eq!(s.terminal_opens_in, Some(TerminalOpensIn::Window));
+        assert!(s.background_fetch);
+        assert!(!s.show_menu_bar_icon);
+        assert!(s.custom_commands.is_empty());
     }
 }

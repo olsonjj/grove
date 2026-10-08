@@ -1,11 +1,12 @@
 //! Right pane: everything about the tree's selection, plus open/copy/reveal actions.
 
+use gpui_kit::base::Button;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AppContext, ClipboardItem, Context, Entity, EventEmitter, FontWeight,
-    InteractiveElement, IntoElement, ParentElement, Render, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, anchored, deferred,
-    div, px,
+    AnyElement, App, AppContext, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    FontWeight, InteractiveElement, IntoElement, KeyBinding, KeyDownEvent, ParentElement, Render,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window,
+    anchored, deferred, div, px,
 };
 use grove_core::{
     ChangedFile, Commit, Details, Role, Worktree, cd_command, recent_commits, relative_time,
@@ -27,12 +28,30 @@ pub struct Notice {
     pub error: bool,
 }
 
+gpui_kit::actions!(details, [LeaveMenu, LeaveMenuBack]);
+
+const MENU_CONTEXT: &str = "OpenWithMenu";
+
+/// Tab out of an open ▾ menu closes it; this context outranks the window's own Tab.
+pub fn init(cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new("tab", LeaveMenu, Some(MENU_CONTEXT)),
+        KeyBinding::new("shift-tab", LeaveMenuBack, Some(MENU_CONTEXT)),
+    ]);
+}
+
 pub struct DetailsView {
     tree: Entity<TreeView>,
     details: Option<Details>,
     commits: Commits,
     /// Which ▾ menu is open.
     menu: Option<Role>,
+    /// The ▾ buttons (editor, terminal), for focus to return to.
+    carets: [FocusHandle; 2],
+    /// The open menu's items, for arrow keys; grown as needed.
+    items: Vec<FocusHandle>,
+    /// The open menu itself, focused when it has no items so Esc still closes it.
+    menu_focus: FocusHandle,
     _sub: Subscription,
 }
 
@@ -58,6 +77,9 @@ impl DetailsView {
             details: None,
             commits: Commits::default(),
             menu: None,
+            carets: [cx.focus_handle(), cx.focus_handle()],
+            items: Vec::new(),
+            menu_focus: cx.focus_handle(),
             _sub: sub,
         };
         this.sync(cx);
@@ -138,7 +160,13 @@ impl DetailsView {
         .detach();
     }
 
-    fn open(&mut self, role: Role, target: Option<Choice>, cx: &mut Context<Self>) {
+    fn open(
+        &mut self,
+        role: Role,
+        target: Option<Choice>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.menu = None;
         let Some(wt) = self.worktree() else {
             return;
@@ -152,10 +180,56 @@ impl DetailsView {
         };
         // A default that's gone falls back to the ▾ menu (the status bar says why).
         if !pick && launcher::ready(cx) && launcher::target_name(role, cx).is_none() {
-            self.menu = Some(role);
+            self.open_menu(role, window, cx);
+        } else if pick {
+            window.focus(&self.carets[role_ix(role)], cx);
         }
         cx.emit(req);
         cx.notify();
+    }
+
+    /// Opens `role`'s ▾ menu with its first item focused, so arrows and Enter work at once.
+    fn open_menu(&mut self, role: Role, window: &mut Window, cx: &mut Context<Self>) {
+        self.menu = Some(role);
+        let count = launcher::choices(role, cx).len();
+        while self.items.len() < count {
+            self.items.push(cx.focus_handle());
+        }
+        let first = if count == 0 {
+            &self.menu_focus
+        } else {
+            &self.items[0]
+        };
+        window.focus(first, cx);
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(role) = self.menu.take() {
+            window.focus(&self.carets[role_ix(role)], cx);
+            cx.notify();
+        }
+    }
+
+    fn on_menu_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self
+            .menu
+            .map_or(0, |role| launcher::choices(role, cx).len());
+        let at = self.items.iter().position(|h| h.is_focused(window));
+        let next = match (ev.keystroke.key.as_str(), at) {
+            ("escape", _) => {
+                self.close_menu(window, cx);
+                return cx.stop_propagation();
+            }
+            ("down", Some(i)) => (i + 1).min(count.saturating_sub(1)),
+            ("up", Some(i)) => i.saturating_sub(1),
+            ("down" | "up", None) => 0,
+            _ => return,
+        };
+        if next < count {
+            window.focus(&self.items[next], cx);
+        }
+        cx.stop_propagation();
     }
 
     fn notice(&self, text: String, error: bool, cx: &mut Context<Self>) {
@@ -194,6 +268,13 @@ impl DetailsView {
     }
 }
 
+const fn role_ix(role: Role) -> usize {
+    match role {
+        Role::Editor => 0,
+        Role::Terminal => 1,
+    }
+}
+
 const fn role_key(role: Role) -> &'static str {
     match role {
         Role::Editor => "editor",
@@ -216,42 +297,49 @@ impl DetailsView {
             (false, true) => (theme::raised(), theme::text(), theme::border()),
         };
         let part = |id: SharedString| {
-            div()
-                .id(id)
+            Button::new(id)
+                .disabled(!openable)
                 .h(px(32.))
-                .flex()
-                .items_center()
                 .bg(bg)
                 .text_color(fg)
-                .when(!primary || !openable, |d| {
-                    d.border_1().border_color(theme::border_strong())
-                })
+                .border_1()
+                .when_else(
+                    !primary || !openable,
+                    |b| b.border_color(theme::border_strong()),
+                    |b| b.border_color(gpui_kit::transparent_black()),
+                )
+                .focus_visible(|s| s.border_color(theme::link()))
                 .when(openable, |d| d.cursor_pointer().hover(|s| s.bg(hover)))
         };
+        let menu_open = openable && self.menu == Some(role);
         let main = part(format!("details-open-{key}").into())
             .flex_1()
             .min_w_0()
+            .justify_start()
             .gap(px(8.))
             .px(px(12.))
             .rounded_l(px(8.))
+            .aria_keyshortcuts(if primary { "Enter" } else { "Command+Enter" })
             .when(primary, |d| d.font_weight(FontWeight::SEMIBOLD))
-            .child(icon(
-                if primary {
-                    icons::EDITOR
-                } else {
-                    icons::TERMINAL
-                },
-                14.,
-            ))
+            .child(
+                icon(
+                    if primary {
+                        icons::EDITOR
+                    } else {
+                        icons::TERMINAL
+                    },
+                    14.,
+                )
+                .text_color(fg),
+            )
             .child(div().min_w_0().truncate().child(label))
-            .when(openable, |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| this.open(role, None, cx)))
-            })
-            .test_support();
+            .on_click(cx.listener(move |this, _, window, cx| this.open(role, None, window, cx)));
         let caret = part(format!("details-menu-{key}").into())
+            .track_focus(&self.carets[role_ix(role)])
+            .accessibility_label(format!("Open in another {key}"))
+            .aria_expanded(menu_open)
             .flex_none()
             .w(px(30.))
-            .justify_center()
             .rounded_r(px(8.))
             .border_l_1()
             .border_color(if primary && openable {
@@ -259,21 +347,20 @@ impl DetailsView {
             } else {
                 theme::border_strong()
             })
-            .child(icon(icons::CHEVRON_DOWN, 13.))
-            .when(openable, |d| {
-                d.on_click(cx.listener(move |this, _, _, cx| {
-                    this.menu = (this.menu != Some(role)).then_some(role);
+            .child(icon(icons::CHEVRON_DOWN, 13.).text_color(fg))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if this.menu == Some(role) {
+                    this.menu = None;
                     cx.notify();
-                }))
-            })
-            .test_support();
+                } else {
+                    this.open_menu(role, window, cx);
+                }
+            }));
         div()
             .flex()
             .flex_col()
             .child(div().flex().child(main).child(caret))
-            .when(openable && self.menu == Some(role), |d| {
-                d.child(self.menu_list(role, cx))
-            })
+            .when(menu_open, |d| d.child(self.menu_list(role, cx)))
             .into_any_element()
     }
 
@@ -281,41 +368,58 @@ impl DetailsView {
         let key = role_key(role);
         let choices = launcher::choices(role, cx);
         let empty = choices.is_empty();
-        let items =
-            choices
-                .into_iter()
-                .enumerate()
-                .map(|(i, (choice, is_default))| {
-                    div()
-                        .id((SharedString::from(format!("{key}-choice")), i))
-                        .h(px(28.))
-                        .px(px(10.))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(8.))
-                        .rounded(px(5.))
-                        .cursor_pointer()
-                        .text_color(theme::text())
-                        .hover(|s| s.bg(theme::selected()))
-                        .child(choice.name.clone())
-                        .when(is_default, |d| {
-                            d.child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(theme::faint())
-                                    .child("default"),
-                            )
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open(role, Some(choice.clone()), cx)
-                        }))
-                        .test_support()
-                });
+        let items = choices
+            .into_iter()
+            .enumerate()
+            .map(|(i, (choice, is_default))| {
+                Button::new((SharedString::from(format!("{key}-choice")), i))
+                    .when_some(self.items.get(i), |b, h| b.track_focus(h))
+                    .tab_stop(false)
+                    .accessibility_label(if is_default {
+                        format!("{}, default", choice.name)
+                    } else {
+                        choice.name.clone()
+                    })
+                    .h(px(28.))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(8.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .text_color(theme::text())
+                    .hover(|s| s.bg(theme::selected()))
+                    .focus(|s| s.bg(theme::selected()))
+                    .child(choice.name.clone())
+                    .when(is_default, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(theme::faint())
+                                .child("default"),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open(role, Some(choice.clone()), window, cx)
+                    }))
+            });
         deferred(
             anchored().snap_to_window().child(
                 div()
                     .id(SharedString::from(format!("{key}-menu")))
+                    .role(gpui_kit::Role::Menu)
+                    .track_focus(&self.menu_focus)
+                    .key_context(MENU_CONTEXT)
+                    .on_key_down(cx.listener(Self::on_menu_key))
+                    .on_action(cx.listener(|this, _: &LeaveMenu, window, cx| {
+                        this.close_menu(window, cx);
+                        window.focus_next(cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &LeaveMenuBack, window, cx| {
+                        this.close_menu(window, cx);
+                        window.focus_prev(cx);
+                    }))
                     .mt(px(4.))
                     .min_w(px(200.))
                     .p(px(4.))
@@ -393,16 +497,14 @@ fn link_button(
     label: &'static str,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(id)
+    Button::new(id)
         .flex_none()
         .h(px(26.))
         .px(px(10.))
-        .flex()
-        .items_center()
         .rounded(px(6.))
         .border_1()
         .border_color(theme::border_strong())
+        .focus_visible(|s| s.border_color(theme::link()))
         .bg(theme::raised())
         .text_size(px(12.))
         .text_color(theme::text())
@@ -410,7 +512,6 @@ fn link_button(
         .hover(|s| s.bg(theme::border()))
         .child(label)
         .on_click(on_click)
-        .test_support()
 }
 
 fn file_row(i: usize, f: &ChangedFile) -> impl IntoElement {

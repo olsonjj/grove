@@ -19,7 +19,7 @@ use crate::icons::{self, icon};
 use crate::launcher::{self, Notice};
 use crate::main_window::tilde;
 use crate::shell::{self, REOPEN_GUARD};
-use crate::windows::{close_on_deactivate, panel_options};
+use crate::windows::{self, close_on_deactivate, panel_options};
 use crate::{macos, theme};
 
 const SIZE: (f32, f32) = (640., 440.);
@@ -54,6 +54,11 @@ pub fn toggle(at: Instant, cx: &mut App) -> bool {
         return false;
     }
     let window = open(cx);
+    // open_window draws the first frame before returning.
+    eprintln!(
+        "[grove] switcher: hotkey → first frame {:.1} ms",
+        windows::ms(at)
+    );
     cx.set_global(Current {
         window,
         ..Default::default()
@@ -414,8 +419,17 @@ impl Switcher {
             .badges
             .iter()
             .filter(|b| matches!(b, Badge::Changed(_) | Badge::Missing | Badge::Unavailable));
+        let dim = hit.presence == Presence::Unavailable;
+        let mut label = format!("{title}, {}, {}", hit.repo, path.full());
+        for b in &hit.badges {
+            label.push_str(", ");
+            label.push_str(&b.description());
+        }
         div()
             .id(("switcher-row", ix))
+            .role(gpui_kit::Role::ListBoxOption)
+            .aria_label(label)
+            .aria_selected(selected)
             .flex_none()
             .min_h(px(48.))
             .px(px(12.))
@@ -425,14 +439,18 @@ impl Switcher {
             .gap(px(12.))
             .rounded(px(8.))
             .cursor_pointer()
+            .relative()
             .when_else(
                 selected,
-                |d| d.bg(theme::selected()),
+                |d| d.bg(theme::selected()).child(theme::selection_bar()),
                 |d| d.hover(|s| s.bg(theme::raised())),
             )
-            .when(hit.presence == Presence::Unavailable, |d| d.opacity(0.5))
             .on_click(cx.listener(move |this, _, _, cx| this.on_row_click(ix, cx)))
-            .child(icon(icons::FOLDER, 16.).text_color(theme::link()))
+            .child(icon(icons::FOLDER, 16.).text_color(if dim {
+                theme::faint()
+            } else {
+                theme::link()
+            }))
             .child(
                 div()
                     .flex_1()
@@ -447,7 +465,7 @@ impl Switcher {
                             .whitespace_nowrap()
                             .font_family(theme::MONO)
                             .text_size(px(14.))
-                            .text_color(theme::text())
+                            .text_color(if dim { theme::faint() } else { theme::text() })
                             .child(
                                 div()
                                     .min_w_0()
@@ -551,6 +569,8 @@ impl Switcher {
         });
         div()
             .id("switcher-rows")
+            .role(gpui_kit::Role::ListBox)
+            .aria_label("Worktrees")
             .track_scroll(&self.scroll)
             .flex_1()
             .min_h_0()
@@ -566,10 +586,14 @@ impl Switcher {
         let key = |keys: &'static str, label: String| {
             div()
                 .flex()
+                .items_center()
                 .gap(px(6.))
                 .child(
+                    // System font: the mono face lacks ⌘/⌥, and its fallback sits off-baseline.
                     div()
-                        .font_family(theme::MONO)
+                        .min_w(px(20.))
+                        .flex()
+                        .justify_center()
                         .text_color(theme::text())
                         .child(keys),
                 )

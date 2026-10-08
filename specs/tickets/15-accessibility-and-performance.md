@@ -6,10 +6,10 @@
 
 **Status:** ready-for-agent
 
-- [ ] Every action reachable by keyboard on every surface
-- [ ] All icon-only buttons have accessible labels
-- [ ] Text meets 4.5:1 contrast in the dark theme
-- [ ] No state shown by color alone
-- [ ] Switcher appears within 100 ms of ⌥⌘K
-- [ ] Idle CPU near zero with all repos watched
-- [ ] Manual checklist written and passed: hotkeys from other apps, popover placement on multiple displays (secondary left/right, mixed DPI), popover refresh-on-show, login item, Automation fallback, no network traffic beyond fetch
+- [x] Every action reachable by keyboard on every surface
+- [x] All icon-only buttons have accessible labels
+- [x] Text meets 4.5:1 contrast in the dark theme
+- [x] No state shown by color alone
+- [x] Switcher appears within 100 ms of ⌥⌘K
+- [x] Idle CPU near zero with all repos watched
+- [ ] Manual checklist written and passed: hotkeys from other apps, popover placement on multiple displays (secondary left/right, mixed DPI), popover refresh-on-show, login item, Automation fallback, no network traffic beyond fetch — written (`specs/manual-checklist.md`); hardware items pending human run

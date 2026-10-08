@@ -393,6 +393,7 @@ impl Popover {
         );
         div()
             .id(("popover-row", ix))
+            .role(gpui_kit::Role::ListItem)
             .aria_label(a11y)
             .flex()
             .items_center()
@@ -402,7 +403,6 @@ impl Popover {
             .py(px(6.))
             .rounded(px(8.))
             .when(row.last_opened, |d| d.bg(theme::selected()))
-            .when(row.presence == Presence::Unavailable, |d| d.opacity(0.5))
             .child(
                 div()
                     .flex_1()
@@ -420,7 +420,11 @@ impl Popover {
                                     .min_w_0()
                                     .truncate()
                                     .text_size(px(13.))
-                                    .text_color(theme::text()),
+                                    .text_color(if row.presence == Presence::Unavailable {
+                                        theme::faint()
+                                    } else {
+                                        theme::text()
+                                    }),
                             )
                             .when(row.last_opened, |d| {
                                 d.child(
@@ -500,6 +504,8 @@ impl Popover {
         }
         div()
             .id("popover-rows")
+            .role(gpui_kit::Role::List)
+            .aria_label("Worktrees")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -612,7 +618,8 @@ mod tests {
     use crate::main_window::Status;
     use crate::shell::Library;
     use crate::test_support::{
-        canned, code, fake_launcher, fake_presence, set_library, settings_file, terminal_window,
+        canned, code, fake_launcher, fake_presence, set_library, settings_file, tab_to,
+        terminal_window,
     };
 
     fn open_popover(
@@ -953,6 +960,27 @@ mod tests {
         let (w, _) = open_popover(cx, &file, vec![canned()]);
         keys(cx, w, &["escape"]);
         assert!(!is_open(cx, w));
+    }
+
+    #[gpui_kit::test]
+    fn tab_reaches_header_rows_and_footer_and_wraps(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, _) = open_popover(cx, &file, vec![canned()]);
+        let ids: [ElementId; 8] = [
+            "popover-search".into(),
+            "popover-fetch".into(),
+            ("popover-editor", API_X).into(),
+            ("popover-terminal", API_X).into(),
+            "popover-open-grove".into(),
+            "popover-settings".into(),
+            "popover-quit".into(),
+            "popover-search".into(),
+        ];
+        for id in ids {
+            tab_to(cx, w, id);
+        }
     }
 
     #[gpui_kit::test]

@@ -3,7 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use gpui_kit::{App, TestAppContext};
+use gpui_kit::test::TestWindowExt;
+use gpui_kit::{AnyWindowHandle, App, AppContext, ElementId, TestAppContext};
 use grove_core::{
     Editor, LaunchError, LaunchPlan, OpenTarget, Outcome, Presence, RepoRef, RepoSnapshot,
     Settings, SettingsFile, Snapshot, SnapshotStore, TargetKind, Terminal, Worktree,
@@ -148,4 +149,21 @@ pub fn terminal_window(launch: &[String], path: &str) {
         !launch[1].contains("keystroke"),
         "Terminal.app defaults to windows"
     );
+}
+
+/// Presses Tab until `id` has keyboard focus; panics if it never gets it.
+pub fn tab_to(cx: &mut TestAppContext, w: AnyWindowHandle, id: impl Into<ElementId>) {
+    let id = id.into();
+    cx.update_window(w, |_, window, cx| {
+        window.render_frame(cx);
+        for _ in 0..60 {
+            if window.try_find(id.clone()).and_then(|e| e.focused()) == Some(true) {
+                return;
+            }
+            window.press("tab", cx);
+        }
+        panic!("Tab never reached {id:?}");
+    })
+    .unwrap();
+    cx.run_until_parked();
 }

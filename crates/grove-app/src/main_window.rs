@@ -6,8 +6,8 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, Bounds, Context, Entity, Focusable, FontWeight,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render,
-    StatefulInteractiveElement, Styled, Subscription, TestSupportExt, TitlebarOptions, Window,
-    WindowBounds, WindowKind, WindowOptions, div, px, size,
+    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, Window, WindowBounds,
+    WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::RepoSnapshot;
 
@@ -230,17 +230,10 @@ impl MainWindow {
 
     fn top_bar(&self, repo: Option<&RepoSnapshot>, cx: &mut Context<Self>) -> AnyElement {
         let fetching = cx.try_global::<shell::Fetcher>().is_some_and(|f| f.running);
-        let fetch = div()
-            .id("fetch-all")
-            .h(px(32.))
-            .px(px(12.))
-            .flex()
-            .items_center()
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::raised())
+        // Stays focusable while fetching (`fetch_all` no-ops), so focus isn't lost.
+        let fetch = top_button("fetch-all")
             .text_size(px(13.))
+            .on_click(|_, _, cx| shell::fetch_all(cx))
             .when_else(
                 fetching,
                 |d| d.text_color(theme::faint()).child("Fetching…"),
@@ -248,27 +241,17 @@ impl MainWindow {
                     d.text_color(theme::text())
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::border()))
-                        .on_click(cx.listener(|_, _, _, cx| shell::fetch_all(cx)))
                         .child("Fetch all")
                 },
-            )
-            .test_support();
-        let jump = div()
-            .id("jump-to")
-            .flex_none()
-            .h(px(32.))
-            .px(px(10.))
-            .flex()
-            .items_center()
+            );
+        let jump = top_button("jump-to")
             .gap(px(6.))
-            .rounded(px(8.))
-            .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::raised())
             .text_size(px(13.))
             .text_color(theme::text_soft())
             .cursor_pointer()
             .hover(|s| s.bg(theme::border()))
+            .accessibility_label("Jump to…")
+            .aria_keyshortcuts("Command+K")
             .on_click(|_, _, cx| shell::toggle_switcher(cx))
             .child("Jump to…")
             .child(
@@ -281,8 +264,7 @@ impl MainWindow {
                     .text_size(px(11.))
                     .text_color(theme::muted())
                     .child("⌘K"),
-            )
-            .test_support();
+            );
         div()
             .flex_none()
             .h(px(52.))
@@ -310,18 +292,10 @@ impl MainWindow {
             .child(jump)
             .child(div().ml_auto().flex_none().child(fetch))
             .child(
-                Button::new("open-settings")
+                top_button("open-settings")
                     .accessibility_label("Open-with settings")
-                    .flex_none()
                     .size(px(32.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(8.))
-                    .border_1()
-                    .border_color(theme::border_strong())
-                    .focus_visible(|s| s.border_color(theme::link()))
-                    .bg(theme::raised())
+                    .px_0()
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::border()))
                     .child(icon(icons::SETTINGS, 16.).text_color(theme::text()))
@@ -398,20 +372,36 @@ impl Render for MainWindow {
         let rows = snapshot.repos.iter().enumerate().map(|(i, repo)| {
             let is_selected = selected.as_deref() == Some(repo.name());
             let name = repo.name().to_string();
-            div()
-                .id(("repo", i))
+            let count = repo.worktree_count();
+            let a11y = format!(
+                "{}, {count} worktree{}{}",
+                repo.display_name,
+                if count == 1 { "" } else { "s" },
+                if is_selected { ", selected" } else { "" }
+            );
+            Button::new(("repo", i))
+                .accessibility_label(a11y)
+                .selected(is_selected)
+                .flex_none()
                 .h(px(34.))
                 .px(px(10.))
-                .flex()
-                .items_center()
                 .justify_between()
                 .gap(px(8.))
                 .rounded(px(6.))
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .focus_visible(|s| s.border_color(theme::link()))
                 .text_size(px(13.))
                 .cursor_pointer()
+                .relative()
                 .when_else(
                     is_selected,
-                    |d| d.bg(theme::selected()).text_color(theme::text()),
+                    |d| {
+                        d.bg(theme::selected())
+                            .text_color(theme::text())
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(theme::selection_bar())
+                    },
                     |d| {
                         d.text_color(theme::text_soft())
                             .hover(|s| s.bg(theme::raised()))
@@ -431,7 +421,7 @@ impl Render for MainWindow {
                         .flex_none()
                         .text_size(px(11.))
                         .text_color(theme::link())
-                        .child(format!("{} wt", repo.worktree_count())),
+                        .child(format!("{count} wt")),
                 )
         });
 
@@ -548,6 +538,19 @@ impl Render for MainWindow {
     }
 }
 
+/// Bordered top bar button.
+fn top_button(id: &'static str) -> Button {
+    Button::new(id)
+        .flex_none()
+        .h(px(32.))
+        .px(px(12.))
+        .rounded(px(8.))
+        .border_1()
+        .border_color(theme::border_strong())
+        .focus_visible(|s| s.border_color(theme::link()))
+        .bg(theme::raised())
+}
+
 /// Inline text link.
 fn link(id: &'static str, text: &'static str, action: fn(&mut App)) -> Button {
     Button::new(id)
@@ -630,7 +633,7 @@ mod tests {
     use super::*;
     use crate::shell::Library;
     use crate::test_support::{
-        Launches, canned, code, fake_launcher, fake_presence, set_library, settings_file,
+        Launches, canned, code, fake_launcher, fake_presence, set_library, settings_file, tab_to,
         terminal_window,
     };
 
@@ -657,6 +660,7 @@ mod tests {
     ) -> (AnyWindowHandle, Entity<MainWindow>) {
         cx.update(|cx| {
             gpui_kit::init(cx);
+            crate::details_view::init(cx);
             set_library(file, vec![repo], cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -1886,5 +1890,176 @@ mod tests {
         // A refused open isn't one.
         keys(cx, w, &["down", "down", "enter"]);
         assert_eq!(recents().len(), 2);
+    }
+
+    fn two_repos(cx: &mut TestAppContext, file: &SettingsFile) -> AnyWindowHandle {
+        let mut web = canned();
+        web.display_name = "web".into();
+        web.repo.name = "web".into();
+        web.repo.path = "/c/web".into();
+        web.repo.git_dir = "/c/web/.git".into();
+        web.worktrees.truncate(1);
+        web.worktrees[0].path = "/c/web".into();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::details_view::init(cx);
+            set_library(file, vec![canned(), web], cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                    origin: Point::default(),
+                    size: size(px(1180.), px(720.)),
+                })),
+                ..Default::default()
+            };
+            open_with(options, cx).unwrap().0
+        })
+    }
+
+    #[gpui_kit::test]
+    fn tab_reaches_every_control_and_comes_back_to_the_tree(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        let ids: [gpui_kit::ElementId; 13] = [
+            "jump-to".into(),
+            "fetch-all".into(),
+            "open-settings".into(),
+            ("repo", 0usize).into(),
+            ("repo", 1usize).into(),
+            "change-code-folder".into(),
+            "details-copy-path".into(),
+            "details-copy-cd".into(),
+            "details-reveal".into(),
+            "details-open-editor".into(),
+            "details-menu-editor".into(),
+            "details-open-terminal".into(),
+            "details-menu-terminal".into(),
+        ];
+        for id in ids {
+            tab_to(cx, w, id);
+            tab_to(cx, w, "tree-view");
+        }
+    }
+
+    #[gpui_kit::test]
+    fn keyboard_switches_repo_and_lands_in_its_tree(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        tab_to(cx, w, ("repo", 1usize));
+        keys(cx, w, &["enter"]);
+        let label = |cx: &mut TestAppContext, ix: usize| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(("repo", ix)).label().unwrap().to_string()
+            })
+            .unwrap()
+        };
+        assert_eq!(label(cx, 1), "web, 1 worktree, selected");
+        assert_eq!(label(cx, 0), "api, 5 worktrees");
+        // Focus moved into the tree: Enter opens the new repo's worktree.
+        keys(cx, w, &["enter"]);
+        assert_eq!(*launches.lock().unwrap(), [code("/c/web")]);
+        assert_eq!(
+            file.load().unwrap().last_selected_repo.as_deref(),
+            Some("web")
+        );
+    }
+
+    #[gpui_kit::test]
+    fn open_with_menu_works_from_the_keyboard(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, main) = launch(cx, &file);
+        let focused = |cx: &mut TestAppContext, id: gpui_kit::ElementId| {
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find(id).focused() == Some(true)
+            })
+            .unwrap()
+        };
+
+        tab_to(cx, w, "details-menu-editor");
+        keys(cx, w, &["space"]);
+        assert!(found(cx, w, "editor-menu"));
+        assert!(focused(cx, ("editor-choice", 0usize).into()));
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "editor-menu"));
+        assert!(focused(cx, "details-menu-editor".into()));
+
+        keys(cx, w, &["enter", "down", "down", "up", "up", "down"]);
+        assert!(focused(cx, ("editor-choice", 1usize).into()));
+        keys(cx, w, &["enter"]);
+        assert_eq!(
+            *launches.lock().unwrap(),
+            [vec!["/fake/bin/zed", "--new", "/c/api"]]
+        );
+        assert!(!found(cx, w, "editor-menu"));
+        assert!(focused(cx, "details-menu-editor".into()));
+
+        // Tab leaves the menu and closes it.
+        keys(cx, w, &["enter", "tab"]);
+        assert!(!found(cx, w, "editor-menu"));
+        assert!(focused(cx, "details-open-terminal".into()));
+
+        tab_to(cx, w, "details-copy-path");
+        keys(cx, w, &["enter"]);
+        assert_eq!(status(cx, &main).unwrap().text, "Copied path /c/api");
+    }
+
+    #[gpui_kit::test]
+    fn empty_fallback_menu_still_closes_on_escape(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let launches = fake_launcher(cx, Ok(Outcome::Opened));
+        cx.update(|cx| {
+            let l = cx.global_mut::<crate::launcher::Launcher>();
+            l.targets
+                .as_mut()
+                .unwrap()
+                .retain(|t| !matches!(t.kind, grove_core::TargetKind::Editor(_)));
+        });
+        let (w, _) = launch(cx, &file);
+        tab_to(cx, w, "details-open-editor");
+        keys(cx, w, &["enter"]);
+        assert!(launches.lock().unwrap().is_empty());
+        assert!(found(cx, w, "editor-menu"));
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "editor-menu"));
+        tab_to(cx, w, "tree-view");
+    }
+
+    #[gpui_kit::test]
+    fn tree_rows_and_icon_buttons_have_accessible_labels(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, _) = launch(cx, &file);
+        keys(cx, w, &["down"]);
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            let row = window.find(("tree-row", 1usize));
+            assert_eq!(
+                row.label(),
+                Some("/c/api, worktree, The repo's original clone")
+            );
+            assert_eq!(row.selected(), Some(true));
+            assert_eq!(
+                window.find(("open-terminal", 1usize)).label(),
+                Some("Open in Terminal")
+            );
+            assert_eq!(
+                window.find("open-settings").label(),
+                Some("Open-with settings")
+            );
+            assert_eq!(
+                window.find("details-menu-editor").label(),
+                Some("Open in another editor")
+            );
+        })
+        .unwrap();
     }
 }
