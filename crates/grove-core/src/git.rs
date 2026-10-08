@@ -26,7 +26,8 @@ const READ: Duration = Duration::from_secs(15);
 /// Generous: a first fetch of a big repo is slow, and it runs off the UI thread.
 const FETCH: Duration = Duration::from_secs(5 * 60);
 /// Removing a worktree deletes its folder, build output and dependencies included.
-const WRITE: Duration = Duration::from_secs(5 * 60);
+/// Worktree removal: unbounded.
+const WRITE: Duration = Duration::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GitVersion {
@@ -247,9 +248,46 @@ pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
     read_status(path, &[])
 }
 
-/// As `read_worktree_status`, but each untracked file listed, not just its folder.
-pub(crate) fn read_status_all_untracked(path: &Path) -> Result<WorktreeStatus, GitError> {
-    read_status(path, &["--untracked-files=all"])
+/// What `git worktree remove` would lose: changed entries, each untracked file (a nested
+/// repo stays one `dir/` entry), and whether any submodule changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct RemovalStatus {
+    pub modified: usize,
+    pub untracked: Vec<String>,
+    pub submodule_changed: bool,
+}
+
+pub(crate) fn read_removal_status(path: &Path) -> Result<RemovalStatus, GitError> {
+    let out = run(
+        Some(path),
+        &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+        READ,
+    )?;
+    Ok(parse_removal_status(&out))
+}
+
+fn parse_removal_status(out: &str) -> RemovalStatus {
+    let mut status = RemovalStatus::default();
+    let mut fields = out.split('\0');
+    while let Some(field) = fields.next() {
+        let Some((tag, body)) = field.split_once(' ') else {
+            continue;
+        };
+        match tag {
+            "?" => status.untracked.push(body.to_string()),
+            "1" | "2" | "u" => {
+                if tag == "2" {
+                    fields.next();
+                }
+                status.modified += 1;
+                // XY sub ...; sub is "S..." for a submodule.
+                status.submodule_changed |=
+                    body.split(' ').nth(1).is_some_and(|s| s.starts_with('S'));
+            }
+            _ => {}
+        }
+    }
+    status
 }
 
 fn read_status(path: &Path, extra: &[&str]) -> Result<WorktreeStatus, GitError> {
@@ -310,20 +348,16 @@ pub fn fetch(repo: &Path) -> Result<(), GitError> {
 }
 
 /// `git worktree remove [--force] <path>`, run from `repo`'s main worktree (or the bare
-/// repo). The branch stays.
+/// repo). The branch stays. A missing folder's entry goes without `--force`. Never timed out:
+/// killing it mid-delete would leave a half-deleted worktree.
 pub fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
     let path = path.to_string_lossy();
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");
     }
-    args.push(&path);
+    args.extend(["--", &path]);
     run(Some(repo), &args, WRITE).map(drop)
-}
-
-/// `git worktree prune`: drops entries whose folders are gone.
-pub fn prune_worktrees(repo: &Path) -> Result<(), GitError> {
-    run(Some(repo), &["worktree", "prune"], WRITE).map(drop)
 }
 
 const FETCH_ARGS: &[&str] = &[
@@ -635,6 +669,28 @@ mod tests {
             ["A.", "AM", ".M", "M.", "MD", ".D", "D.", ".T"].map(code),
             ["A", "A", "M", "M", "M", "D", "D", "T"]
         );
+    }
+
+    #[test]
+    fn removal_status_counts_entries_and_spots_changed_submodules() {
+        let z = |fields: &[&str]| fields.join("\0") + "\0";
+        let out = z(&[
+            "1 .M N... 100644 100644 100644 aaa aaa a.txt",
+            "2 R. N... 100644 100644 100644 bbb bbb R100 new name.txt",
+            "old name.txt",
+            "? notes/one.txt",
+            "? nested/",
+        ]);
+        assert_eq!(
+            parse_removal_status(&out),
+            RemovalStatus {
+                modified: 2,
+                untracked: vec!["notes/one.txt".into(), "nested/".into()],
+                submodule_changed: false,
+            }
+        );
+        let sub = z(&["1 .M SC.. 160000 160000 160000 ccc ccc lib"]);
+        assert!(parse_removal_status(&sub).submodule_changed);
     }
 
     #[test]

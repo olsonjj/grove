@@ -6,16 +6,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use common::{Fixture, add_worktree, git, init_repo};
-use grove_core::{
-    RemovalPlan, Snapshot, Worktree, prune_worktrees, read_removal_plan, remove_worktree,
-};
+use grove_core::{RemovalPlan, read_removal_plan, remove_worktree};
 
-fn worktree<'a>(s: &'a Snapshot, path: &Path) -> &'a Worktree {
-    s.repos
+/// The plan for the worktree at `path` of repo `api`, from a fresh scan.
+fn plan(f: &Fixture, path: &Path) -> RemovalPlan {
+    let snapshot = f.scan();
+    let repo = snapshot.repo("api").unwrap();
+    let wt = repo
+        .worktrees
         .iter()
-        .flat_map(|r| &r.worktrees)
-        .find(|w| w.path.canonicalize().ok() == path.canonicalize().ok())
-        .unwrap_or_else(|| panic!("no worktree {} in {s:#?}", path.display()))
+        .find(|w| w.path.canonicalize().ok() == path.canonicalize().ok() || w.path == path)
+        .unwrap_or_else(|| panic!("no worktree {} in {repo:#?}", path.display()));
+    read_removal_plan(&repo.repo.git_dir, wt)
 }
 
 /// `api` with a linked worktree on branch `feature`, outside the code dir.
@@ -27,8 +29,18 @@ fn linked(f: &Fixture) -> (PathBuf, PathBuf) {
     (api, wt)
 }
 
-fn worktree_count(f: &Fixture) -> usize {
-    f.scan().repo("api").unwrap().worktrees.len()
+fn worktrees(f: &Fixture) -> Vec<PathBuf> {
+    f.scan()
+        .repo("api")
+        .unwrap()
+        .worktrees
+        .iter()
+        .map(|w| w.path.clone())
+        .collect()
+}
+
+fn not_allowed(why: &str) -> RemovalPlan {
+    RemovalPlan::NotAllowed(why.into())
 }
 
 #[test]
@@ -36,12 +48,7 @@ fn main_worktree_is_not_removable() {
     let f = Fixture::new();
     let api = init_repo(&f.code().join("api"));
 
-    let plan = read_removal_plan(worktree(&f.scan(), &api));
-
-    assert_eq!(
-        plan,
-        RemovalPlan::NotAllowed("it's the main worktree".into())
-    );
+    assert_eq!(plan(&f, &api), not_allowed("it's the main worktree"));
 }
 
 #[test]
@@ -51,23 +58,27 @@ fn locked_worktree_is_not_removable() {
     git(&api, &["worktree", "lock", wt.to_str().unwrap()]);
 
     assert_eq!(
-        read_removal_plan(worktree(&f.scan(), &wt)),
-        RemovalPlan::NotAllowed("it's locked (run git worktree unlock first)".into())
+        plan(&f, &wt),
+        not_allowed("it's locked (run git worktree unlock first)")
     );
 }
 
 #[test]
-fn missing_worktree_offers_prune_and_prune_drops_the_entry() {
+fn missing_worktree_removal_drops_only_its_own_entry() {
     let f = Fixture::new();
     let (api, wt) = linked(&f);
+    // Another stale entry, e.g. on an unmounted drive: repo-wide prune would drop it too.
+    let other = f.outside("api-other");
+    add_worktree(&api, &other, "other");
     fs::remove_dir_all(&wt).unwrap();
-    let snapshot = f.scan();
-    let missing = snapshot.repo("api").unwrap().worktrees.last().unwrap();
-    assert_eq!(read_removal_plan(missing), RemovalPlan::Prune);
+    fs::remove_dir_all(&other).unwrap();
+    let before = worktrees(&f);
+    assert_eq!(plan(&f, &before[1]), RemovalPlan::Missing);
 
-    prune_worktrees(&api).unwrap();
+    remove_worktree(&api, &before[1], false).unwrap();
 
-    assert_eq!(worktree_count(&f), 1);
+    assert_eq!(worktrees(&f), [before[0].clone(), before[2].clone()]);
+    git(&api, &["rev-parse", "--verify", "-q", "refs/heads/feature"]);
 }
 
 #[test]
@@ -75,7 +86,7 @@ fn clean_worktree_plans_plain_removal() {
     let f = Fixture::new();
     let (_, wt) = linked(&f);
 
-    let plan = read_removal_plan(worktree(&f.scan(), &wt));
+    let plan = plan(&f, &wt);
 
     assert_eq!(plan, RemovalPlan::Clean);
     assert!(!plan.force());
@@ -94,7 +105,7 @@ fn modified_files_are_counted() {
     fs::write(wt.join("b.txt"), "changed").unwrap();
     git(&wt, &["add", "b.txt"]);
 
-    let plan = read_removal_plan(worktree(&f.scan(), &wt));
+    let plan = plan(&f, &wt);
 
     assert_eq!(
         plan,
@@ -116,11 +127,52 @@ fn untracked_files_are_counted_one_by_one_even_in_new_folders() {
     fs::write(wt.join("three.txt"), "3").unwrap();
 
     assert_eq!(
-        read_removal_plan(worktree(&f.scan(), &wt)),
+        plan(&f, &wt),
         RemovalPlan::Dirty {
             modified: 0,
             untracked: 3
         }
+    );
+}
+
+#[test]
+fn worktree_with_submodules_is_not_removable() {
+    let f = Fixture::new();
+    let sub = init_repo(&f.tmp.path().join("sub"));
+    let api = init_repo(&f.code().join("api"));
+    let allow = ["-c", "protocol.file.allow=always"];
+    git(
+        &api,
+        &[
+            &allow[..],
+            &["submodule", "-q", "add", sub.to_str().unwrap(), "sub"],
+        ]
+        .concat(),
+    );
+    git(&api, &["commit", "-q", "-m", "sub"]);
+    let wt = f.outside("api-feature");
+    add_worktree(&api, &wt, "feature");
+    git(
+        &wt,
+        &[&allow[..], &["submodule", "-q", "update", "--init"]].concat(),
+    );
+
+    // Clean as far as status goes, but --force would delete the submodule's repo.
+    assert_eq!(
+        plan(&f, &wt),
+        not_allowed("it contains submodules (remove it with git)")
+    );
+}
+
+#[test]
+fn worktree_holding_another_repo_is_not_removable() {
+    let f = Fixture::new();
+    let (_, wt) = linked(&f);
+    init_repo(&wt.join("nested"));
+
+    assert_eq!(
+        plan(&f, &wt),
+        not_allowed("nested/ inside it is a separate Git repository (remove it with git)")
     );
 }
 
@@ -132,7 +184,7 @@ fn removing_a_clean_worktree_keeps_its_branch() {
     remove_worktree(&api, &wt, false).unwrap();
 
     assert!(!wt.exists());
-    assert_eq!(worktree_count(&f), 1);
+    assert_eq!(worktrees(&f).len(), 1);
     git(&api, &["rev-parse", "--verify", "-q", "refs/heads/feature"]);
 }
 
@@ -150,11 +202,11 @@ fn dirty_worktree_needs_force_and_unforced_removal_leaves_it() {
         err.brief()
     );
     assert!(wt.join("wip.txt").exists());
-    assert_eq!(worktree_count(&f), 2);
+    assert_eq!(worktrees(&f).len(), 2);
 
     remove_worktree(&api, &wt, true).unwrap();
 
     assert!(!wt.exists());
-    assert_eq!(worktree_count(&f), 1);
+    assert_eq!(worktrees(&f).len(), 1);
     git(&api, &["rev-parse", "--verify", "-q", "refs/heads/feature"]);
 }

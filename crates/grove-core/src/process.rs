@@ -59,11 +59,12 @@ pub(crate) fn run_with_input(
     let stdout = drain(child.stdout.take());
     let stderr = drain(child.stderr.take());
 
-    let deadline = Instant::now() + timeout;
+    // `Duration::MAX` never times out.
+    let deadline = Instant::now().checked_add(timeout);
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
+            Ok(None) if deadline.is_some_and(|d| Instant::now() >= d) => {
                 // Session leader, so its pid is the group id.
                 if let Ok(pgid) = libc::pid_t::try_from(child.id()) {
                     // SAFETY: plain syscall on a group we created.

@@ -16,7 +16,7 @@ use grove_core::{GitError, RemovalPlan, RepoSnapshot, Worktree, read_removal_pla
 
 use crate::details_view::{self, DetailsView, LeaveMenu, LeaveMenuBack};
 use crate::icons::{self, icon};
-use crate::removal::{self, Job, RemoveRequested};
+use crate::removal::{self, RemoveRequested};
 use crate::sort_menu::{SortChosen, SortMenu, SortMenuIds};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
@@ -65,6 +65,12 @@ struct Target {
     repo: PathBuf,
     git_dir: PathBuf,
     worktree: Worktree,
+}
+
+impl Target {
+    async fn read_plan(self) -> RemovalPlan {
+        read_removal_plan(&self.git_dir, &self.worktree)
+    }
 }
 
 #[derive(Clone)]
@@ -330,8 +336,8 @@ impl MainWindow {
         }
     }
 
-    /// Remove worktree… / Prune from the tree or details pane. Removal reads the worktree's
-    /// status fresh, then confirms; Prune runs at once (nothing on disk to lose).
+    /// Remove worktree… from the tree or details pane: reads the worktree fresh, then
+    /// confirms.
     fn request_removal(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
         if self.removal.is_some() {
             return;
@@ -347,19 +353,19 @@ impl MainWindow {
         }) else {
             return;
         };
-        if let Some(plan) = RemovalPlan::gate(&target.worktree) {
-            return self.confirm_removal(target, plan, window, cx);
-        }
         cx.spawn_in(window, async move |this, cx| {
-            let wt = target.worktree.clone();
-            let plan = cx
-                .background_spawn(async move { read_removal_plan(&wt) })
-                .await;
+            let plan = cx.background_spawn(target.clone().read_plan()).await;
             let _ = this.update_in(cx, |this, window, cx| {
                 this.confirm_removal(target, plan, window, cx)
             });
         })
         .detach();
+    }
+
+    fn refuse_removal(&mut self, target: &Target, why: &str, cx: &mut Context<Self>) {
+        let path = tilde(&target.worktree.path);
+        self.open_seq += 1;
+        self.set_status(format!("Can't remove {path}: {why}"), true, false, cx);
     }
 
     fn confirm_removal(
@@ -369,20 +375,15 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let path = tilde(&target.worktree.path);
-        let Some(confirm) = removal::confirm(&target.worktree, &plan) else {
-            return match plan {
-                RemovalPlan::Prune => self.run_job(target, Job::Prune, window, cx),
-                RemovalPlan::NotAllowed(why) => {
-                    self.open_seq += 1;
-                    self.set_status(format!("Can't remove {path}: {why}"), true, false, cx);
-                }
-                RemovalPlan::Clean | RemovalPlan::Dirty { .. } => {}
-            };
-        };
         if self.removal.is_some() {
             return;
         }
+        let Some(confirm) = removal::confirm(&target.worktree, &plan) else {
+            if let RemovalPlan::NotAllowed(why) = &plan {
+                self.refuse_removal(&target, why, cx);
+            }
+            return;
+        };
         let cancel = cx.focus_handle();
         self.removal = Some(Removal {
             target,
@@ -444,25 +445,72 @@ impl MainWindow {
         true
     }
 
+    /// Rereads the worktree first: if it changed since the confirm opened, the confirm shows
+    /// the new plan instead of removing more than it said.
     fn start_removal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(r) = self.removal.as_mut().filter(|r| !r.running) else {
             return;
         };
         r.running = true;
-        let (target, force) = (r.target.clone(), r.plan.force());
+        let target = r.target.clone();
         window.refresh();
-        self.run_job(target, Job::Remove { force }, window, cx);
+        cx.spawn_in(window, async move |this, cx| {
+            let plan = cx.background_spawn(target.clone().read_plan()).await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.removal_checked(plan, window, cx)
+            });
+        })
+        .detach();
     }
 
-    fn run_job(&mut self, target: Target, job: Job, window: &mut Window, cx: &mut Context<Self>) {
+    fn removal_checked(&mut self, plan: RemovalPlan, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(r) = self.removal.as_mut() else {
+            return;
+        };
+        if r.plan == plan {
+            let (target, force) = (r.target.clone(), plan.force());
+            return self.run_removal(target, force, window, cx);
+        }
+        match removal::confirm(&r.target.worktree, &plan) {
+            Some(confirm) => {
+                r.plan = plan;
+                r.confirm = confirm;
+                r.running = false;
+                window.refresh();
+            }
+            None => {
+                let target = r.target.clone();
+                self.removal = None;
+                window.close_dialog(cx);
+                if let RemovalPlan::NotAllowed(why) = &plan {
+                    self.refuse_removal(&target, why, cx);
+                }
+            }
+        }
+    }
+
+    /// Bookkeeping runs at app level, so closing the window mid-removal doesn't lose it.
+    fn run_removal(
+        &mut self,
+        target: Target,
+        force: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let run = removal::runner(cx);
-        cx.spawn_in(window, async move |this, cx| {
+        let handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
             let (repo, path) = (target.repo.clone(), target.worktree.path.clone());
             let result = cx
-                .background_spawn(async move { run(&repo, &path, job) })
+                .background_spawn(async move { run(&repo, &path, force) })
                 .await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.finish_removal(&target, job, result, window, cx)
+            if result.is_ok() {
+                cx.update(|cx| shell::worktree_removed(&target.git_dir, &target.worktree.path, cx));
+            }
+            let _ = handle.update(cx, |_, window, cx| {
+                this.update(cx, |this, cx| {
+                    this.finish_removal(&target, result, window, cx)
+                })
             });
         })
         .detach();
@@ -471,7 +519,6 @@ impl MainWindow {
     fn finish_removal(
         &mut self,
         target: &Target,
-        job: Job,
         result: Result<(), GitError>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -480,16 +527,9 @@ impl MainWindow {
             window.close_dialog(cx);
         }
         let path = tilde(&target.worktree.path);
-        let (verb, failed) = match job {
-            Job::Remove { .. } => ("Removed", "Couldn't remove"),
-            Job::Prune => ("Pruned", "Couldn't prune"),
-        };
         let (text, error) = match result {
-            Ok(()) => {
-                shell::worktree_removed(&target.git_dir, &target.worktree.path, cx);
-                (format!("{verb} {path}"), false)
-            }
-            Err(e) => (format!("{failed} {path}: {}", e.brief()), true),
+            Ok(()) => (format!("Removed {path}"), false),
+            Err(e) => (format!("Couldn't remove {path}: {}", e.brief()), true),
         };
         self.open_seq += 1;
         self.set_status(text, error, false, cx);
@@ -3322,6 +3362,12 @@ mod tests {
         assert_eq!(label_of(cx, w, "tree-menu-remove"), "Remove worktree…");
         keys(cx, w, &["escape"]);
         assert!(!found(cx, w, "tree-menu"));
+        // A click outside closes it too, handing focus back to the tree.
+        right_click(cx, w, ("tree-row", ix));
+        click(cx, w, "details-remove");
+        assert!(!found(cx, w, "tree-menu"));
+        assert!(focused(cx, w, "tree-view"));
+        assert!(main.read_with(cx, |m, _| m.removal.is_none()));
 
         let ix = row(cx, "/c/wt/api-y");
         click(cx, w, ("tree-row", ix));
@@ -3339,27 +3385,38 @@ mod tests {
 
         let ix = row(cx, "/c/wt/api-z");
         click(cx, w, ("tree-row", ix));
-        assert_eq!(label_of(cx, w, "details-remove"), "Prune");
+        assert_eq!(label_of(cx, w, "details-remove"), "Remove missing entry…");
         right_click(cx, w, ("tree-row", ix));
-        assert_eq!(label_of(cx, w, "tree-menu-remove"), "Prune");
+        assert_eq!(label_of(cx, w, "tree-menu-remove"), "Remove missing entry…");
     }
 
-    type Removals = Arc<Mutex<Vec<(PathBuf, Job)>>>;
+    /// Each removal's path and whether it was forced.
+    type Removals = Arc<Mutex<Vec<(PathBuf, bool)>>>;
 
     /// Records each removal, then runs it for real (temp repos only) or fails with `fail`.
     fn fake_remover(cx: &mut TestAppContext, fail: Option<&'static str>) -> Removals {
+        fake_remover_with(cx, fail, |_| {})
+    }
+
+    /// `fake_remover`, calling `before` with the worktree first.
+    fn fake_remover_with(
+        cx: &mut TestAppContext,
+        fail: Option<&'static str>,
+        before: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Removals {
         let calls: Removals = Default::default();
         let sink = calls.clone();
         cx.update(|cx| {
             cx.set_global(removal::Remover {
-                run: Arc::new(move |repo, path, job| {
-                    sink.lock().unwrap().push((path.to_path_buf(), job));
+                run: Arc::new(move |repo, path, force| {
+                    sink.lock().unwrap().push((path.to_path_buf(), force));
+                    before(path);
                     match fail {
                         Some(stderr) => Err(GitError::Failed {
                             args: "worktree remove".into(),
                             stderr: stderr.into(),
                         }),
-                        None => removal::run(repo, path, job),
+                        None => removal::run(repo, path, force),
                     }
                 }),
             })
@@ -3457,10 +3514,7 @@ mod tests {
         assert!(focused(cx, w, "remove-cancel"));
 
         click(cx, w, "remove-confirm");
-        assert_eq!(
-            *removals.lock().unwrap(),
-            [(a.clone(), Job::Remove { force: false })]
-        );
+        assert_eq!(*removals.lock().unwrap(), [(a.clone(), false)]);
         assert!(!found(cx, w, "remove-message"));
         assert!(!a.exists());
         let s = status(cx, &main).unwrap();
@@ -3513,10 +3567,7 @@ mod tests {
 
         open_confirm(cx);
         click(cx, w, "remove-confirm");
-        assert_eq!(
-            *removals.lock().unwrap(),
-            [(b.clone(), Job::Remove { force: true })]
-        );
+        assert_eq!(*removals.lock().unwrap(), [(b.clone(), true)]);
         assert!(!b.exists());
         // The next row is c's branch.
         assert_eq!(selected_row(cx, &main), Some(RowId::Branch("c".into())));
@@ -3561,29 +3612,107 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn missing_worktree_prunes_without_confirm(cx: &mut TestAppContext) {
+    fn missing_worktree_removes_only_its_entry_after_a_plain_confirm(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let removals = fake_remover(cx, None);
         let (w, main, _file, wt) = removal_fixture_with(cx, &tmp, Settings::default(), |wt| {
-            std::fs::remove_dir_all(wt.join("c")).unwrap()
+            std::fs::remove_dir_all(wt.join("a")).unwrap();
+            std::fs::remove_dir_all(wt.join("c")).unwrap();
         });
         let c = wt.join("c");
         let ix = row_of(cx, &main, &c);
         click(cx, w, ("tree-row", ix));
-        assert_eq!(label_of(cx, w, "details-remove"), "Prune");
+        assert_eq!(label_of(cx, w, "details-remove"), "Remove missing entry…");
         click(cx, w, "details-remove");
-        assert!(!found(cx, w, "remove-message"));
-        assert_eq!(*removals.lock().unwrap(), [(c.clone(), Job::Prune)]);
+        let message = label_of(cx, w, "remove-message");
+        assert!(message.contains("is already gone"), "{message}");
+        assert_eq!(label_of(cx, w, "remove-confirm"), "Remove entry");
+        click(cx, w, "remove-confirm");
+        assert_eq!(*removals.lock().unwrap(), [(c.clone(), false)]);
         assert_eq!(
             status(cx, &main).unwrap().text,
-            format!("Pruned {}", tilde(&c))
+            format!("Removed {}", tilde(&c))
         );
-        assert!(main.read_with(cx, |m, cx| {
-            m.tree
-                .read(cx)
-                .tree()
-                .index_of(&RowId::Worktree(c.clone()))
-                .is_none()
-        }));
+        // a, also missing, keeps its entry.
+        let rows = main.read_with(cx, |m, cx| {
+            let tree = m.tree.read(cx).tree();
+            [wt.join("a"), c.clone()].map(|p| tree.index_of(&RowId::Worktree(p)).is_some())
+        });
+        assert_eq!(rows, [true, false]);
+    }
+
+    #[gpui_kit::test]
+    fn confirm_refreshes_instead_of_removing_when_the_worktree_changed(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let removals = fake_remover(cx, None);
+        let (w, main, _file, wt) = removal_fixture(cx, &tmp, Settings::default());
+        let a = wt.join("a");
+        let ix = row_of(cx, &main, &a);
+        click(cx, w, ("tree-row", ix));
+        click(cx, w, "details-remove");
+        assert_eq!(label_of(cx, w, "remove-confirm"), "Remove");
+
+        std::fs::write(a.join("late"), "x").unwrap();
+        click(cx, w, "remove-confirm");
+
+        assert!(removals.lock().unwrap().is_empty());
+        let message = label_of(cx, w, "remove-message");
+        assert!(message.contains("1 untracked file will be"), "{message}");
+        assert_eq!(label_of(cx, w, "remove-confirm"), "Discard and remove");
+        click(cx, w, "remove-confirm");
+        assert_eq!(*removals.lock().unwrap(), [(a.clone(), true)]);
+        assert!(!a.exists());
+    }
+
+    #[gpui_kit::test]
+    fn worktree_dirtied_after_a_clean_confirm_is_kept(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        // Dirtied after the confirm's last look, just before git runs.
+        let removals = fake_remover_with(cx, None, |path| {
+            std::fs::write(path.join("late"), "x").unwrap()
+        });
+        let (w, main, _file, wt) = removal_fixture(cx, &tmp, Settings::default());
+        let a = wt.join("a");
+        let ix = row_of(cx, &main, &a);
+        click(cx, w, ("tree-row", ix));
+        click(cx, w, "details-remove");
+        assert!(found(cx, w, "remove-message"));
+        click(cx, w, "remove-confirm");
+
+        assert_eq!(*removals.lock().unwrap(), [(a.clone(), false)]);
+        assert!(!found(cx, w, "remove-message"));
+        assert!(a.join("late").exists());
+        let s = status(cx, &main).unwrap();
+        assert!(
+            s.text
+                .starts_with(&format!("Couldn't remove {}: ", tilde(&a)))
+                && s.text.contains("contains modified or untracked files"),
+            "{}",
+            s.text
+        );
+        assert!(s.error);
+    }
+
+    #[gpui_kit::test]
+    fn submodules_refuse_removal_in_the_status_line(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let removals = fake_remover(cx, None);
+        let (w, main, _file, wt) = removal_fixture(cx, &tmp, Settings::default());
+        let a = wt.join("a");
+        // What an initialized submodule leaves in the worktree's admin folder.
+        let admin = tmp.path().join("code/api/.git/worktrees/a/modules");
+        std::fs::create_dir_all(admin).unwrap();
+        let ix = row_of(cx, &main, &a);
+        click(cx, w, ("tree-row", ix));
+        click(cx, w, "details-remove");
+        assert!(!found(cx, w, "remove-message"));
+        assert!(removals.lock().unwrap().is_empty());
+        assert_eq!(
+            status(cx, &main).unwrap().text,
+            format!(
+                "Can't remove {}: it contains submodules (remove it with git)",
+                tilde(&a)
+            )
+        );
     }
 }

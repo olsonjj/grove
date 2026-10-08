@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::{App, Global};
-use grove_core::{GitError, RemovalPlan, Worktree, prune_worktrees, remove_worktree};
+use grove_core::{GitError, RemovalPlan, Worktree, remove_worktree};
 
 use crate::main_window::tilde;
 
@@ -30,8 +30,8 @@ pub fn offer(wt: &Worktree) -> Option<Offer> {
     }
     let remove = "Remove worktree…";
     Some(match RemovalPlan::gate(wt) {
-        Some(RemovalPlan::Prune) => Offer {
-            label: "Prune",
+        Some(RemovalPlan::Missing) => Offer {
+            label: "Remove missing entry…",
             reason: None,
         },
         Some(RemovalPlan::NotAllowed(why)) => Offer {
@@ -99,28 +99,32 @@ pub fn confirm(wt: &Worktree, plan: &RemovalPlan) -> Option<Confirm> {
             ok: "Discard and remove",
             destructive: true,
         }),
-        RemovalPlan::NotAllowed(_) | RemovalPlan::Prune => None,
+        // Nothing on disk to lose, but a detached HEAD's commits can still go unreachable.
+        RemovalPlan::Missing => Some(Confirm {
+            title: "Remove missing worktree entry?".into(),
+            message: join(&[
+                &format!("{path} is already gone. Remove Git's record of it?"),
+                &kept,
+            ]),
+            ok: "Remove entry",
+            destructive: false,
+        }),
+        RemovalPlan::NotAllowed(_) => None,
     }
 }
 
-/// "3 modified and 2 untracked files", "1 modified file".
+/// "3 modified and 2 untracked files", "1 modified file", "1 modified and 1 untracked files".
 fn changes(modified: usize, untracked: usize) -> String {
     let files = |n| if n == 1 { "file" } else { "files" };
     match (modified, untracked) {
         (m, 0) => format!("{m} modified {}", files(m)),
         (0, u) => format!("{u} untracked {}", files(u)),
-        (m, u) => format!("{m} modified and {u} untracked {}", files(u)),
+        (m, u) => format!("{m} modified and {u} untracked {}", files(m + u)),
     }
 }
 
-/// A git write for a worktree of the repo at `repo`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Job {
-    Remove { force: bool },
-    Prune,
-}
-
-pub type Run = Arc<dyn Fn(&Path, &Path, Job) -> Result<(), GitError> + Send + Sync>;
+/// Removes the worktree at the second path from the repo at the first, forced or not.
+pub type Run = Arc<dyn Fn(&Path, &Path, bool) -> Result<(), GitError> + Send + Sync>;
 
 /// Overrides the git write (tests).
 pub struct Remover {
@@ -136,11 +140,8 @@ pub fn runner(cx: &App) -> Run {
 }
 
 /// Blocking.
-pub fn run(repo: &Path, worktree: &Path, job: Job) -> Result<(), GitError> {
-    match job {
-        Job::Remove { force } => remove_worktree(repo, worktree, force),
-        Job::Prune => prune_worktrees(repo),
-    }
+pub fn run(repo: &Path, worktree: &Path, force: bool) -> Result<(), GitError> {
+    remove_worktree(repo, worktree, force)
 }
 
 #[cfg(test)]
@@ -182,5 +183,21 @@ mod tests {
         assert!(c.destructive);
         assert_eq!(changes(1, 0), "1 modified file");
         assert_eq!(changes(0, 1), "1 untracked file");
+        assert_eq!(changes(2, 1), "2 modified and 1 untracked files");
+        assert_eq!(changes(1, 1), "1 modified and 1 untracked files");
+    }
+
+    #[test]
+    fn missing_entry_confirm_is_plain_and_keeps_the_branch() {
+        let mut w = wt("/w/api-x", Some("feature/x"), false);
+        w.presence = grove_core::Presence::Missing;
+        assert_eq!(offer(&w).unwrap().label, "Remove missing entry…");
+        let c = confirm(&w, &RemovalPlan::Missing).unwrap();
+        assert_eq!(
+            c.message,
+            "/w/api-x is already gone. Remove Git's record of it? Branch feature/x is kept."
+        );
+        assert_eq!(c.ok, "Remove entry");
+        assert!(!c.destructive);
     }
 }

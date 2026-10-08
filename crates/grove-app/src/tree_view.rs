@@ -440,8 +440,9 @@ impl TreeView {
                             window.focus_prev(cx);
                         }))
                         // Outside click closes the menu and is swallowed, like a native menu.
-                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        .on_mouse_down_out(cx.listener(|this, _, window, cx| {
                             this.row_menu = None;
+                            window.focus(&this.focus, cx);
                             cx.stop_propagation();
                             cx.notify();
                         }))
