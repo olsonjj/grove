@@ -212,7 +212,7 @@ None yet; empty repo. Core tests follow the temp-dir-plus-real-git pattern used 
 
 ## Out of Scope
 
-- Any repo-changing action: create/switch branches, add/remove worktrees, stage, commit, merge, push. Fetch is the only write.
+- Any repo-changing action: create/switch branches, add worktrees, stage, commit, merge, push. Fetch and removing a worktree ([remove-worktree.md](remove-worktree.md)) are the only writes.
 - Branches without a worktree, remote-only branches, stashes, tags, commit graphs.
 - Hosting integrations (PR status).
 - Windows and Linux.
