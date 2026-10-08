@@ -51,6 +51,8 @@ A "Remove worktree…" action on linked worktrees, in the details pane and the t
 
 - Counts come from `git status`, so assume-unchanged and skip-worktree files are invisible to them (git's behavior), though `--force` deletes them. Deleted, renamed and type-changed files count as modified.
 - A worktree dirtied between the confirm's last check and git running is refused by git (no `--force` for `Clean`) and kept. A `Dirty` one gaining files in that window loses them.
+- A bare repo (no `.git`, e.g. `foo.git/`) inside an ignored folder isn't detected and goes with the worktree.
+- The open-time read walks every ignored folder, so huge ignored trees (e.g. `node_modules/`) can take seconds before the confirm appears.
 - The confirm-time reread compares the plan only (counts, not file lists): swapping one changed file for another between opening and confirming passes unnoticed.
 
 ## Out of Scope

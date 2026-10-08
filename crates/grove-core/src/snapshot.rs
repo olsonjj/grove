@@ -137,7 +137,7 @@ impl Presence {
     pub fn reason(self) -> Option<&'static str> {
         match self {
             Self::Present => None,
-            Self::Missing => Some("folder is missing (run git worktree prune)"),
+            Self::Missing => Some("folder is missing (use Remove missing entry…)"),
             Self::Unavailable => Some("its drive isn't mounted"),
         }
     }

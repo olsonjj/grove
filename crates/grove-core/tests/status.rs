@@ -210,7 +210,7 @@ fn deleted_folder_is_missing_and_not_openable() {
     assert!(
         badge_list(&s, "api-x")[0]
             .description()
-            .contains("git worktree prune")
+            .contains("use Remove missing entry…")
     );
     let tree = s.repos[0].tree(&[], SortMode::Name, &LastOpened::new());
     let (_, presence) = tree.worktree_for(&RowId::Branch("x".into())).unwrap();

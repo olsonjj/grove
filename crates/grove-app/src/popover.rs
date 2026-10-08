@@ -901,13 +901,13 @@ mod tests {
         fake_presence(cx, "/c/wt/api-x", Presence::Missing);
         click(cx, w, ("popover-editor", API_X));
         assert!(launches.lock().unwrap().is_empty());
-        let text = "Can't open /c/wt/api-x: folder is missing (run git worktree prune)";
+        let text = "Can't open /c/wt/api-x: folder is missing (use Remove missing entry…)";
         assert_eq!(status(cx, &p).map(|n| n.text).as_deref(), Some(text));
         assert_eq!(posted(cx).map(|s| s.text).as_deref(), Some(text));
         // The row now shows it missing.
         assert_eq!(
             rows(cx, w)[API_X],
-            "feature/x, folder is missing (run git worktree prune)"
+            "feature/x, folder is missing (use Remove missing entry…)"
         );
     }
 

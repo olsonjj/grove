@@ -941,7 +941,8 @@ mod tests {
         assert_eq!(
             status(cx, &s),
             Some(Notice {
-                text: "Can't open /c/wt/api-x: folder is missing (run git worktree prune)".into(),
+                text: "Can't open /c/wt/api-x: folder is missing (use Remove missing entry…)"
+                    .into(),
                 warn: true,
             })
         );

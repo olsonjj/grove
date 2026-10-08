@@ -218,7 +218,7 @@ fn missing_and_unavailable_say_why() {
     let s = store.snapshot();
     assert_eq!(
         text(s, "api-x"),
-        "folder is missing (run git worktree prune)"
+        "folder is missing (use Remove missing entry…)"
     );
     assert_eq!(text(s, "api-y"), "its drive isn't mounted");
 }

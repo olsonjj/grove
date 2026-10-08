@@ -1759,7 +1759,7 @@ mod tests {
         let s = status(cx, &main).unwrap();
         assert_eq!(
             s.text,
-            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+            "Can't open /c/wt/api-x: folder is missing (use Remove missing entry…)"
         );
         assert!(s.error);
     }
@@ -1777,7 +1777,7 @@ mod tests {
         assert!(launches.lock().unwrap().is_empty());
         assert_eq!(
             status(cx, &main).unwrap().text,
-            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+            "Can't open /c/wt/api-x: folder is missing (use Remove missing entry…)"
         );
         assert_eq!(row_badges(cx, &main, "/c/wt/api-x"), ["missing"]);
         keys(cx, w, &["cmd-enter"]);
@@ -1973,7 +1973,7 @@ mod tests {
         assert_eq!(launches.lock().unwrap().len(), 1);
         assert_eq!(
             status(cx, &main).unwrap().text,
-            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+            "Can't open /c/wt/api-x: folder is missing (use Remove missing entry…)"
         );
     }
 
@@ -2311,7 +2311,7 @@ mod tests {
         assert!(launches.lock().unwrap().is_empty());
         assert_eq!(
             s.text,
-            "Can't reveal /c/wt/api-x: folder is missing (run git worktree prune)"
+            "Can't reveal /c/wt/api-x: folder is missing (use Remove missing entry…)"
         );
         assert!(s.error);
     }
@@ -2336,7 +2336,7 @@ mod tests {
         assert!(launches.lock().unwrap().is_empty());
         assert_eq!(
             status(cx, &main).unwrap().text,
-            "Can't open /c/wt/api-x: folder is missing (run git worktree prune)"
+            "Can't open /c/wt/api-x: folder is missing (use Remove missing entry…)"
         );
         // The refusal rechecked presence, so the pane now shows it disabled.
         click(cx, w, "details-open-editor");

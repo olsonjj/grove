@@ -232,6 +232,23 @@ fn ignored_folder_holding_another_repo_is_not_removable() {
 }
 
 #[test]
+fn ignored_folder_that_is_itself_a_repo_is_not_removable() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    fs::write(api.join(".gitignore"), "vendor/\n").unwrap();
+    git(&api, &["add", ".gitignore"]);
+    git(&api, &["commit", "-q", "-m", "ignore"]);
+    let wt = f.outside("api-feature");
+    add_worktree(&api, &wt, "feature");
+    init_repo(&wt.join("vendor"));
+
+    assert_eq!(
+        plan(&f, &wt),
+        not_allowed("vendor/ inside it is a separate Git repository (remove it with git)")
+    );
+}
+
+#[test]
 fn a_missing_folder_that_came_back_is_read_fresh() {
     let f = Fixture::new();
     let (_, wt) = linked(&f);

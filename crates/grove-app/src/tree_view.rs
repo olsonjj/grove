@@ -621,7 +621,7 @@ impl TreeView {
                             .font_family(theme::SANS)
                             .text_size(px(11.))
                             .text_color(theme::faint())
-                            .child("run git worktree prune"),
+                            .child("use Remove missing entry…"),
                     )
                 })
                 .when(selected, |d| {
