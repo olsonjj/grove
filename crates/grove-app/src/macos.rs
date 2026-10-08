@@ -17,8 +17,16 @@ pub fn use_dark_appearance() {
     NSApplication::sharedApplication(mtm()).setAppearance(appearance.as_deref());
 }
 
+/// Undoes Hide Grove, which activating alone doesn't. No-op off the main thread.
+pub fn unhide() {
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm).unhide(None);
+    }
+}
+
+/// False off the main thread.
 pub fn is_app_active() -> bool {
-    NSApplication::sharedApplication(mtm()).isActive()
+    MainThreadMarker::new().is_some_and(|mtm| NSApplication::sharedApplication(mtm).isActive())
 }
 
 /// Frontmost app, unless it's Grove itself.

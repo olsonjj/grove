@@ -6,8 +6,8 @@
 
 **Status:** ready-for-agent
 
-- [ ] Registered as login item via SMAppService, on by default
-- [ ] Closing main window leaves app, hotkeys and menu bar icon running
-- [ ] ⌥⌘G reopens main window
-- [ ] Quit via popover footer, ⌘Q, app menu or Dock menu only
-- [ ] Menu bar icon and hotkeys inactive until first run completes
+- [x] Registered as login item via SMAppService, on by default
+- [x] Closing main window leaves app, hotkeys and menu bar icon running
+- [x] ⌥⌘G reopens main window
+- [x] Quit via popover footer, ⌘Q, app menu or Dock menu only
+- [x] Menu bar icon and hotkeys inactive until first run completes

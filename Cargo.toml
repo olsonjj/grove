@@ -30,3 +30,9 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
     "NSScreen",
     "NSWorkspace",
 ] }
+objc2-service-management = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "SMAppService",
+    "objc2",
+    "objc2-foundation",
+] }

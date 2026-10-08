@@ -30,7 +30,10 @@ pub use launch::{
 };
 pub use menu::{MenuGroup, MenuRow, StateLine, menu};
 pub use search::{Hit, Matches, search};
-pub use settings::{CustomCommand, MAX_RECENTS, Settings, SettingsFile, TerminalOpensIn};
+pub use settings::{
+    CustomCommand, LoginItemHost, LoginItemStatus, MAX_RECENTS, Settings, SettingsFile,
+    TerminalOpensIn, is_installed_location,
+};
 pub use snapshot::{
     FetchRead, FetchReport, FetchResult, Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead,
     ScanResult, Snapshot, SnapshotStore, StatusReads, StatusResult, Worktree, scan,

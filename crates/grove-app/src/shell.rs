@@ -4,7 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use global_hotkey::GlobalHotKeyManager;
-use gpui_kit::{AnyWindowHandle, App, AppContext, Global, WindowId};
+use gpui_kit::component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext, Global, KeyBinding, Menu, MenuItem, OsAction, Window,
+    WindowId,
+};
 use grove_core::{
     Changes, FetchReport, Settings, SettingsFile, Snapshot, SnapshotCache, SnapshotStore,
     StatusReads, Watcher,
@@ -26,6 +30,11 @@ const CACHE_DELAY: Duration = Duration::from_secs(2);
 /// A notice posted while no window could show it is shown by the next one within this.
 const NOTICE_FRESH: Duration = Duration::from_secs(60);
 const BACKGROUND_FETCH: Duration = Duration::from_secs(15 * 60);
+
+gpui_kit::actions!(
+    grove,
+    [Quit, Hide, HideOthers, ShowAll, CloseWindow, Minimize]
+);
 
 /// Settings and snapshot the windows render from. A global of its own so windows don't
 /// depend on the platform shell (tests set it alone).
@@ -116,6 +125,19 @@ struct Shell {
 
 impl Global for Shell {}
 
+impl Shell {
+    fn new(tray: Option<TrayIcon>, hotkeys: Option<GlobalHotKeyManager>) -> Self {
+        Self {
+            _tray: tray,
+            _hotkeys: hotkeys,
+            popover: None,
+            popover_closed_at: None,
+            main: None,
+            prev_app: None,
+        }
+    }
+}
+
 /// Installs the status item and hotkeys, starts watching, and opens the main window. Only
 /// called once setup is complete, so a half-configured Grove has no menu bar icon or
 /// shortcuts. A `cached` snapshot is shown as is while a full refresh runs.
@@ -137,6 +159,7 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
         last_scan: None,
     });
     cx.set_global(library);
+    crate::login_item::sync(cx);
     if cached {
         rescan(cx);
     } else {
@@ -146,14 +169,7 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
     start_watching(cx);
     start_background_fetch(cx);
     crate::launcher::install(cx);
-    cx.set_global(Shell {
-        _tray: tray,
-        _hotkeys: hotkeys,
-        popover: None,
-        popover_closed_at: None,
-        main: None,
-        prev_app: None,
-    });
+    cx.set_global(Shell::new(tray, hotkeys));
     windows::warm_up(cx);
     cx.spawn(async move |cx| {
         while let Ok(event) = rx.recv().await {
@@ -162,6 +178,111 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
     })
     .detach();
     handle(PlatformEvent::ShowMain, cx);
+}
+
+/// App-wide hooks, set before any window opens: window bookkeeping, the app menu with ⌘Q,
+/// and a flush however Grove quits.
+pub fn init(cx: &mut App) {
+    cx.on_window_closed(|cx, id| {
+        if is_running(cx) {
+            on_window_closed(cx, id);
+        } else {
+            // Setup closed before finishing: nothing else can bring Grove back.
+            quit(cx);
+        }
+    })
+    .detach();
+    cx.on_app_quit(|cx| {
+        flush(cx);
+        async {}
+    })
+    .detach();
+    cx.on_action(|_: &Quit, cx| quit(cx));
+    cx.on_action(|_: &Hide, cx| cx.hide());
+    cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
+    cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
+    // Closing the main window keeps Grove running (see `on_window_closed`).
+    // Popover and switcher have the keys while open, but as non-activating panels they're
+    // never GPUI's active (main) window; the main window behind them is.
+    cx.on_action(|_: &CloseWindow, cx| {
+        if let Some(open) = open_switcher(cx) {
+            switcher::dismiss(open, cx);
+        } else if let Some(popover) = open_popover(cx) {
+            on_window(popover, cx, Window::remove_window);
+        } else if let Some(window) = cx.active_window() {
+            on_window(window, cx, Window::remove_window);
+        }
+    });
+    cx.on_action(|_: &Minimize, cx| {
+        if open_switcher(cx).is_none()
+            && open_popover(cx).is_none()
+            && let Some(window) = cx.active_window()
+        {
+            on_window(window, cx, |w| w.minimize_window());
+        }
+    });
+    cx.bind_keys([
+        KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-h", Hide, None),
+        KeyBinding::new("alt-cmd-h", HideOthers, None),
+        KeyBinding::new("cmd-w", CloseWindow, None),
+        KeyBinding::new("cmd-m", Minimize, None),
+    ]);
+    cx.set_menus([
+        Menu::new("Grove").items([
+            MenuItem::action("Hide Grove", Hide),
+            MenuItem::action("Hide Others", HideOthers),
+            MenuItem::action("Show All", ShowAll),
+            MenuItem::separator(),
+            MenuItem::action("Quit Grove", Quit),
+        ]),
+        Menu::new("Edit").items([
+            MenuItem::os_action("Undo", Undo, OsAction::Undo),
+            MenuItem::os_action("Redo", Redo, OsAction::Redo),
+            MenuItem::separator(),
+            MenuItem::os_action("Cut", Cut, OsAction::Cut),
+            MenuItem::os_action("Copy", Copy, OsAction::Copy),
+            MenuItem::os_action("Paste", Paste, OsAction::Paste),
+            MenuItem::os_action("Select All", SelectAll, OsAction::SelectAll),
+        ]),
+        Menu::new("Window").items([
+            MenuItem::action("Minimize", Minimize),
+            MenuItem::action("Close Window", CloseWindow),
+        ]),
+    ]);
+}
+
+fn open_switcher(cx: &App) -> Option<AnyWindowHandle> {
+    switcher::window(cx).filter(|w| cx.windows().contains(w))
+}
+
+fn open_popover(cx: &App) -> Option<AnyWindowHandle> {
+    cx.try_global::<Shell>().and_then(|s| s.popover)
+}
+
+/// Deferred: menu and key actions arrive inside the key window's own update.
+fn on_window(window: AnyWindowHandle, cx: &mut App, f: fn(&mut Window)) {
+    cx.defer(move |cx| {
+        let _ = window.update(cx, |_, window, _| f(window));
+    });
+}
+
+/// Dock icon clicked while no window shows (GPUI doesn't report other clicks, so with only
+/// the popover or switcher up it does nothing). Before setup finishes, setup's window is the
+/// only one, e.g. minimized.
+pub fn reopen(cx: &mut App) {
+    if is_running(cx) {
+        handle(PlatformEvent::ShowMain, cx);
+    } else if let Some(setup) = cx.windows().into_iter().next() {
+        cx.activate(true);
+        let _ = setup.update(cx, |_, window, _| window.activate_window());
+    }
+}
+
+/// Running as after `start`, minus the status item, hotkeys and background work.
+#[cfg(test)]
+pub fn start_bare(cx: &mut App) {
+    cx.set_global(Shell::new(None, None));
 }
 
 pub fn is_running(cx: &App) -> bool {
@@ -418,7 +539,7 @@ pub fn open_settings(cx: &mut App) {
     show_main(cx);
 }
 
-fn save_settings(cx: &mut App) {
+pub(crate) fn save_settings(cx: &mut App) {
     let library = cx.global_mut::<Library>();
     let (file, settings) = (library.settings_file.clone(), library.settings.clone());
     library.saves.issue().write(cx, move || {
@@ -427,9 +548,16 @@ fn save_settings(cx: &mut App) {
     });
 }
 
-/// Quit, Grove's only way out: first writes what's still pending, since background saves
-/// and the debounced cache die with the process.
+/// Quit, Grove's only way out (popover, ⌘Q, app menu). The Dock menu's Quit and logout
+/// terminate without it, so `init` flushes on any quit too.
 pub fn quit(cx: &mut App) {
+    flush(cx);
+    cx.quit();
+}
+
+/// Writes what's still pending, since background saves and the debounced cache die with the
+/// process. Writes nothing if called again.
+fn flush(cx: &mut App) {
     if cx.has_global::<Library>() {
         let library = cx.global_mut::<Library>();
         let (file, settings) = (library.settings_file.clone(), library.settings.clone());
@@ -444,6 +572,7 @@ pub fn quit(cx: &mut App) {
     if cx.try_global::<Live>().is_some_and(|l| l.cache_pending) {
         let snapshot = library(cx).store.snapshot().clone();
         let live = cx.global_mut::<Live>();
+        live.cache_pending = false;
         let cache = live.cache.clone();
         live.cache_saves.issue().write_now(|| {
             cache
@@ -451,7 +580,6 @@ pub fn quit(cx: &mut App) {
                 .inspect_err(|e| eprintln!("[grove] caching to {}: {e}", cache.path().display()))
         });
     }
-    cx.quit();
 }
 
 impl Saves {
@@ -519,6 +647,7 @@ pub fn handle(event: PlatformEvent, cx: &mut App) {
         }
         PlatformEvent::ShowMain => {
             refresh_all(cx);
+            macos::unhide();
             cx.activate(true);
             if let Some(main) = cx.global::<Shell>().main {
                 let _ = main.update(cx, |_, window, _| window.activate_window());
@@ -535,7 +664,7 @@ pub fn close(window: AnyWindowHandle, cx: &mut App) {
     let _ = window.update(cx, |_, window, _| window.remove_window());
 }
 
-pub fn on_window_closed(cx: &mut App, id: WindowId) {
+fn on_window_closed(cx: &mut App, id: WindowId) {
     let is = |h: Option<AnyWindowHandle>| h.is_some_and(|h| h.window_id() == id);
     let switcher = switcher::closed(id, cx);
     let shell = cx.global_mut::<Shell>();
@@ -556,5 +685,231 @@ pub fn on_window_closed(cx: &mut App, id: WindowId) {
         {
             macos::activate(prev);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{OwnedMenuItem, TestAppContext};
+    use grove_core::{Outcome, Settings, SettingsFile};
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::test_support::{canned, fake_launcher, set_library, settings_file};
+
+    /// Grove past setup with its main window open and an unsaved settings change.
+    fn running(cx: &mut TestAppContext, file: &SettingsFile) -> AnyWindowHandle {
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let main = cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            set_library(file, vec![canned()], cx);
+            start_bare(cx);
+            show_main(cx);
+            record_open(Path::new("/c/wt/api-y"), cx);
+            cx.global::<Shell>().main.unwrap()
+        });
+        cx.update_window(main, |_, window, _| window.activate_window())
+            .unwrap();
+        // Not parked: the background settings save hasn't run.
+        main
+    }
+
+    fn recents(file: &SettingsFile) -> Vec<PathBuf> {
+        file.load().unwrap().recents
+    }
+
+    fn main_window(cx: &mut TestAppContext) -> Option<AnyWindowHandle> {
+        cx.update(|cx| cx.global::<Shell>().main)
+    }
+
+    #[gpui_kit::test]
+    fn closing_main_window_keeps_grove_running(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let main = running(cx, &file);
+        cx.update(|cx| close(main, cx));
+        cx.run_until_parked();
+        assert!(cx.update(|cx| is_running(cx)));
+        assert_eq!(main_window(cx), None);
+    }
+
+    #[gpui_kit::test]
+    fn show_main_reopens_a_closed_main_window(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let main = running(cx, &file);
+        cx.update(|cx| close(main, cx));
+        cx.run_until_parked();
+        cx.update(|cx| handle(PlatformEvent::ShowMain, cx));
+        let reopened = main_window(cx).expect("main window reopened");
+        assert!(cx.update(|cx| cx.windows().contains(&reopened)));
+    }
+
+    #[gpui_kit::test]
+    fn dock_reopen_shows_main_window(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let main = running(cx, &file);
+        cx.update(|cx| close(main, cx));
+        cx.run_until_parked();
+        cx.update(reopen);
+        assert!(main_window(cx).is_some());
+    }
+
+    #[gpui_kit::test]
+    fn dock_reopen_before_setup_finishes_opens_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            reopen(cx);
+        });
+        assert!(cx.update(|cx| cx.windows().is_empty()));
+    }
+
+    #[gpui_kit::test]
+    fn dock_reopen_before_setup_finishes_brings_up_setup(cx: &mut TestAppContext) {
+        let setup = cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            let setup = cx
+                .open_window(Default::default(), |_, cx| cx.new(|_| gpui_kit::EmptyView))
+                .unwrap();
+            reopen(cx);
+            setup
+        });
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| cx.active_window()), Some(setup.into()));
+    }
+
+    #[gpui_kit::test]
+    fn cmd_q_writes_pending_settings_first(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let main = running(cx, &file);
+        cx.update_window(main, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("cmd-q", cx);
+        })
+        .unwrap();
+        assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-y")]);
+    }
+
+    /// The action behind `menu`'s `item`.
+    fn menu_action(cx: &mut TestAppContext, menu: &str, item: &str) -> Box<dyn gpui_kit::Action> {
+        let menus = cx.update(|cx| cx.get_menus()).unwrap();
+        menus
+            .into_iter()
+            .find(|m| m.name == menu)
+            .unwrap()
+            .items
+            .into_iter()
+            .find_map(|i| match i {
+                OwnedMenuItem::Action { name, action, .. } if name == item => Some(action),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn menu_quit_writes_pending_settings_first(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let quit = menu_action(cx, "Grove", "Quit Grove");
+        cx.update(|cx| cx.dispatch_action(quit.as_ref()));
+        assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-y")]);
+    }
+
+    #[gpui_kit::test]
+    fn cmd_w_closes_main_window_and_grove_keeps_running(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let main = running(cx, &file);
+        cx.update_window(main, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("cmd-w", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| cx.windows().contains(&main)));
+        assert!(cx.update(|cx| is_running(cx)));
+        assert_eq!(main_window(cx), None);
+    }
+
+    /// Like Esc: no reopen guard, so the shortcut right after opens it again.
+    #[gpui_kit::test]
+    fn cmd_w_dismisses_the_switcher(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let w = cx.update(|cx| {
+            switcher::toggle(Instant::now(), cx);
+            switcher::window(cx).unwrap()
+        });
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("cmd-w", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert!(!cx.update(|cx| cx.windows().contains(&w)));
+        assert!(cx.update(|cx| switcher::toggle(Instant::now(), cx)));
+    }
+
+    #[gpui_kit::test]
+    fn cmd_w_closes_the_popover_not_the_main_window_behind_it(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let main = running(cx, &file);
+        let anchor = status_item::Anchor {
+            x: 600.,
+            y: 0.,
+            width: 24.,
+            height: 24.,
+            screen: None,
+        };
+        let popover = cx.update(|cx| {
+            handle(PlatformEvent::StatusItemClicked { anchor }, cx);
+            open_popover(cx).unwrap()
+        });
+        cx.update_window(popover, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("cmd-w", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| cx.active_window()), Some(main));
+        assert_eq!(cx.update(|cx| open_popover(cx)), None);
+        assert!(!cx.update(|cx| cx.windows().contains(&popover)));
+        assert_eq!(main_window(cx), Some(main));
+    }
+
+    #[gpui_kit::test]
+    fn menu_close_window_closes_main_window(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let main = running(cx, &file);
+        let close = menu_action(cx, "Window", "Close Window");
+        cx.update_window(main, |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_action(close, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(main_window(cx), None);
+    }
+
+    /// The Dock menu's Quit and logout terminate the app without going through `quit`.
+    #[gpui_kit::test]
+    fn system_quit_writes_pending_settings_first(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        cx.quit();
+        assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-y")]);
     }
 }

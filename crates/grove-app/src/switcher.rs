@@ -62,7 +62,7 @@ pub fn toggle(at: Instant, cx: &mut App) -> bool {
 }
 
 /// Closes the switcher on the user's say-so, so focus goes back to the previous app.
-fn dismiss(window: AnyWindowHandle, cx: &mut App) {
+pub fn dismiss(window: AnyWindowHandle, cx: &mut App) {
     let current = cx.default_global::<Current>();
     if current.window == Some(window) {
         current.dismissed = true;

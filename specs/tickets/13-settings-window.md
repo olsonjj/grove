@@ -11,5 +11,5 @@
 - [ ] Sidebar footer shows code directory with Change link to same picker
 - [ ] Editor and terminal defaults; tab/window option where supported
 - [ ] Show menu bar icon toggle; off hides icon, main window and ⌥⌘K still work
-- [ ] Background fetch toggle; launch at login toggle
+- [ ] Background fetch toggle; launch at login toggle (Save calls `login_item::apply`; hint to allow it in System Settings when status is `RequiresApproval`; Save from a copy that isn't the recorded `login_item_path` should say so, since the old copy may stay a second login item)
 - [ ] Save applies immediately to all surfaces; Cancel discards

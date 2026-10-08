@@ -2,6 +2,7 @@ mod details_view;
 mod hotkeys;
 mod icons;
 mod launcher;
+mod login_item;
 mod macos;
 mod main_window;
 mod popover;
@@ -27,21 +28,14 @@ pub enum PlatformEvent {
 }
 
 fn main() {
-    gpui_kit::application()
+    let app = gpui_kit::application()
         .with_assets(icons::Assets)
-        .with_quit_mode(QuitMode::Explicit)
-        .run(|cx: &mut App| {
-            gpui_kit::init(cx);
-            macos::use_dark_appearance();
-            cx.on_window_closed(|cx, id| {
-                if shell::is_running(cx) {
-                    shell::on_window_closed(cx, id);
-                } else {
-                    // Setup closed before finishing: nothing else can bring Grove back.
-                    shell::quit(cx);
-                }
-            })
-            .detach();
-            setup::launch(cx);
-        });
+        .with_quit_mode(QuitMode::Explicit);
+    app.on_reopen(shell::reopen);
+    app.run(|cx: &mut App| {
+        gpui_kit::init(cx);
+        macos::use_dark_appearance();
+        shell::init(cx);
+        setup::launch(cx);
+    });
 }
