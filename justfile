@@ -35,6 +35,25 @@ bundle:
     codesign --force --deep --sign - {{app}}
     @echo "Built {{app}}"
 
+universal_app := "target/aarch64-apple-darwin/release/bundle/osx/Grove.app"
+
+# Build ad-hoc-signed universal (Apple silicon + Intel) Grove.app
+bundle-universal:
+    rustup target add aarch64-apple-darwin x86_64-apple-darwin
+    cargo bundle -p grove-app --release --target aarch64-apple-darwin
+    cargo build -p grove-app --release --target x86_64-apple-darwin
+    lipo -create -output {{universal_app}}/Contents/MacOS/grove \
+        target/aarch64-apple-darwin/release/grove \
+        target/x86_64-apple-darwin/release/grove
+    codesign --force --deep --sign - {{universal_app}}
+    @lipo -archs {{universal_app}}/Contents/MacOS/grove
+    @echo "Built {{universal_app}}"
+
+# Zip the universal Grove.app for a beta tester
+zip: bundle-universal
+    ditto -c -k --keepParent {{universal_app}} target/Grove.zip
+    @echo "Built target/Grove.zip"
+
 # Bundle and copy to /Applications
 install: bundle
     rm -rf /Applications/Grove.app
