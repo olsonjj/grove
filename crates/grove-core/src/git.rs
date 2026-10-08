@@ -255,8 +255,10 @@ pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
     Ok(status)
 }
 
-/// Stats only the listed paths (an untracked folder is one entry); deleted ones are skipped.
+/// Stats only the listed paths (an untracked folder is one entry); deleted ones are skipped,
+/// and so are ones dated in the future, which would otherwise outrank real activity for good.
 fn changes_time(worktree: &Path, files: &[ChangedFile]) -> Option<i64> {
+    let now = std::time::SystemTime::now();
     files
         .iter()
         .filter_map(|f| {
@@ -265,6 +267,7 @@ fn changes_time(worktree: &Path, files: &[ChangedFile]) -> Option<i64> {
                 .modified()
                 .ok()
         })
+        .filter(|&t| t <= now)
         .max()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .and_then(|d| i64::try_from(d.as_secs()).ok())

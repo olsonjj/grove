@@ -149,4 +149,6 @@ A good test drives behavior through a public seam and asserts the order or state
 - Pinned-group order is alphabetical for stability. If it turns out you want pins in recent order too, have them follow the repo sort mode. That's a one-line change in the ordering function.
 - Recent mode can reorder the list right after an open from Grove. Selection-by-identity keeps that from being disruptive, but watch for jumpiness during daily use. Possible mitigation: delay reorders while the sidebar has focus.
 - `changes_time` treats a file touched by a build tool or formatter as activity. That's acceptable because the file shows as changed in Grove anyway.
+- `changes_time` doesn't walk: an untracked folder or a submodule counts only by its own modified time, so edits deeper inside may not register. Discarding edits removes their files from the list, so activity can go down. Files dated in the future are ignored.
+- `last_opened` isn't pruned when a rescan couldn't list some repo's worktrees, so a failed read doesn't wipe history.
 - Update the PRD's "revisit sort order after use" open question to point here.

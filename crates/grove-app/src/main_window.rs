@@ -413,15 +413,17 @@ impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let library = shell::library(cx);
         let snapshot = library.store.snapshot().clone();
-        let (pinned, last_opened, sort) = (
-            library.settings.pinned_repos.clone(),
-            library.settings.last_opened.clone(),
-            library.settings.repo_sort,
+        let settings = &library.settings;
+        let sort = settings.repo_sort;
+        let order = repo_order(
+            &snapshot,
+            &settings.pinned_repos,
+            &settings.last_opened,
+            sort,
         );
         let selected = self.selected(cx);
         let top_bar = self.top_bar(selected.as_deref().and_then(|n| snapshot.repo(n)), cx);
 
-        let order = repo_order(&snapshot, &pinned, &last_opened, sort);
         self.repo_focus
             .retain(|name, _| order.iter().any(|r| r.name() == name));
         let mut rows: Vec<AnyElement> = Vec::new();

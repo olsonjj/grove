@@ -357,9 +357,13 @@ pub fn scan(code_dir: &Path) -> Snapshot {
         thread::scope(|s| {
             let handles: Vec<_> = chunk
                 .iter()
-                .map(|r| s.spawn(move || read_repo(r.clone())))
+                .map(|r| (r, s.spawn(move || read_repo(r.clone()))))
                 .collect();
-            repos.extend(handles.into_iter().filter_map(|h| h.join().ok()));
+            // A read that panicked keeps its repo, as unreadable rather than gone.
+            repos.extend(handles.into_iter().map(|(r, h)| {
+                h.join()
+                    .unwrap_or_else(|_| unread(r.clone(), "worktree list read panicked"))
+            }));
         });
     }
     set_display_names(&mut repos);
@@ -420,14 +424,26 @@ fn read_repo(repo: RepoRef) -> RepoSnapshot {
                 fetch_error: None,
             }
         }
-        Err(e) => RepoSnapshot {
-            display_name: String::new(),
-            repo,
-            worktrees: Vec::new(),
-            error: Some(e),
-            fetch_error: None,
-        },
+        Err(e) => failed_repo(repo, e),
     }
+}
+
+fn failed_repo(repo: RepoRef, e: GitError) -> RepoSnapshot {
+    RepoSnapshot {
+        display_name: String::new(),
+        repo,
+        worktrees: Vec::new(),
+        error: Some(e),
+        fetch_error: None,
+    }
+}
+
+fn unread(repo: RepoRef, why: &str) -> RepoSnapshot {
+    let e = GitError::Failed {
+        args: "worktree list --porcelain".into(),
+        stderr: why.into(),
+    };
+    failed_repo(repo, e)
 }
 
 /// Owns the current snapshot for one code directory.

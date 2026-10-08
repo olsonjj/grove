@@ -1014,6 +1014,57 @@ mod tests {
         assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-y")]);
     }
 
+    /// After each full rescan of a code folder holding a bare repo `web` (no worktrees, so no
+    /// status reads), `last_opened` as saved.
+    #[gpui_kit::test]
+    fn rescan_prunes_last_opened_and_saves_unless_a_repo_is_unreadable(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let mut settings = Settings::default();
+        settings.record_open(Path::new("/gone"), 1_700_000_000);
+        let file = settings_file(&tmp, settings);
+        running(cx, &file);
+        let code = TempDir::new().unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q", "--bare", "web"])
+            .current_dir(code.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok);
+        // Looks like a bare repo to discovery, but git can't list its worktrees.
+        let broken = code.path().join("broken");
+        for dir in ["objects", "refs"] {
+            std::fs::create_dir_all(broken.join(dir)).unwrap();
+        }
+        std::fs::write(broken.join("HEAD"), "garbage").unwrap();
+        let rescan = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                cx.set_global(Live {
+                    watch: None,
+                    cache: SnapshotCache::beside(&file),
+                    cache_saves: Saves::default(),
+                    cache_pending: false,
+                    scanning: false,
+                    last_scan: None,
+                });
+                cx.global_mut::<Library>().store.replace(Snapshot {
+                    code_dir: code.path().into(),
+                    code_dir_exists: true,
+                    repos: vec![],
+                    last_fetch: None,
+                });
+                refresh_all(cx);
+            });
+            cx.run_until_parked();
+            file.load().unwrap().last_opened
+        };
+
+        assert!(rescan(cx).contains_key(Path::new("/gone")), "broken repo");
+        std::fs::remove_dir_all(&broken).unwrap();
+        assert!(rescan(cx).is_empty());
+    }
+
     /// Its scan dates from when the folder was picked, so it mustn't hold off a refresh.
     #[gpui_kit::test]
     fn settings_save_of_a_new_code_folder_lets_refresh_rescan(cx: &mut TestAppContext) {

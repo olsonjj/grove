@@ -517,21 +517,46 @@ fn editing_a_file_sets_changes_time() {
 fn editing_an_already_changed_file_moves_changes_time() {
     let f = Fixture::new();
     let api = init_repo(&f.code().join("api"));
-    fs::write(api.join("wip.txt"), "1").unwrap();
+    let wip = api.join("wip.txt");
+    fs::write(&wip, "1").unwrap();
+    set_mtime(&wip, 1_700_000_000);
     let mut store = SnapshotStore::new(&f.code());
     store.refresh_statuses();
-    let before = worktree(store.snapshot(), "api").clone();
+    assert_eq!(
+        worktree(store.snapshot(), "api").changes_time,
+        Some(1_700_000_000)
+    );
 
     // Same `git status` output, newer file.
-    let later = std::time::UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000);
+    set_mtime(&wip, 1_700_000_100);
+    store.refresh_statuses();
+    assert_eq!(
+        worktree(store.snapshot(), "api").changes_time,
+        Some(1_700_000_100)
+    );
+}
+
+fn set_mtime(path: &Path, secs: u64) {
     fs::File::options()
         .write(true)
-        .open(api.join("wip.txt"))
+        .open(path)
         .unwrap()
-        .set_modified(later)
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
         .unwrap();
-    store.refresh_statuses();
-    let after = worktree(store.snapshot(), "api");
-    assert_eq!(after.changes_time, Some(4_000_000_000));
-    assert_ne!(before.changes_time, after.changes_time);
+}
+
+/// A clock-skewed or tool-stamped file would otherwise keep its repo on top for years.
+#[test]
+fn files_dated_in_the_future_are_ignored() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let (past, future) = (api.join("past.txt"), api.join("future.txt"));
+    fs::write(&past, "p").unwrap();
+    fs::write(&future, "f").unwrap();
+    set_mtime(&past, 1_700_000_000);
+    set_mtime(&future, 4_000_000_000);
+    assert_eq!(worktree(&read(&f), "api").changes_time, Some(1_700_000_000));
+
+    fs::remove_file(&past).unwrap();
+    assert_eq!(worktree(&read(&f), "api").changes_time, None);
 }

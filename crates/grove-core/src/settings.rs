@@ -259,11 +259,12 @@ impl Settings {
         true
     }
 
-    /// After a full rescan: forgets when worktrees no longer in `snapshot` were opened. Skipped
-    /// while the code dir is missing, so an unmounted volume doesn't wipe the history.
-    /// Returns whether anything changed.
+    /// After a full rescan: forgets when worktrees no longer in `snapshot` were opened.
+    /// Skipped while the code dir is missing or any repo's worktrees couldn't be listed, so
+    /// an unmounted volume or a failed read doesn't wipe the history. Returns whether
+    /// anything changed.
     pub fn prune_last_opened(&mut self, snapshot: &Snapshot) -> bool {
-        if !snapshot.code_dir_exists {
+        if !snapshot.code_dir_exists || snapshot.repos.iter().any(|r| r.error.is_some()) {
             return false;
         }
         let known: HashSet<&Path> = snapshot

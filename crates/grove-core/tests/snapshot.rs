@@ -318,6 +318,30 @@ fn rescan_prunes_last_opened_for_vanished_worktrees() {
 }
 
 #[test]
+fn rescan_with_an_unreadable_repo_prunes_nothing() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    let wt = f.outside("api-x");
+    add_worktree(&api, &wt, "x");
+    init_repo(&f.code().join("web"));
+    let mut store = SnapshotStore::new(&f.code());
+    let mut s = Settings::default();
+    for w in store.snapshot().repos.iter().flat_map(|r| &r.worktrees) {
+        s.record_open(&w.path, 1_700_000_000);
+    }
+    s.record_open(&PathBuf::from("/gone"), 1_700_000_000);
+    let before = s.last_opened.clone();
+
+    // `git worktree list` fails in api, so its worktrees are unknown, not gone.
+    fs::remove_file(api.join(".git/HEAD")).unwrap();
+    store.refresh_all();
+    let api_repo = store.snapshot().repo("api").unwrap();
+    assert!(api_repo.error.is_some() && api_repo.worktrees.is_empty());
+    assert!(!s.prune_last_opened(store.snapshot()));
+    assert_eq!(s.last_opened, before);
+}
+
+#[test]
 fn settings_save_keeps_what_changed_while_the_window_was_open() {
     let mut s = Settings::default();
     let mut edited = s.preferences();
