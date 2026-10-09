@@ -2,6 +2,7 @@
 
 macOS app that shows every Git worktree in your code folder as one tree and opens any of them in your editor or terminal in one action.
 
+![Grove main window](docs/screenshot.png)
 - **Main window** (⌥⌘G): repos → checked-out branches → worktrees, with state badges (changes, ahead/behind, upstream gone, locked, …) and a details pane.
 - **Quick switcher** (⌥⌘K): fuzzy-find a worktree from anywhere and open it.
 - **Menu bar popover**: same, from the status item.
