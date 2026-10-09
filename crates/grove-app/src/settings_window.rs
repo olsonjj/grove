@@ -24,6 +24,13 @@ use crate::theme::{self, ButtonKind, button};
 use crate::{setup, shell};
 
 const SIZE: (f32, f32) = (820., 760.);
+const VERSION: &str = concat!(
+    "Grove ",
+    env!("CARGO_PKG_VERSION"),
+    " (build ",
+    env!("GROVE_BUILD"),
+    ")"
+);
 
 /// The open settings window, so Settings… brings it forward instead of opening another.
 struct Open(AnyWindowHandle);
@@ -843,7 +850,8 @@ impl Render for SettingsWindow {
                             .child(self.choices(Role::Editor, cx))
                             .child(self.choices(Role::Terminal, cx)),
                     )
-                    .child(self.general(cx)),
+                    .child(self.general(cx))
+                    .child(note(VERSION)),
             )
             .child(self.footer(cx))
     }
