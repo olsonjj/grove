@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f8a5c"/>
+      <stop offset="1" stop-color="#11402c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.38" r="0.5">
+      <stop offset="0" stop-color="#7fd29c" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#7fd29c" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000" flood-opacity="0.28"/>
+    </filter>
+    <clipPath id="sq"><rect x="100" y="100" width="824" height="824" rx="185"/></clipPath>
+  </defs>
+  <g filter="url(#shadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  </g>
+  <g clip-path="url(#sq)">
+    <circle cx="512" cy="430" r="330" fill="url(#glow)"/>
+    <!-- canopy -->
+    <g fill="#4fb07a" opacity="0.55">
+      <circle cx="512" cy="360" r="150"/>
+      <circle cx="372" cy="450" r="125"/>
+      <circle cx="652" cy="440" r="130"/>
+      <circle cx="440" cy="300" r="105"/>
+      <circle cx="590" cy="300" r="110"/>
+    </g>
+    <!-- ground -->
+    <ellipse cx="512" cy="838" rx="230" ry="28" fill="#0b2e1f" opacity="0.5"/>
+    <!-- branches as git graph -->
+    <g fill="none" stroke="#f4eed6" stroke-width="38" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M512 830 V300"/>
+      <path d="M512 700 C512 620 368 610 368 530 V490"/>
+      <path d="M512 640 C512 560 648 550 648 470 V430"/>
+    </g>
+    <!-- commit nodes -->
+    <g fill="#1f6a46" stroke="#f4eed6" stroke-width="22">
+      <circle cx="512" cy="282" r="40"/>
+      <circle cx="368" cy="470" r="36"/>
+      <circle cx="648" cy="412" r="36"/>
+    </g>
+  </g>
+</svg>

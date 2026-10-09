@@ -30,6 +30,7 @@ tempfile.workspace = true
 name = "Grove"
 identifier = "dev.grove.Grove"
 category = "public.app-category.developer-tools"
+icon = ["crates/grove-app/icons/Grove.icns"]
 
 [package.metadata.bundle.osx]
 minimum_system_version = "14.0"
