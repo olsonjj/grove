@@ -302,6 +302,7 @@ impl DetailsView {
             Button::new(id)
                 .disabled(!openable)
                 .h(px(32.))
+                .text_size(px(13.))
                 .bg(bg)
                 .text_color(fg)
                 .border_1()
