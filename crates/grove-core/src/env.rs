@@ -20,8 +20,10 @@ const FALLBACK_DIRS: &[&str] = &[
     "/sbin",
 ];
 
+/// Where the subprocess PATH came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathSource {
+    /// Extracted from the user's login shell.
     LoginShell,
     /// Login shell failed or timed out; inherited PATH plus fallback dirs.
     Fallback,
@@ -30,8 +32,11 @@ pub enum PathSource {
 /// Environment every Grove subprocess runs with.
 #[derive(Debug, Clone)]
 pub struct ShellEnv {
+    /// Resolved colon-separated executable search path.
     pub path: String,
+    /// How `path` was resolved.
     pub source: PathSource,
+    /// User shell used for login-shell commands.
     pub shell: String,
 }
 

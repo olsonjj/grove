@@ -1,4 +1,7 @@
-//! Headless core: no GPUI. The app is a thin shell over this.
+//! Headless repository discovery, status, navigation, launch planning, and persistence for Grove.
+//! The graphical app is a thin shell over this crate.
+
+#![deny(missing_docs)]
 
 mod badge;
 mod cache;

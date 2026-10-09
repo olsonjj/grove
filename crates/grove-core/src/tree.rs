@@ -21,56 +21,78 @@ pub enum RowId {
     Folder(String),
     /// Full branch name.
     Branch(String),
+    /// Worktree row identified by absolute path.
     Worktree(PathBuf),
+    /// Non-selectable detached-worktrees section header.
     DetachedSection,
 }
 
 /// What a row shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKind {
+    /// Collapsible branch-name prefix.
     Folder {
+        /// Prefix including its trailing slash.
         prefix: String,
         /// Checked-out branches inside.
         count: usize,
+        /// Whether child rows are hidden.
         collapsed: bool,
     },
+    /// Local branch row.
     Branch {
+        /// Full branch name.
         name: String,
         /// Name shown in the row: the part after the folder prefix.
         label: String,
     },
+    /// Checked-out worktree row.
     Worktree {
+        /// Absolute worktree path.
         path: PathBuf,
+        /// Path split into visually styled segments.
         display: DisplayPath,
+        /// Whether this is the original worktree.
         is_main: bool,
+        /// Whether git has locked this worktree.
         locked: bool,
+        /// Current folder availability.
         presence: Presence,
+        /// State badges in display order.
         badges: Vec<Badge>,
     },
+    /// Non-selectable detached-worktrees section header.
     DetachedSection,
 }
 
 /// One visible row of a `Tree`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
+    /// Stable row identity.
     pub id: RowId,
     /// Indent level; 0 at the top.
     pub depth: usize,
     /// The folder or branch row it's nested under.
     pub parent: Option<RowId>,
+    /// Display data for this row.
     pub kind: RowKind,
 }
 
 /// Visible rows of a repo's checked-out tree, top to bottom.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Tree {
+    /// Visible rows in display order.
     pub rows: Vec<Row>,
+    /// Total worktree count, including rows hidden by collapsed folders.
     pub worktrees: usize,
+    /// Total distinct branch count.
     pub branches: usize,
+    /// Total detached worktree count.
     pub detached: usize,
 }
 
 impl Tree {
+    /// Finds the visible row index for `id`.
     pub fn index_of(&self, id: &RowId) -> Option<usize> {
         self.rows.iter().position(|r| &r.id == id)
     }
@@ -106,10 +128,12 @@ impl Tree {
 pub struct DisplayPath {
     /// Everything up to and including the last `/`, e.g. `~/code/wt/`.
     pub parent: String,
+    /// Final path component.
     pub name: String,
 }
 
 impl DisplayPath {
+    /// Splits `path` for display, replacing `home` with `~` when applicable.
     pub fn new(path: &Path, home: Option<&Path>) -> Self {
         let full = tilde(path, home);
         match full.rfind('/') {
@@ -124,6 +148,7 @@ impl DisplayPath {
         }
     }
 
+    /// Reassembles the complete display path.
     pub fn full(&self) -> String {
         format!("{}{}", self.parent, self.name)
     }
@@ -343,15 +368,20 @@ pub(crate) fn by_name(a: &str, b: &str) -> Ordering {
 /// Keyboard input the tree understands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavKey {
+    /// Select the previous row.
     Up,
+    /// Select the next row.
     Down,
+    /// Collapse a folder or select its parent.
     Left,
+    /// Expand a folder or select its first child.
     Right,
 }
 
 /// What a key press does: new selection and/or a folder to collapse or expand.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct NavEffect {
+    /// Row to select, if navigation moves.
     pub select: Option<RowId>,
     /// `(prefix, collapse)`.
     pub toggle: Option<(String, bool)>,

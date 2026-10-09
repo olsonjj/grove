@@ -12,10 +12,13 @@ pub enum RemovalPlan {
     NotAllowed(String),
     /// Folder gone: a plain `git worktree remove` drops just its entry.
     Missing,
+    /// Present worktree with no changes that removal would lose.
     Clean,
     /// Removal needs `--force` and permanently deletes these.
     Dirty {
+        /// Number of modified tracked entries.
         modified: usize,
+        /// Number of untracked files.
         untracked: usize,
     },
 }

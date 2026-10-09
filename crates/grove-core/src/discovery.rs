@@ -17,6 +17,7 @@ pub struct RepoRef {
     pub path: PathBuf,
     /// Canonical common git dir; identifies the repo.
     pub git_dir: PathBuf,
+    /// Whether the repository has no main worktree.
     pub bare: bool,
 }
 

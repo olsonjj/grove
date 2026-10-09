@@ -2,6 +2,11 @@
 resolver = "3"
 members = ["crates/*"]
 
+# Remove when the GPUI dependency graph drops block 0.1.6 or upstream releases
+# an inhabited opaque declaration for `_NSConcreteStackBlock`; see vendor/block/PATCH.md.
+[patch.crates-io]
+block = { path = "vendor/block" }
+
 [workspace.package]
 edition = "2024"
 version = "0.1.0"

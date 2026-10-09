@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::snapshot::Snapshot;
 
+/// Maximum number of paths kept in [`Settings::recents`].
 pub const MAX_RECENTS: usize = 10;
 
 /// Worktree path → when Grove last opened it, Unix seconds.
@@ -16,17 +17,23 @@ pub type LastOpened = BTreeMap<PathBuf, i64>;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Root folder searched for repositories.
     pub code_dir: Option<PathBuf>,
     /// Editor or terminal id (`Editor::id`, `Terminal::id`); editors may also name a custom
     /// command (`CustomCommand::id`). `None` = first detected.
     pub default_editor: Option<String>,
+    /// Terminal id used by default; `None` selects the first detected terminal.
     pub default_terminal: Option<String>,
     /// `None` = per-terminal default (see `Terminal::default_opens_in`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_opens_in: Option<TerminalOpensIn>,
+    /// User-defined editor commands.
     pub custom_commands: Vec<CustomCommand>,
+    /// Whether Grove installs its menu bar icon.
     pub show_menu_bar_icon: bool,
+    /// Whether Grove periodically fetches repositories.
     pub background_fetch: bool,
+    /// Whether the owning app bundle should launch at login.
     pub launch_at_login: bool,
     /// The Grove.app whose login item macOS's record is the user's choice for (they can
     /// remove or re-add it in System Settings). `None` until one registers.
@@ -43,6 +50,7 @@ pub struct Settings {
     pub repo_sort: SortMode,
     /// Order of every repo's tree and of worktrees within a popover group.
     pub tree_sort: SortMode,
+    /// Stable name of the repository last shown in the main window.
     pub last_selected_repo: Option<String>,
 }
 
@@ -74,20 +82,30 @@ impl Default for Settings {
 /// open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preferences {
+    /// Root folder searched for repositories.
     pub code_dir: Option<PathBuf>,
+    /// Default editor or custom-command id.
     pub default_editor: Option<String>,
+    /// Default terminal id.
     pub default_terminal: Option<String>,
+    /// Whether supported terminals open a tab or window.
     pub terminal_opens_in: Option<TerminalOpensIn>,
+    /// User-defined editor commands.
     pub custom_commands: Vec<CustomCommand>,
+    /// Whether to show the menu bar icon.
     pub show_menu_bar_icon: bool,
+    /// Whether to fetch periodically.
     pub background_fetch: bool,
+    /// Whether to launch at login.
     pub launch_at_login: bool,
 }
 
 /// macOS's record of Grove's login item (`SMAppService`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoginItemStatus {
+    /// No login item is registered.
     NotRegistered,
+    /// Login item is enabled.
     Enabled,
     /// Registered, but the user has to allow it in System Settings → Login Items.
     RequiresApproval,
@@ -96,6 +114,7 @@ pub enum LoginItemStatus {
 }
 
 impl LoginItemStatus {
+    /// Returns whether macOS has a registration, enabled or awaiting approval.
     pub fn is_registered(self) -> bool {
         matches!(self, Self::Enabled | Self::RequiresApproval)
     }
@@ -104,6 +123,7 @@ impl LoginItemStatus {
 /// The running Grove.app, as the login item logic sees it.
 #[derive(Debug, Clone, Copy)]
 pub struct LoginItemHost<'a> {
+    /// Running application bundle path.
     pub bundle: &'a Path,
     /// In /Applications or ~/Applications (see `is_installed_location`).
     pub installed: bool,
@@ -175,6 +195,7 @@ impl Settings {
         }
     }
 
+    /// Copies the fields edited by the settings window.
     pub fn preferences(&self) -> Preferences {
         Preferences {
             code_dir: self.code_dir.clone(),
@@ -210,6 +231,7 @@ impl Settings {
         self.launch_at_login = launch_at_login;
     }
 
+    /// Returns collapsed branch prefixes for `repo`.
     pub fn collapsed(&self, repo: &str) -> &[String] {
         self.collapsed.get(repo).map_or(&[], Vec::as_slice)
     }
@@ -230,6 +252,7 @@ impl Settings {
         had != collapsed
     }
 
+    /// Returns whether `repo` is pinned in the sidebar.
     pub fn is_pinned(&self, repo: &Path) -> bool {
         self.pinned_repos.iter().any(|p| p == repo)
     }
@@ -305,6 +328,7 @@ pub enum SortMode {
 }
 
 impl SortMode {
+    /// Returns the user-facing mode label.
     pub fn label(self) -> &'static str {
         match self {
             Self::Recent => "Recent",
@@ -313,20 +337,25 @@ impl SortMode {
     }
 }
 
+/// Preferred container for a newly opened terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TerminalOpensIn {
+    /// Open a new tab when supported.
     Tab,
+    /// Open a new window.
     Window,
 }
 
 /// A user-defined shell command offered alongside the editors.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CustomCommand {
+    /// User-facing command name.
     pub label: String,
     /// `{path}` is replaced with the shell-quoted worktree path.
     pub template: String,
     #[serde(default = "yes")]
+    /// Whether to type the command into a terminal instead of running it in the background.
     pub run_in_terminal: bool,
 }
 
@@ -372,6 +401,7 @@ pub struct SettingsFile {
 }
 
 impl SettingsFile {
+    /// Creates a settings file at `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
@@ -385,11 +415,16 @@ impl SettingsFile {
         Self::new(Path::new(&home).join("Library/Application Support/Grove/settings.json"))
     }
 
+    /// Returns the JSON file path.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// Missing file → defaults. Unreadable or corrupt → error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the file cannot be read or parsed.
     pub fn load(&self) -> io::Result<Settings> {
         match fs::read(&self.path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::other),
@@ -399,6 +434,10 @@ impl SettingsFile {
     }
 
     /// Atomic write (temp file + rename).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when serialization or filesystem operations fail.
     pub fn save(&self, settings: &Settings) -> io::Result<()> {
         let json = serde_json::to_vec_pretty(settings).map_err(io::Error::other)?;
         write_atomic(&self.path, &json)

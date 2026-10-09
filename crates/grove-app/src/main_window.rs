@@ -237,11 +237,11 @@ impl MainWindow {
         self.sync_tree_order(cx);
         let name = self.tree.read(cx).repo_name().map(str::to_string);
         let snapshot = shell::library(cx).store.snapshot().clone();
-        match name.as_deref().and_then(|n| snapshot.repo(n)) {
-            Some(repo) => self
-                .tree
-                .update(cx, |tree, cx| tree.update_repo(Some(repo), cx)),
-            None => self.show_repo(selected_repo(cx).as_deref(), cx),
+        if name.as_deref().and_then(|n| snapshot.repo(n)).is_some() {
+            self.tree
+                .update(cx, |tree, cx| tree.update_snapshot(snapshot, cx));
+        } else {
+            self.show_repo(selected_repo(cx).as_deref(), cx);
         }
         cx.notify();
     }
@@ -295,12 +295,17 @@ impl MainWindow {
     fn show_repo(&mut self, name: Option<&str>, cx: &mut Context<Self>) {
         self.sync_tree_order(cx);
         let library = shell::library(cx);
-        let repo = name.and_then(|n| library.store.snapshot().repo(n)).cloned();
-        let collapsed = name
+        let snapshot = library.store.snapshot().clone();
+        let repo_name = name
+            .filter(|n| snapshot.repo(n).is_some())
+            .map(str::to_string);
+        let collapsed = repo_name
+            .as_deref()
             .map(|n| library.settings.collapsed(n).to_vec())
             .unwrap_or_default();
-        self.tree
-            .update(cx, |tree, cx| tree.set_repo(repo, collapsed, cx));
+        self.tree.update(cx, |tree, cx| {
+            tree.set_snapshot(Some(snapshot), repo_name, collapsed, cx)
+        });
     }
 }
 

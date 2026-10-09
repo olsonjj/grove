@@ -1,6 +1,7 @@
 //! The checked-out tree for the selected repo: legend, rows, keyboard navigation.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui_kit::base::Button;
 use gpui_kit::component::tooltip::Tooltip;
@@ -14,7 +15,7 @@ use gpui_kit::{
 };
 use grove_core::{
     Badge, LastOpened, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind,
-    SortMode, Tree, navigate,
+    Snapshot, SortMode, Tree, navigate,
 };
 
 use crate::details_view::{LeaveMenu, LeaveMenuBack, MENU_CONTEXT};
@@ -43,7 +44,8 @@ pub struct OpenRequested {
 }
 
 pub struct TreeView {
-    repo: Option<RepoSnapshot>,
+    snapshot: Option<Arc<Snapshot>>,
+    repo_name: Option<String>,
     collapsed: Vec<String>,
     sort: SortMode,
     last_opened: LastOpened,
@@ -90,7 +92,8 @@ impl TreeView {
         let sort_menu = cx.new(|cx| SortMenu::new(ids, sort, cx));
         let sort_chosen = cx.subscribe(&sort_menu, |_, _, ev: &SortChosen, cx| cx.emit(*ev));
         Self {
-            repo: None,
+            snapshot: None,
+            repo_name: None,
             collapsed: Vec::new(),
             sort,
             last_opened: LastOpened::new(),
@@ -120,11 +123,17 @@ impl TreeView {
     }
 
     pub fn repo_name(&self) -> Option<&str> {
-        self.repo.as_ref().map(|r| r.name())
+        self.repo().map(RepoSnapshot::name)
     }
 
     pub fn repo(&self) -> Option<&RepoSnapshot> {
-        self.repo.as_ref()
+        self.repo_name
+            .as_deref()
+            .and_then(|name| self.snapshot.as_ref()?.repo(name))
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<&Arc<Snapshot>> {
+        self.snapshot.as_ref()
     }
 
     #[cfg(test)]
@@ -137,13 +146,34 @@ impl TreeView {
     }
 
     /// Shows `repo` with the given collapsed prefixes; selects the first row.
+    #[cfg(test)]
     pub fn set_repo(
         &mut self,
         repo: Option<RepoSnapshot>,
         collapsed: Vec<String>,
         cx: &mut Context<Self>,
     ) {
-        self.repo = repo;
+        let repo_name = repo.as_ref().map(|repo| repo.name().to_string());
+        let snapshot = repo.map(|repo| {
+            Arc::new(Snapshot {
+                code_dir: PathBuf::new(),
+                code_dir_exists: true,
+                repos: vec![repo],
+                last_fetch: None,
+            })
+        });
+        self.set_snapshot(snapshot, repo_name, collapsed, cx);
+    }
+
+    pub(crate) fn set_snapshot(
+        &mut self,
+        snapshot: Option<Arc<Snapshot>>,
+        repo_name: Option<String>,
+        collapsed: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.snapshot = snapshot;
+        self.repo_name = repo_name;
         self.collapsed = collapsed;
         self.rebuild();
         self.selected = None;
@@ -151,11 +181,16 @@ impl TreeView {
     }
 
     /// Same repo with fresher data (e.g. a status read landed); keeps selection and collapse.
-    pub fn update_repo(&mut self, repo: Option<&RepoSnapshot>, cx: &mut Context<Self>) {
-        if self.repo.as_ref() == repo {
+    pub(crate) fn update_snapshot(&mut self, snapshot: Arc<Snapshot>, cx: &mut Context<Self>) {
+        let old_repo = self.repo();
+        let new_repo = self
+            .repo_name
+            .as_deref()
+            .and_then(|name| snapshot.repo(name));
+        if old_repo == new_repo {
             return;
         }
-        self.repo = repo.cloned();
+        self.snapshot = Some(snapshot);
         let old: Vec<RowId> = self.tree.rows.iter().map(|r| r.id.clone()).collect();
         let old_ix = self
             .selected
@@ -200,8 +235,7 @@ impl TreeView {
             })
         });
         self.tree = self
-            .repo
-            .as_ref()
+            .repo()
             .map(|r| r.tree(&self.collapsed, self.sort, &self.last_opened))
             .unwrap_or_default();
         let after = selected_ix(&self.tree);
@@ -346,8 +380,7 @@ impl TreeView {
             return;
         };
         let wt = self
-            .repo
-            .as_ref()
+            .repo()
             .and_then(|r| r.worktrees.iter().find(|w| &w.path == path));
         let offer = wt.and_then(removal::offer);
         let path = path.clone();
@@ -480,7 +513,7 @@ impl TreeView {
         if t.detached > 0 {
             s.push_str(&format!(" + {} detached", t.detached));
         }
-        if self.repo.as_ref().is_some_and(|r| r.repo.bare) {
+        if self.repo().is_some_and(|r| r.repo.bare) {
             s = format!("bare · {s}");
         }
         s
@@ -818,8 +851,7 @@ impl Render for TreeView {
         let empty = rows.is_empty();
         let row_menu = self.row_menu(cx);
         let error = self
-            .repo
-            .as_ref()
+            .repo()
             .and_then(|r| r.error.as_ref())
             .map(|e| e.to_string());
         div()

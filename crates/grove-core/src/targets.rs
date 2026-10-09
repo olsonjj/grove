@@ -12,12 +12,18 @@ use crate::settings::{CustomCommand, Settings, TerminalOpensIn, custom_label};
 const SPOTLIGHT_TIMEOUT: Duration = Duration::from_secs(2);
 const BUNDLE_ID_ATTR: &str = "kMDItemCFBundleIdentifier";
 
+/// Supported graphical code editors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Editor {
+    /// Visual Studio Code.
     VsCode,
+    /// Cursor.
     Cursor,
+    /// Zed.
     Zed,
+    /// IntelliJ IDEA.
     IntelliJ,
+    /// Sublime Text.
     Sublime,
 }
 
@@ -42,10 +48,12 @@ impl Editor {
         }
     }
 
+    /// Parses a stable settings id.
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|e| e.id() == id)
     }
 
+    /// Returns the user-facing application name.
     pub fn name(self) -> &'static str {
         match self {
             Editor::VsCode => "VS Code",
@@ -81,6 +89,7 @@ impl Editor {
         }
     }
 
+    /// Returns the editor's conventional command-line executable name.
     pub fn cli_name(self) -> &'static str {
         match self {
             Editor::VsCode => "code",
@@ -114,12 +123,18 @@ impl Editor {
     }
 }
 
+/// Supported terminal applications.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Terminal {
+    /// Apple's Terminal.app.
     Terminal,
+    /// iTerm2.
     ITerm2,
+    /// Warp.
     Warp,
+    /// Ghostty.
     Ghostty,
+    /// Kitty.
     Kitty,
 }
 
@@ -151,6 +166,7 @@ impl Terminal {
         Terminal::Kitty,
     ];
 
+    /// Returns the stable settings id.
     pub fn id(self) -> &'static str {
         match self {
             Terminal::Terminal => "terminal",
@@ -161,10 +177,12 @@ impl Terminal {
         }
     }
 
+    /// Parses a stable settings id.
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|t| t.id() == id)
     }
 
+    /// Returns the user-facing application name.
     pub fn name(self) -> &'static str {
         match self {
             Terminal::Terminal => "Terminal",
@@ -215,7 +233,9 @@ impl Terminal {
 /// What an open target is for: Enter opens the editor, ⌘Enter the terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Role {
+    /// Open in a code editor.
     Editor,
+    /// Open in a terminal.
     Terminal,
 }
 
@@ -228,9 +248,12 @@ impl Role {
     }
 }
 
+/// A supported application categorized by open role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetKind {
+    /// Code editor application.
     Editor(Editor),
+    /// Terminal application.
     Terminal(Terminal),
 }
 
@@ -243,6 +266,7 @@ impl TargetKind {
             .chain(Terminal::ALL.into_iter().map(TargetKind::Terminal))
     }
 
+    /// Returns the role this application fulfills.
     pub fn role(self) -> Role {
         match self {
             TargetKind::Editor(_) => Role::Editor,
@@ -250,6 +274,7 @@ impl TargetKind {
         }
     }
 
+    /// Returns the stable settings id.
     pub fn id(self) -> &'static str {
         match self {
             TargetKind::Editor(e) => e.id(),
@@ -257,6 +282,7 @@ impl TargetKind {
         }
     }
 
+    /// Returns the user-facing application name.
     pub fn name(self) -> &'static str {
         match self {
             TargetKind::Editor(e) => e.name(),
@@ -303,6 +329,7 @@ impl TargetKind {
 /// Something Grove can launch on a worktree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenTarget {
+    /// Supported application kind.
     pub kind: TargetKind,
     /// The `.app` bundle, if found.
     pub app: Option<PathBuf>,
@@ -311,14 +338,17 @@ pub struct OpenTarget {
 }
 
 impl OpenTarget {
+    /// Returns the stable settings id.
     pub fn id(&self) -> &str {
         self.kind.id()
     }
 
+    /// Returns the user-facing application name.
     pub fn name(&self) -> &str {
         self.kind.name()
     }
 
+    /// Returns whether this target is an editor or terminal.
     pub fn role(&self) -> Role {
         self.kind.role()
     }
@@ -409,6 +439,7 @@ pub enum NoTarget {
     /// command that's gone).
     #[error(fmt = fmt_uninstalled)]
     Uninstalled(Role, String),
+    /// No application for the requested role was detected.
     #[error("No {} found (looked for {})", .0.noun(), known_names(*.0))]
     NoneDetected(Role),
     /// A Run in terminal command, but the default terminal can't be told to run one.
@@ -442,6 +473,10 @@ fn known_names(role: Role) -> String {
 
 /// The configured default for `role`; with none configured, the first detected one. A
 /// configured app that's gone is an error, not a silent switch to another app.
+///
+/// # Errors
+///
+/// Returns [`NoTarget`] if the configured target is gone or none was detected.
 pub fn default_target<'a>(
     role: Role,
     settings: &Settings,
@@ -463,7 +498,9 @@ pub fn default_target<'a>(
 /// What a worktree opens with: a detected app or, for editors, a custom command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Opener<'a> {
+    /// Detected graphical application.
     App(&'a OpenTarget),
+    /// User-defined shell command.
     Command(&'a CustomCommand),
 }
 
@@ -476,6 +513,7 @@ impl Opener<'_> {
         }
     }
 
+    /// Returns the user-facing opener name.
     pub fn name(&self) -> &str {
         match self {
             Opener::App(t) => t.name(),
@@ -504,6 +542,10 @@ pub fn openers<'a>(
 
 /// `default_target`, with a custom command allowed as the default editor (never picked
 /// unless configured).
+///
+/// # Errors
+///
+/// Returns [`NoTarget`] if the configured opener is gone or none was detected.
 pub fn default_opener<'a>(
     role: Role,
     settings: &'a Settings,
@@ -522,6 +564,11 @@ pub fn default_opener<'a>(
     }
 }
 
+/// Returns the configured or first detected editor.
+///
+/// # Errors
+///
+/// Returns [`NoTarget`] if the configured editor is gone or none was detected.
 pub fn default_editor<'a>(
     settings: &Settings,
     targets: &'a [OpenTarget],
@@ -529,6 +576,11 @@ pub fn default_editor<'a>(
     default_target(Role::Editor, settings, targets)
 }
 
+/// Returns the configured or first detected terminal.
+///
+/// # Errors
+///
+/// Returns [`NoTarget`] if the configured terminal is gone or none was detected.
 pub fn default_terminal<'a>(
     settings: &Settings,
     targets: &'a [OpenTarget],

@@ -17,6 +17,7 @@ const WHOLE_FIELD: i32 = 300;
 /// One worktree in the results.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
+    /// Absolute worktree path.
     pub path: PathBuf,
     /// The repo's display name.
     pub repo: String,
@@ -24,18 +25,24 @@ pub struct Hit {
     pub branch: Option<String>,
     /// The worktree folder's name.
     pub folder: String,
+    /// Whether the worktree folder can be opened.
     pub presence: Presence,
+    /// State badges shown with the result.
     pub badges: Vec<Badge>,
     /// In the recents list.
     pub recent: bool,
+    /// Highlight ranges for the result's text fields.
     pub matches: Matches,
 }
 
 /// Matched byte ranges in each field, sorted and non-overlapping, for highlighting.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Matches {
+    /// Ranges in the branch name.
     pub branch: Vec<Range<usize>>,
+    /// Ranges in the folder name.
     pub folder: Vec<Range<usize>>,
+    /// Ranges in the repository display name.
     pub repo: Vec<Range<usize>>,
 }
 

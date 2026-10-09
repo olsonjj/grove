@@ -18,13 +18,14 @@ run-release:
 
 # Run all tests
 test:
-    cargo test
+    cargo test --all-features --locked
 
-# Format check, lint, test — what every ticket must pass
+# Format check, lint, test, and public API docs — what every ticket must pass
 check:
     cargo fmt --check
-    cargo clippy --all-targets -- -D warnings
-    cargo test
+    cargo clippy --all-targets --all-features --locked -- -D warnings
+    cargo test --all-features --locked
+    RUSTDOCFLAGS="-D warnings" cargo doc -p grove-core --all-features --locked --no-deps
 
 # Format code
 fmt:

@@ -28,10 +28,14 @@ const FETCH: Duration = Duration::from_secs(5 * 60);
 /// Worktree removal, unbounded: killing it mid-delete would leave a half-deleted worktree.
 const WRITE: Duration = Duration::MAX;
 
+/// Semantic version components parsed from `git --version`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct GitVersion {
+    /// Major version component.
     pub major: u32,
+    /// Minor version component.
     pub minor: u32,
+    /// Patch version component.
     pub patch: u32,
 }
 
@@ -44,7 +48,9 @@ impl fmt::Display for GitVersion {
 /// The git binary Grove runs, from `check`.
 #[derive(Debug, Clone)]
 pub struct GitInfo {
+    /// Absolute or PATH-resolved git executable.
     pub binary: PathBuf,
+    /// Detected git version.
     pub version: GitVersion,
 }
 
@@ -53,15 +59,30 @@ pub struct GitInfo {
 pub enum GitError {
     /// No usable `git` (not on PATH, or e.g. the /usr/bin/git shim without Xcode CLT).
     #[error("git not found: {detail}")]
-    NotFound { detail: String },
+    NotFound {
+        /// Detection or launch failure details.
+        detail: String,
+    },
+    /// Detected git is older than [`MIN_VERSION`].
     #[error("git {found} is older than {MIN_VERSION}")]
-    TooOld { found: GitVersion },
+    TooOld {
+        /// Detected version.
+        found: GitVersion,
+    },
     /// Killed at its deadline; `args` as run, space-joined.
     #[error("git {args} timed out")]
-    Timeout { args: String },
+    Timeout {
+        /// Space-joined command arguments.
+        args: String,
+    },
     /// Exited with an unexpected code.
     #[error("git {args} failed: {}", .stderr.trim())]
-    Failed { args: String, stderr: String },
+    Failed {
+        /// Space-joined command arguments.
+        args: String,
+        /// Captured standard error.
+        stderr: String,
+    },
 }
 
 impl GitError {
@@ -85,13 +106,19 @@ impl GitError {
 /// One entry of `git worktree list --porcelain`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WorktreeEntry {
+    /// Absolute worktree path.
     pub path: PathBuf,
+    /// Full HEAD object id, or `None` before the first commit.
     pub head: Option<String>,
     /// Short branch name (`refs/heads/` stripped); `None` when detached or bare.
     pub branch: Option<String>,
+    /// Whether HEAD is detached.
     pub detached: bool,
+    /// Whether this entry represents a bare repository.
     pub bare: bool,
+    /// Optional reason from `git worktree lock`.
     pub locked: Option<String>,
+    /// Optional reason the entry is prunable.
     pub prunable: Option<String>,
 }
 
@@ -100,6 +127,7 @@ pub struct WorktreeEntry {
 pub struct WorktreeStatus {
     /// Paths `git status` lists (modified, staged, unmerged, untracked), in its order.
     pub files: Vec<ChangedFile>,
+    /// Upstream tracking state for the current branch.
     pub upstream: Upstream,
     /// HEAD's commit; `None` on an unborn branch.
     #[serde(default)]
@@ -113,6 +141,7 @@ pub struct WorktreeStatus {
 }
 
 impl WorktreeStatus {
+    /// Returns the number of changed paths.
     pub fn changed(&self) -> usize {
         self.files.len()
     }
@@ -121,6 +150,7 @@ impl WorktreeStatus {
 /// One path `git status` lists.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChangedFile {
+    /// Dominant staged or unstaged change kind.
     pub change: Change,
     /// Repo-relative; the new path for renames and copies.
     pub path: String,
@@ -131,13 +161,21 @@ pub struct ChangedFile {
 /// One file's change, staged or not (staged wins when both).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Change {
+    /// File contents or metadata changed.
     Modified,
+    /// File was added.
     Added,
+    /// File was deleted.
     Deleted,
+    /// File was renamed.
     Renamed,
+    /// File was copied.
     Copied,
+    /// File type changed.
     TypeChanged,
+    /// File has unresolved merge conflicts.
     Unmerged,
+    /// File is not tracked.
     Untracked,
 }
 
@@ -174,7 +212,9 @@ impl Change {
 /// One of `git log`'s commits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Commit {
+    /// Abbreviated commit object id.
     pub short_sha: String,
+    /// First line of the commit message.
     pub subject: String,
     /// Committer time, Unix seconds.
     pub time: i64,
@@ -185,13 +225,20 @@ pub struct Commit {
 pub enum Upstream {
     /// No upstream configured, or HEAD is detached.
     None,
+    /// Tracking a remote branch that still exists.
     Tracking {
+        /// Remote branch name.
         name: String,
+        /// Local commits not in the upstream.
         ahead: u32,
+        /// Upstream commits not local.
         behind: u32,
     },
     /// Configured, but its remote-tracking ref no longer exists.
-    Gone { name: String },
+    Gone {
+        /// Missing remote branch name.
+        name: String,
+    },
 }
 
 /// The git binary: `$GROVE_GIT` if set (dev/testing override), else `git` on the resolved PATH.
@@ -206,6 +253,10 @@ pub fn binary() -> Option<&'static Path> {
 }
 
 /// Finds git and checks it's new enough for Grove.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when git cannot be found, launched, parsed, or is too old.
 pub fn check() -> Result<GitInfo, GitError> {
     let binary = binary().ok_or_else(|| GitError::NotFound {
         detail: format!("no git on PATH {}", resolved_env().path),
@@ -229,12 +280,20 @@ pub fn check() -> Result<GitInfo, GitError> {
 }
 
 /// `git worktree list --porcelain`, main worktree (or the bare repo) first.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when git cannot run or exits unsuccessfully.
 pub fn worktree_list(repo: &Path) -> Result<Vec<WorktreeEntry>, GitError> {
     let out = run(Some(repo), &["worktree", "list", "--porcelain"], READ)?;
     Ok(parse_worktree_list(&out))
 }
 
 /// Absolute, canonical path of the repo's common git dir (shared by all its worktrees).
+///
+/// # Errors
+///
+/// Returns [`GitError`] when git cannot resolve the common directory.
 pub fn common_dir(path: &Path) -> Result<PathBuf, GitError> {
     let out = run(Some(path), &["rev-parse", "--git-common-dir"], QUICK)?;
     let dir = path.join(out.trim_end_matches(['\n', '\r']));
@@ -243,6 +302,10 @@ pub fn common_dir(path: &Path) -> Result<PathBuf, GitError> {
 
 /// Changed files and ahead/behind vs `@{u}` (any remote) from a read-only `git status`,
 /// plus the time of the HEAD commit it reports and of the newest changed file.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when status cannot be read.
 pub fn read_worktree_status(path: &Path) -> Result<WorktreeStatus, GitError> {
     read_status(path, &[])
 }
@@ -351,6 +414,10 @@ fn commit_time(path: &Path, oid: &str) -> Option<i64> {
 /// `fetch --all --prune`: every remote, deleted remote branches pruned. Grove's only
 /// command that writes to a repo; auto maintenance and gc, which fetch would otherwise
 /// start, are off (config form, as `--no-auto-maintenance` needs git 2.29).
+///
+/// # Errors
+///
+/// Returns [`GitError`] when fetch cannot run, times out, or fails.
 pub fn fetch(repo: &Path) -> Result<(), GitError> {
     run(Some(repo), FETCH_ARGS, FETCH).map(drop)
 }
@@ -358,6 +425,10 @@ pub fn fetch(repo: &Path) -> Result<(), GitError> {
 /// `git worktree remove [--force] <path>`, run from `repo`'s main worktree (or the bare
 /// repo). The branch stays. A missing folder's entry goes without `--force`. Never timed out:
 /// killing it mid-delete would leave a half-deleted worktree.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when git cannot remove the worktree.
 pub fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<(), GitError> {
     let path = path.to_string_lossy();
     let mut args = vec!["worktree", "remove"];
@@ -380,6 +451,10 @@ const FETCH_ARGS: &[&str] = &[
 ];
 
 /// The last three commits on the worktree's HEAD, newest first; empty before the first commit.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when the log cannot be read.
 pub fn recent_commits(path: &Path) -> Result<Vec<Commit>, GitError> {
     let out = run(
         Some(path),
@@ -400,6 +475,10 @@ pub fn recent_commits(path: &Path) -> Result<Vec<Commit>, GitError> {
 
 /// Which of `paths` (relative to `worktree`) git ignores, as `git status` would: tracked
 /// files are never ignored, and anything under an ignored folder is.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when `git check-ignore` cannot run.
 pub fn ignored(worktree: &Path, paths: &[&Path]) -> Result<HashSet<PathBuf>, GitError> {
     let mut input = Vec::new();
     for p in paths {

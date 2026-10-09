@@ -17,8 +17,11 @@ const MAX_PARALLEL_FETCHES: usize = 8;
 /// Everything Grove knows about the code directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Root folder searched for repositories.
     pub code_dir: PathBuf,
+    /// Whether the root folder existed during the scan.
     pub code_dir_exists: bool,
+    /// Discovered repositories in display order.
     pub repos: Vec<RepoSnapshot>,
     /// When the last Fetch all finished, Unix seconds.
     #[serde(default)]
@@ -26,6 +29,7 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Finds a repository by its stable discovery name.
     pub fn repo(&self, name: &str) -> Option<&RepoSnapshot> {
         self.repos.iter().find(|r| r.repo.name == name)
     }
@@ -45,6 +49,7 @@ impl Snapshot {
 /// One discovered repo and its worktrees.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RepoSnapshot {
+    /// Discovery identity and repository paths.
     pub repo: RepoRef,
     /// Folder name, or the code-dir-relative path when another repo shares it.
     pub display_name: String,
@@ -59,10 +64,12 @@ pub struct RepoSnapshot {
 }
 
 impl RepoSnapshot {
+    /// Returns the stable discovery name.
     pub fn name(&self) -> &str {
         &self.repo.name
     }
 
+    /// Returns the number of known non-bare worktrees.
     pub fn worktree_count(&self) -> usize {
         self.worktrees.len()
     }
@@ -71,12 +78,19 @@ impl RepoSnapshot {
 /// One entry of `git worktree list` (bare entries skipped).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Worktree {
+    /// Absolute folder path.
     pub path: PathBuf,
+    /// Short local branch name, or `None` when detached.
     pub branch: Option<String>,
+    /// Full HEAD object id, or `None` before the first commit.
     pub head: Option<String>,
+    /// Whether HEAD is detached.
     pub detached: bool,
+    /// Whether this is the repository's original worktree.
     pub is_main: bool,
+    /// Whether git has locked this worktree against pruning.
     pub locked: bool,
+    /// Current folder availability.
     pub presence: Presence,
     /// `None` until read (and never for a folder that isn't present).
     pub status: Option<StatusResult>,
@@ -117,6 +131,7 @@ fn changes_time_after(status: &StatusResult, prev: Option<&Worktree>) -> Option<
 /// Whether a worktree's folder is on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Presence {
+    /// Folder exists and can be opened.
     Present,
     /// Folder deleted; git keeps the entry until it's removed or pruned.
     Missing,
@@ -125,10 +140,12 @@ pub enum Presence {
 }
 
 impl Presence {
+    /// Detects folder availability, distinguishing missing mounted and unmounted paths.
     pub fn of(path: &Path) -> Self {
         presence_in(path, Path::new("/Volumes"))
     }
 
+    /// Returns whether the folder currently exists.
     pub fn is_openable(self) -> bool {
         self == Self::Present
     }
@@ -169,6 +186,7 @@ pub struct StatusReads {
 }
 
 impl StatusReads {
+    /// Returns the issue-order stamp used to reject stale results.
     pub fn stamp(&self) -> u64 {
         self.stamp
     }
@@ -322,12 +340,14 @@ pub struct FetchResult {
 /// How a Fetch all went, for the status line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchReport {
+    /// Number of repositories fetched successfully.
     pub fetched: usize,
     /// Display name and error, in sidebar order.
     pub failures: Vec<(String, GitError)>,
 }
 
 impl FetchReport {
+    /// Returns a concise status-line summary.
     pub fn message(&self) -> String {
         let repos = |n| if n == 1 { "repo" } else { "repos" };
         match self.failures.as_slice() {
@@ -469,6 +489,7 @@ impl SnapshotStore {
         Self::from_snapshot(scan(code_dir))
     }
 
+    /// Creates a store owning an existing snapshot.
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
         Self {
             snapshot: Arc::new(snapshot),
@@ -479,6 +500,7 @@ impl SnapshotStore {
         }
     }
 
+    /// Returns shared ownership of the current immutable snapshot.
     pub fn snapshot(&self) -> &Arc<Snapshot> {
         &self.snapshot
     }

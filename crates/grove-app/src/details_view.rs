@@ -1,5 +1,7 @@
 //! Right pane: everything about the tree's selection, plus open/copy/reveal actions.
 
+use std::sync::Arc;
+
 use gpui_kit::base::Button;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
@@ -9,8 +11,8 @@ use gpui_kit::{
     anchored, deferred, div, px,
 };
 use grove_core::{
-    ChangedFile, Commit, Details, Role, Worktree, cd_command, recent_commits, relative_time,
-    unix_now,
+    ChangedFile, Commit, Details, Role, Snapshot, Worktree, cd_command, recent_commits,
+    relative_time, unix_now,
 };
 
 use grove_core::git::GitError;
@@ -43,6 +45,7 @@ pub fn init(cx: &mut App) {
 
 pub struct DetailsView {
     tree: Entity<TreeView>,
+    snapshot: Option<Arc<Snapshot>>,
     details: Option<Details>,
     commits: Commits,
     /// Which ▾ menu is open.
@@ -60,11 +63,17 @@ pub struct DetailsView {
 /// so reading them for every worktree on every refresh would double git's work for nothing.
 #[derive(Default)]
 struct Commits {
-    /// The worktree as it was when read; a changed status or HEAD rereads.
-    source: Option<Worktree>,
+    /// The worktree identity and HEAD used for the read.
+    source: Option<CommitSource>,
     result: Option<Result<Vec<Commit>, GitError>>,
     /// Bumped per read so a slow read for an old selection can't land.
     seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CommitSource {
+    path: std::path::PathBuf,
+    head: Option<String>,
 }
 
 impl EventEmitter<OpenRequested> for DetailsView {}
@@ -76,6 +85,7 @@ impl DetailsView {
         let sub = cx.observe(&tree, |this, _, cx| this.sync(cx));
         let mut this = Self {
             tree,
+            snapshot: None,
             details: None,
             commits: Commits::default(),
             menu: None,
@@ -110,41 +120,56 @@ impl DetailsView {
             .selected()
             .zip(tree.repo())
             .and_then(|(id, repo)| repo.details(id));
-        if details == self.details {
+        let snapshot = tree.snapshot().cloned();
+        let same_snapshot = self
+            .snapshot
+            .as_ref()
+            .zip(snapshot.as_ref())
+            .is_some_and(|(old, new)| Arc::ptr_eq(old, new));
+        if details == self.details && same_snapshot {
             return;
         }
-        let path = |d: &Option<Details>| {
-            d.as_ref()
-                .and_then(|d| d.worktree.as_ref())
-                .map(|w| w.path.clone())
-        };
-        if path(&details) != path(&self.details) {
+        if details.as_ref().and_then(|d| d.worktree.as_ref())
+            != self.details.as_ref().and_then(|d| d.worktree.as_ref())
+        {
             self.menu = None;
         }
+        self.snapshot = snapshot;
         self.details = details;
         self.read_commits(cx);
         cx.notify();
     }
 
     fn worktree(&self) -> Option<&Worktree> {
-        self.details.as_ref().and_then(|d| d.worktree.as_ref())
+        let path = self.details.as_ref()?.worktree.as_ref()?;
+        self.snapshot
+            .as_ref()?
+            .repos
+            .iter()
+            .flat_map(|repo| &repo.worktrees)
+            .find(|worktree| &worktree.path == path)
     }
 
     fn read_commits(&mut self, cx: &mut Context<Self>) {
-        let wt = self
+        let source = self
             .worktree()
             .filter(|w| w.presence.is_openable())
-            .cloned();
-        if wt == self.commits.source {
+            .map(|worktree| CommitSource {
+                path: worktree.path.clone(),
+                head: worktree.head.clone(),
+            });
+        if source == self.commits.source {
             return;
         }
-        if wt.as_ref().map(|w| &w.path) != self.commits.source.as_ref().map(|w| &w.path) {
+        if source.as_ref().map(|source| &source.path)
+            != self.commits.source.as_ref().map(|source| &source.path)
+        {
             self.commits.result = None;
         }
         self.commits.seq += 1;
         let seq = self.commits.seq;
-        let path = wt.as_ref().map(|w| w.path.clone());
-        self.commits.source = wt;
+        let path = source.as_ref().map(|source| source.path.clone());
+        self.commits.source = source;
         let Some(path) = path else {
             return;
         };
@@ -794,7 +819,7 @@ impl Render for DetailsView {
                     .child(details.kind.clone())
                     .test_support(),
             );
-        let sections = match &details.worktree {
+        let sections = match self.worktree() {
             Some(wt) => self.worktree_sections(wt, cx),
             None => vec![
                 div()

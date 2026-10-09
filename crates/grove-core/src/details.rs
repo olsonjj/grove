@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::git::{Upstream, WorktreeStatus};
 use crate::launch::shell_quote;
-use crate::snapshot::{RepoSnapshot, Worktree};
+use crate::snapshot::RepoSnapshot;
 use crate::tree::RowId;
 
 /// The details pane for one tree row, from `RepoSnapshot::details`.
@@ -15,28 +15,32 @@ pub struct Details {
     pub title: String,
     /// E.g. "Branch · has worktree", "Worktree · detached HEAD".
     pub kind: String,
-    /// The worktree the pane's actions apply to: itself, or a branch's first (main first).
-    pub worktree: Option<Worktree>,
+    /// Path identifying the worktree the pane's actions apply to: itself, or a branch's
+    /// first (main first).
+    pub worktree: Option<std::path::PathBuf>,
 }
 
 impl RepoSnapshot {
+    /// Builds display details for a visible row, or `None` for a section header.
     pub fn details(&self, id: &RowId) -> Option<Details> {
         match id {
             RowId::Branch(name) => {
-                let mut wts: Vec<&Worktree> = self
+                let mut count = 0;
+                let worktree = self
                     .worktrees
                     .iter()
                     .filter(|w| w.branch.as_deref() == Some(name))
-                    .collect();
-                wts.sort_by(|a, b| b.is_main.cmp(&a.is_main).then(a.path.cmp(&b.path)));
-                let kind = match wts.len() {
+                    .inspect(|_| count += 1)
+                    .min_by(|a, b| b.is_main.cmp(&a.is_main).then(a.path.cmp(&b.path)))
+                    .map(|w| w.path.clone());
+                let kind = match count {
                     1 => "Branch · has worktree".to_string(),
                     n => format!("Branch · {n} worktrees"),
                 };
                 Some(Details {
                     title: name.clone(),
                     kind,
-                    worktree: wts.first().map(|w| (*w).clone()),
+                    worktree,
                 })
             }
             RowId::Worktree(path) => {
@@ -54,7 +58,7 @@ impl RepoSnapshot {
                         |n| n.to_string_lossy().into_owned(),
                     ),
                     kind: kind.into(),
-                    worktree: Some(wt.clone()),
+                    worktree: Some(wt.path.clone()),
                 })
             }
             RowId::Folder(prefix) => {
@@ -77,6 +81,7 @@ impl RepoSnapshot {
 }
 
 impl Upstream {
+    /// Returns the configured upstream branch name, if any.
     pub fn name(&self) -> Option<&str> {
         match self {
             Self::None => None,

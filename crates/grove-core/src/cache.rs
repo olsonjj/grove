@@ -31,6 +31,7 @@ struct CacheFile<S> {
 }
 
 impl SnapshotCache {
+    /// Creates a cache stored at `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
@@ -40,6 +41,7 @@ impl SnapshotCache {
         Self::new(settings.path().with_file_name("snapshot.json"))
     }
 
+    /// Returns the cache file path.
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -56,6 +58,11 @@ impl SnapshotCache {
         Some(file.snapshot).filter(|s| s.code_dir == code_dir)
     }
 
+    /// Atomically writes `snapshot` to the cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if serialization or filesystem operations fail.
     pub fn save(&self, snapshot: &Snapshot) -> io::Result<()> {
         let file = CacheFile {
             version: VERSION,

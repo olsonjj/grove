@@ -6,20 +6,30 @@ use crate::snapshot::{Presence, RepoSnapshot, Worktree};
 /// One fact about a worktree, as a short label (`label`) and a sentence (`description`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Badge {
+    /// The repository's original worktree.
     MainWorktree,
     /// Short SHA.
     Detached(String),
+    /// The worktree folder no longer exists.
     Missing,
+    /// The worktree is on an unmounted volume.
     Unavailable,
+    /// Number of uncommitted changes.
     Changed(usize),
     /// Ahead/behind its upstream; never both zero.
     Sync {
+        /// Commits not yet in the upstream.
         ahead: u32,
+        /// Upstream commits not yet local.
         behind: u32,
+        /// Tracked upstream branch name.
         upstream: String,
     },
+    /// Configured upstream branch no longer exists.
     UpstreamGone(String),
+    /// Branch has no configured upstream.
     LocalOnly,
+    /// Worktree is locked against pruning.
     Locked,
     /// `git status` failed or timed out.
     StatusFailed(String),
@@ -28,6 +38,7 @@ pub enum Badge {
 }
 
 impl Badge {
+    /// Returns the compact text shown on a worktree row.
     pub fn label(&self) -> String {
         match self {
             Self::MainWorktree => "main worktree".into(),

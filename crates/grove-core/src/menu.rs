@@ -14,16 +14,20 @@ use crate::tree::RowKind;
 pub struct MenuGroup {
     /// The repo's display name.
     pub repo: String,
+    /// Worktrees shown under the repository.
     pub rows: Vec<MenuRow>,
 }
 
 /// One worktree in the popover.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuRow {
+    /// Absolute worktree path.
     pub path: PathBuf,
     /// The branch, or the folder name when detached.
     pub name: String,
+    /// Whether the worktree folder can be opened.
     pub presence: Presence,
+    /// Compact worktree state text.
     pub state: StateLine,
     /// The most recently opened worktree.
     pub last_opened: bool,
@@ -32,6 +36,7 @@ pub struct MenuRow {
 /// A worktree's state in a few words: "3 changed · ↑2 ↓1", "main worktree · clean".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateLine {
+    /// Complete state text.
     pub text: String,
     /// Where `text` says "N changed", for the accent color (the words say it too).
     pub changed: Option<Range<usize>>,

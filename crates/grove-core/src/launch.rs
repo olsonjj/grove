@@ -27,20 +27,28 @@ const EXIT_WAIT: Duration = Duration::from_secs(5);
 const OSASCRIPT_WAIT: Duration = Duration::from_secs(120);
 /// After exit, how long to wait for stderr EOF (a daemonized child may hold the pipe).
 const STDERR_GRACE: Duration = Duration::from_millis(200);
+/// Maximum stderr retained while a launcher runs. Diagnostics use only the tail.
+const STDERR_LIMIT: usize = 64 * 1024;
 
 /// What opening a worktree runs, from `plan` or `plan_command`; `execute` runs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchPlan {
     /// Run `program` with `args` in `cwd`, resolved PATH applied. No shell involved.
     Spawn {
+        /// Executable path.
         program: PathBuf,
+        /// Arguments passed without shell interpretation.
         args: Vec<OsString>,
+        /// Child working directory.
         cwd: PathBuf,
     },
     /// Run `script` with osascript; if it fails (e.g. Automation denied), run `fallback`.
     AppleScript {
+        /// AppleScript source passed to `osascript`.
         script: String,
+        /// Script working directory.
         cwd: PathBuf,
+        /// Plan run if the script fails.
         fallback: Box<LaunchPlan>,
     },
 }
@@ -82,6 +90,11 @@ pub fn plan(target: &OpenTarget, worktree: &Path, settings: &Settings) -> Launch
 /// Run in terminal: a new tab or window of the default terminal (as `plan` opens it) at
 /// `worktree`, running the command in the user's shell. Otherwise `/bin/sh -c` in the
 /// background in `worktree`, resolved PATH applied.
+///
+/// # Errors
+///
+/// Returns [`CommandError`] when no compatible terminal exists or a path containing control
+/// characters would have to be typed into a terminal.
 pub fn plan_command(
     cmd: &CustomCommand,
     worktree: &Path,
@@ -118,6 +131,7 @@ pub fn plan_command(
 /// Why a custom command can't run.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CommandError {
+    /// No usable application target is configured.
     #[error(transparent)]
     Target(#[from] NoTarget),
     /// Run in terminal, but the path has control characters, which typed into a shell
@@ -419,15 +433,25 @@ fn percent_encode(path: &Path) -> String {
 /// Why a plan didn't open anything. Errors are strings so the type stays `Clone + Eq`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum LaunchError {
+    /// The planned working directory no longer exists.
     #[error("Folder not found: {}", .0.display())]
     MissingFolder(PathBuf),
+    /// The program could not be spawned.
     #[error("Couldn't run {program}: {error}")]
-    Spawn { program: String, error: String },
+    Spawn {
+        /// Display name of the executable.
+        program: String,
+        /// Operating-system spawn error.
+        error: String,
+    },
     /// Exited non-zero; `stderr` is its last line, maybe empty.
     #[error(fmt = fmt_exit)]
     Exit {
+        /// Display name of the executable.
         program: String,
+        /// Process exit status.
         status: String,
+        /// Last line written to standard error.
         stderr: String,
     },
 }
@@ -443,11 +467,14 @@ fn fmt_exit(program: &str, status: &str, stderr: &str, f: &mut fmt::Formatter<'_
 /// The macOS privacy pane that blocked an AppleScript plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
+    /// Permission to send Apple events to another application.
     Automation,
+    /// Permission to synthesize input through System Events.
     Accessibility,
 }
 
 impl Permission {
+    /// Returns the matching System Settings privacy pane name.
     pub fn pane(self) -> &'static str {
         match self {
             Permission::Automation => "Automation",
@@ -459,6 +486,7 @@ impl Permission {
 /// Why an AppleScript plan fell back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fallback {
+    /// macOS denied a required privacy permission.
     Denied(Permission),
     /// The script didn't compile: the app has no (or an older) scripting dictionary.
     Unsupported(String),
@@ -471,6 +499,7 @@ pub enum Fallback {
 /// How a plan that didn't fail went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
+    /// The requested plan started successfully.
     Opened,
     /// The AppleScript failed and the fallback plan (a new window) ran instead.
     FellBack(Fallback),
@@ -482,7 +511,9 @@ pub enum Outcome {
 /// How plans are executed; tests swap the osascript binary and shorten its wait.
 #[derive(Debug, Clone)]
 pub struct Runner {
+    /// `osascript` executable, replaceable for tests.
     pub osascript: PathBuf,
+    /// Deadline for an AppleScript permission prompt.
     pub osascript_wait: Duration,
 }
 
@@ -500,11 +531,20 @@ static APPLESCRIPT: Mutex<()> = Mutex::new(());
 
 /// Runs `plan` with `env`. Blocking (seconds for a CLI, up to two minutes for osascript
 /// awaiting a permission prompt); run on a dedicated thread.
+///
+/// # Errors
+///
+/// Returns [`LaunchError`] when the folder is missing, a process cannot start, or a plan exits
+/// unsuccessfully.
 pub fn execute(plan: &LaunchPlan, env: &ShellEnv) -> Result<Outcome, LaunchError> {
     execute_with(plan, env, &Runner::default())
 }
 
-/// `execute` with a custom `runner`.
+/// [`execute`] with a custom `runner`.
+///
+/// # Errors
+///
+/// Returns [`LaunchError`] under the same conditions as [`execute`].
 pub fn execute_with(
     plan: &LaunchPlan,
     env: &ShellEnv,
@@ -636,18 +676,22 @@ fn run(
             error: e.to_string(),
         })?;
 
-    let stderr = Arc::new(Mutex::new((Vec::new(), false)));
+    let stderr = Arc::new(Mutex::new(StderrTail::default()));
     if let Some(mut pipe) = child.stderr.take() {
         let sink = stderr.clone();
         thread::spawn(move || {
             let mut buf = [0u8; 4096];
-            while let Ok(n) = pipe.read(&mut buf) {
-                let mut s = sink.lock().unwrap_or_else(|e| e.into_inner());
-                if n == 0 {
-                    s.1 = true;
-                    break;
+            loop {
+                match pipe.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        sink.lock().unwrap_or_else(|e| e.into_inner()).done = true;
+                        break;
+                    }
+                    Ok(n) => sink
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(&buf[..n]),
                 }
-                s.0.extend_from_slice(&buf[..n]);
             }
         });
     }
@@ -673,18 +717,44 @@ fn run(
         return Ok(Exit::Ok);
     }
     let grace = Instant::now() + STDERR_GRACE;
-    while !stderr.lock().map(|s| s.1).unwrap_or(true) && Instant::now() < grace {
+    while !stderr.lock().map(|s| s.done).unwrap_or(true) && Instant::now() < grace {
         thread::sleep(Duration::from_millis(5));
     }
     let text = stderr
         .lock()
-        .map(|s| String::from_utf8_lossy(&s.0).trim().to_string())
+        .map(|s| String::from_utf8_lossy(&s.bytes).trim().to_string())
         .unwrap_or_default();
     Ok(Exit::Failed(Failure {
         program: name,
         status: status.to_string(),
         stderr: text,
     }))
+}
+
+#[derive(Default)]
+struct StderrTail {
+    bytes: Vec<u8>,
+    done: bool,
+}
+
+impl StderrTail {
+    fn push(&mut self, bytes: &[u8]) {
+        if bytes.len() >= STDERR_LIMIT {
+            self.bytes.clear();
+            self.bytes
+                .extend_from_slice(&bytes[bytes.len() - STDERR_LIMIT..]);
+            return;
+        }
+        let overflow = self
+            .bytes
+            .len()
+            .saturating_add(bytes.len())
+            .saturating_sub(STDERR_LIMIT);
+        if overflow > 0 {
+            self.bytes.drain(..overflow);
+        }
+        self.bytes.extend_from_slice(bytes);
+    }
 }
 
 #[cfg(test)]
@@ -810,6 +880,48 @@ mod tests {
             err.to_string().starts_with("Couldn't run no-such-cli:"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn stderr_tail_retains_only_the_configured_tail() {
+        let mut tail = StderrTail::default();
+        let input: Vec<u8> = (0..STDERR_LIMIT + 137)
+            .map(|i| u8::try_from(i % 251).unwrap())
+            .collect();
+        for chunk in input.chunks(997) {
+            tail.push(chunk);
+        }
+
+        assert_eq!(tail.bytes, input[input.len() - STDERR_LIMIT..]);
+    }
+
+    #[test]
+    fn stderr_tail_bounds_a_single_oversized_read() {
+        let mut tail = StderrTail::default();
+        let input = vec![b'x'; STDERR_LIMIT + 1];
+        tail.push(&input);
+
+        assert_eq!(tail.bytes.len(), STDERR_LIMIT);
+    }
+
+    #[test]
+    fn run_returns_while_noisy_child_remains_running() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let args = [
+            OsString::from("-c"),
+            OsString::from("yes noisy >&2 & writer=$!; sleep 1; kill $writer"),
+        ];
+
+        let exit = run(
+            Path::new("/bin/sh"),
+            &args,
+            tmp.path(),
+            crate::resolved_env(),
+            Duration::from_millis(30),
+        )
+        .unwrap();
+
+        assert!(matches!(exit, Exit::Running));
     }
 
     #[test]

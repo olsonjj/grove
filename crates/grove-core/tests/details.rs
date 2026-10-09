@@ -189,5 +189,5 @@ fn details_name_branch_and_worktree_kinds() {
         ("bisect".into(), "Worktree · detached HEAD".into())
     );
     let branch = repo.details(&RowId::Branch("feature/x".into())).unwrap();
-    assert!(branch.worktree.unwrap().path.ends_with("api-x"));
+    assert!(branch.worktree.unwrap().ends_with("api-x"));
 }

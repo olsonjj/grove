@@ -30,6 +30,7 @@ pub struct Changes {
 }
 
 impl Changes {
+    /// Returns whether the batch requests no refreshes.
     pub fn is_empty(&self) -> bool {
         self.repos.is_empty() && self.worktrees.is_empty()
     }
@@ -69,12 +70,8 @@ impl Watcher {
         let (tx, rx) = mpsc::channel();
         let events = tx.clone();
         let fs = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if let Ok(event) = event {
-                if event.need_rescan() {
-                    let _ = events.send(Msg::Rescan(event.paths));
-                } else if !event.kind.is_access() {
-                    let _ = events.send(Msg::Paths(event.paths));
-                }
+            if let Some(message) = event_message(event) {
+                let _ = events.send(message);
             }
         })
         .map_err(WatchError)?;
@@ -128,6 +125,18 @@ impl Watcher {
         let _ = inner.tx.send(Msg::Targets(targets));
         if let Some(roots) = catch_up {
             let _ = inner.tx.send(Msg::Rescan(roots));
+        }
+    }
+}
+
+fn event_message(event: notify::Result<notify::Event>) -> Option<Msg> {
+    match event {
+        Ok(event) if event.need_rescan() => Some(Msg::Rescan(event.paths)),
+        Ok(event) if !event.kind.is_access() => Some(Msg::Paths(event.paths)),
+        Ok(_) => None,
+        Err(error) => {
+            eprintln!("[grove] file watcher event error: {error}; rescanning");
+            Some(Msg::Rescan(error.paths))
         }
     }
 }
@@ -494,6 +503,33 @@ mod tests {
             Some(Hit::File(_, _)) => "linked file",
             None => "-",
         }
+    }
+
+    #[test]
+    fn runtime_error_with_paths_rescans_those_paths() {
+        let error = notify::Error::generic("events lost").add_path("/r".into());
+        let Some(Msg::Rescan(paths)) = event_message(Err(error)) else {
+            panic!("runtime errors must request a rescan");
+        };
+
+        assert_eq!(paths, [PathBuf::from("/r")]);
+    }
+
+    #[test]
+    fn runtime_error_without_paths_rescans_everything() {
+        let Some(Msg::Rescan(paths)) = event_message(Err(notify::Error::generic("events lost")))
+        else {
+            panic!("runtime errors must request a rescan");
+        };
+
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn access_events_are_ignored() {
+        let event = notify::Event::new(notify::EventKind::Access(notify::event::AccessKind::Any));
+
+        assert!(event_message(Ok(event)).is_none());
     }
 
     #[test]
