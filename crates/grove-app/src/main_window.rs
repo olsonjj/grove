@@ -774,6 +774,7 @@ impl Render for MainWindow {
             .child(
                 div()
                     .flex_none()
+                    .relative()
                     .pl(px(18.))
                     .pr(px(12.))
                     .pt(px(10.))
@@ -799,14 +800,13 @@ impl Render for MainWindow {
                     .child(
                         div()
                             .flex_none()
-                            .relative()
                             .flex()
                             .items_center()
                             .gap(px(4.))
                             .child(self.manage_button(cx))
-                            .child(self.repo_sort.clone())
-                            .children(visibility_menu),
-                    ),
+                            .child(self.repo_sort.clone()),
+                    )
+                    .children(visibility_menu),
             )
             .child(
                 div()
@@ -1166,10 +1166,12 @@ impl MainWindow {
         deferred(
             div()
                 .id("visibility-menu")
-                // Below the 22px header buttons, right-aligned with them.
+                // Left-aligned with the sidebar and dropping from the header buttons, so
+                // repo names get the full sidebar width and never clip at the window edge.
                 .absolute()
-                .top(px(24.))
-                .right(px(0.))
+                .top(px(36.))
+                .left(px(0.))
+                .w(px(240.))
                 .key_context(VISIBILITY_CONTEXT)
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                     if ev.keystroke.key == "escape" {
@@ -1188,7 +1190,6 @@ impl MainWindow {
                         cx.notify();
                     }
                 }))
-                .w(px(240.))
                 .max_h(px(360.))
                 .overflow_y_scroll()
                 .p(px(4.))
