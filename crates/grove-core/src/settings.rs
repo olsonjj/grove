@@ -46,6 +46,10 @@ pub struct Settings {
     pub collapsed: BTreeMap<String, Vec<String>>,
     /// `RepoRef::path`s. Kept while a repo is absent, so it comes back pinned.
     pub pinned_repos: Vec<PathBuf>,
+    /// `RepoRef::path`s, keyed to the repo's location on disk. Kept while a repo is absent,
+    /// so an unmounted volume doesn't resurrect clutter. Hiding is display-only: the menu-bar
+    /// popover and the quick switcher ignore it.
+    pub hidden_repos: Vec<PathBuf>,
     /// Order of the sidebar's unpinned repos and the popover's groups.
     pub repo_sort: SortMode,
     /// Order of every repo's tree and of worktrees within a popover group.
@@ -70,6 +74,7 @@ impl Default for Settings {
             last_opened: BTreeMap::new(),
             collapsed: BTreeMap::new(),
             pinned_repos: Vec::new(),
+            hidden_repos: Vec::new(),
             repo_sort: SortMode::Recent,
             tree_sort: SortMode::Recent,
             last_selected_repo: None,
@@ -263,6 +268,22 @@ impl Settings {
             self.pinned_repos.retain(|p| p != repo);
         } else {
             self.pinned_repos.push(repo.to_path_buf());
+        }
+        true
+    }
+
+    /// Returns whether the repo at `repo` is hidden from the sidebar.
+    pub fn is_hidden(&self, repo: &Path) -> bool {
+        self.hidden_repos.iter().any(|p| p == repo)
+    }
+
+    /// Hides or unhides the repo at `repo`; its pin is untouched. Returns whether anything
+    /// changed.
+    pub fn toggle_hidden(&mut self, repo: &Path) -> bool {
+        if self.is_hidden(repo) {
+            self.hidden_repos.retain(|p| p != repo);
+        } else {
+            self.hidden_repos.push(repo.to_path_buf());
         }
         true
     }

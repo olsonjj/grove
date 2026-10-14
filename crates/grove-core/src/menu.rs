@@ -45,12 +45,15 @@ pub struct StateLine {
 /// Every repo with worktrees, in `repo_order` (pinned first, the rest by `repo_sort`).
 /// Within a repo, worktrees are in the tree's order under `tree_sort`, folders expanded.
 /// `recents[0]` is marked `last_opened`.
+/// Hiding is display-only for the desktop sidebar, so the menu-bar popover passes an empty
+/// hidden set and lists every repo.
 pub fn menu(snapshot: &Snapshot, settings: &Settings) -> Vec<MenuGroup> {
     let last = settings.recents.first().map(PathBuf::as_path);
     let last_opened = &settings.last_opened;
     repo_order(
         snapshot,
         &settings.pinned_repos,
+        &[],
         last_opened,
         settings.repo_sort,
     )

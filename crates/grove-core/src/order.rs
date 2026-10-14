@@ -22,17 +22,23 @@ impl<'a> RepoOrder<'a> {
     }
 }
 
-/// `pinned` holds repo paths; pins for repos not in `snapshot` are ignored.
+/// `pinned` holds repo paths; pins for repos not in `snapshot` are ignored. `hidden` holds
+/// repo paths to leave out of both groups; the menu-bar popover passes an empty set to keep
+/// its list complete.
 pub fn repo_order<'a>(
     snapshot: &'a Snapshot,
     pinned: &[PathBuf],
+    hidden: &[PathBuf],
     last_opened: &LastOpened,
     sort: SortMode,
 ) -> RepoOrder<'a> {
-    // The snapshot is already in name order, and the sort is stable.
+    // The snapshot is already in name order, and the sort is stable. Filtering for hidden
+    // repos happens before the partition and sort, so hiding one repo never reshuffles
+    // the rest.
     let (pinned, mut others): (Vec<_>, Vec<_>) = snapshot
         .repos
         .iter()
+        .filter(|r| !hidden.contains(&r.repo.path))
         .partition(|r| pinned.contains(&r.repo.path));
     if sort == SortMode::Recent {
         others.sort_by_cached_key(|r| recency(repo_activity(r, last_opened)));

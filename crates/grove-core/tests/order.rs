@@ -32,7 +32,7 @@ fn nothing_pinned_is_all_by_name() {
     let f = Fixture::new();
     repos(&f);
     let s = f.scan();
-    let order = repo_order(&s, &[], &none(), SortMode::Name);
+    let order = repo_order(&s, &[], &[], &none(), SortMode::Name);
     assert_eq!(
         names(&order),
         (vec![], vec!["api", "Billing", "acme/tools", "web", "zeta"])
@@ -50,7 +50,7 @@ fn pinned_lead_by_name_and_appear_once() {
     for name in ["zeta", "Billing"] {
         settings.toggle_pin(&path(name));
     }
-    let order = repo_order(&s, &settings.pinned_repos, &none(), SortMode::Name);
+    let order = repo_order(&s, &settings.pinned_repos, &[], &none(), SortMode::Name);
     assert_eq!(
         names(&order),
         (vec!["Billing", "zeta"], vec!["api", "acme/tools", "web"])
@@ -74,7 +74,7 @@ fn pin_of_an_absent_repo_is_ignored_and_kept() {
     fs::rename(&web, &moved).unwrap();
     let s = f.scan();
     let settings = file.load().unwrap();
-    let order = repo_order(&s, &settings.pinned_repos, &none(), SortMode::Name);
+    let order = repo_order(&s, &settings.pinned_repos, &[], &none(), SortMode::Name);
     assert_eq!(
         names(&order),
         (vec![], vec!["api", "Billing", "acme/tools", "zeta"])
@@ -87,11 +87,114 @@ fn pin_of_an_absent_repo_is_ignored_and_kept() {
         names(&repo_order(
             &s,
             &settings.pinned_repos,
+            &[],
             &none(),
             SortMode::Name
         ))
         .0,
         ["web"]
+    );
+}
+
+#[test]
+fn hidden_repos_leave_both_groups_without_reshuffling_the_rest() {
+    let f = Fixture::new();
+    repos(&f);
+    let s = f.scan();
+    let path = |name: &str| s.repo(name).unwrap().repo.path.clone();
+    let mut settings = Settings::default();
+    settings.toggle_pin(&path("zeta"));
+    let full = names(&repo_order(
+        &s,
+        &settings.pinned_repos,
+        &[],
+        &none(),
+        SortMode::Name,
+    ));
+    fn strip<'n>(v: &[&'n str], hidden_name: &str) -> Vec<&'n str> {
+        v.iter().copied().filter(|n| *n != hidden_name).collect()
+    }
+    for hidden_name in ["zeta", "web", "acme/tools"] {
+        let hidden = [path(hidden_name)];
+        let order = repo_order(&s, &settings.pinned_repos, &hidden, &none(), SortMode::Name);
+        // Exactly the full order minus the hidden repo, in both groups.
+        assert_eq!(
+            names(&order),
+            (strip(&full.0, hidden_name), strip(&full.1, hidden_name)),
+            "hiding {hidden_name}"
+        );
+        assert_eq!(order.iter().count(), s.repos.len() - 1);
+    }
+}
+
+#[test]
+fn hiding_keeps_the_recent_sort_of_what_remains() {
+    let f = Fixture::new();
+    let s = dated(
+        &f,
+        &[
+            ("api", Some(1_700_000_100)),
+            ("web", Some(1_700_000_300)),
+            ("zeta", Some(1_700_000_400)),
+            ("gamma", Some(1_700_000_200)),
+        ],
+    );
+    let path = |name: &str| s.repo(name).unwrap().repo.path.clone();
+    let hidden = [path("zeta"), path("api")];
+    assert_eq!(
+        names(&repo_order(&s, &[], &hidden, &none(), SortMode::Recent)).1,
+        ["web", "gamma"]
+    );
+    // Hiding before the sort, so the survivors never reshuffle.
+    let hidden = [path("gamma")];
+    assert_eq!(
+        names(&repo_order(&s, &[], &hidden, &none(), SortMode::Recent)).1,
+        ["zeta", "web", "api"]
+    );
+}
+
+#[test]
+fn hiding_survives_a_temporarily_absent_repo() {
+    let f = Fixture::new();
+    repos(&f);
+    let file = SettingsFile::new(f.tmp.path().join("settings.json"));
+    let s = f.scan();
+    let web = s.repo("web").unwrap().repo.path.clone();
+    let mut settings = Settings::default();
+    settings.toggle_hidden(&web);
+    file.save(&settings).unwrap();
+
+    let moved = f.tmp.path().join("web-moved");
+    fs::rename(&web, &moved).unwrap();
+    let s = f.scan();
+    let settings = file.load().unwrap();
+    // Kept while absent (so it stays hidden when the volume comes back),
+    // and the visible order is untouched.
+    assert_eq!(settings.hidden_repos, std::slice::from_ref(&web));
+    assert_eq!(
+        names(&repo_order(
+            &s,
+            &[],
+            &settings.hidden_repos,
+            &none(),
+            SortMode::Name
+        ))
+        .1,
+        ["api", "Billing", "acme/tools", "zeta"]
+    );
+
+    fs::rename(&moved, &web).unwrap();
+    let s = f.scan();
+    assert_eq!(
+        names(&repo_order(
+            &s,
+            &[],
+            &settings.hidden_repos,
+            &none(),
+            SortMode::Name
+        ))
+        .1,
+        ["api", "Billing", "acme/tools", "zeta"]
     );
 }
 
@@ -129,14 +232,14 @@ fn recent_is_newest_first_with_ties_by_name_and_unknown_last() {
         ],
     );
     assert_eq!(
-        names(&repo_order(&s, &[], &none(), SortMode::Recent)),
+        names(&repo_order(&s, &[], &[], &none(), SortMode::Recent)),
         (
             vec![],
             vec!["web", "Zeta", "api", "Billing", "docs", "unborn"]
         )
     );
     assert_eq!(
-        names(&repo_order(&s, &[], &none(), SortMode::Name)),
+        names(&repo_order(&s, &[], &[], &none(), SortMode::Name)),
         (
             vec![],
             vec!["api", "Billing", "docs", "unborn", "web", "Zeta"]
@@ -152,7 +255,7 @@ fn a_busy_linked_worktree_lifts_its_repo() {
         &[("api", Some(1_700_000_000)), ("web", Some(1_700_000_100))],
     );
     assert_eq!(
-        names(&repo_order(&s, &[], &none(), SortMode::Recent)).1,
+        names(&repo_order(&s, &[], &[], &none(), SortMode::Recent)).1,
         ["web", "api"]
     );
 
@@ -161,7 +264,7 @@ fn a_busy_linked_worktree_lifts_its_repo() {
     commit_at(&wt, 1_700_000_200);
     let s = read(&f);
     assert_eq!(
-        names(&repo_order(&s, &[], &none(), SortMode::Recent)).1,
+        names(&repo_order(&s, &[], &[], &none(), SortMode::Recent)).1,
         ["api", "web"]
     );
 }
@@ -182,11 +285,11 @@ fn pinned_stay_by_name_in_recent_mode() {
     let path = |name: &str| s.repo(name).unwrap().repo.path.clone();
     let pinned = [path("zeta"), path("beta"), path("api")];
     assert_eq!(
-        names(&repo_order(&s, &pinned, &none(), SortMode::Recent)),
+        names(&repo_order(&s, &pinned, &[], &none(), SortMode::Recent)),
         (vec!["api", "beta", "zeta"], vec!["web", "gamma"])
     );
     assert_eq!(
-        names(&repo_order(&s, &pinned, &none(), SortMode::Name)),
+        names(&repo_order(&s, &pinned, &[], &none(), SortMode::Name)),
         (vec!["api", "beta", "zeta"], vec!["gamma", "web"])
     );
 }
@@ -203,7 +306,7 @@ fn opens_and_edits_count_as_activity() {
         ],
     );
     fn recent(s: &Snapshot, opened: &BTreeMap<PathBuf, i64>) -> Vec<String> {
-        let order = repo_order(s, &[], opened, SortMode::Recent);
+        let order = repo_order(s, &[], &[], opened, SortMode::Recent);
         order.others.iter().map(|r| r.name().to_string()).collect()
     }
     assert_eq!(recent(&s, &none()), ["web", "api", "docs"]);
@@ -213,7 +316,7 @@ fn opens_and_edits_count_as_activity() {
     let opened = BTreeMap::from([(main("api"), 1_700_000_400), (main("docs"), 1_700_000_200)]);
     assert_eq!(recent(&s, &opened), ["api", "web", "docs"]);
     assert_eq!(
-        names(&repo_order(&s, &[], &opened, SortMode::Name)).1,
+        names(&repo_order(&s, &[], &[], &opened, SortMode::Name)).1,
         ["api", "docs", "web"]
     );
 

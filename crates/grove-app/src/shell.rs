@@ -609,6 +609,13 @@ pub fn toggle_pin(repo: &Path, cx: &mut App) {
     }
 }
 
+/// Hides or unhides the repo at `repo` from the desktop sidebar; display-only.
+pub fn toggle_hidden(repo: &Path, cx: &mut App) {
+    if cx.global_mut::<Library>().settings.toggle_hidden(repo) {
+        save_settings(cx);
+    }
+}
+
 /// Puts `worktree` first in recents (the switcher's empty search), stamps it opened now
 /// (Recent sort) and saves.
 pub fn record_open(worktree: &Path, cx: &mut App) {

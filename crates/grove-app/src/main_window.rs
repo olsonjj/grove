@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::base::Button;
 use gpui_kit::component::WindowExt;
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
@@ -20,6 +21,10 @@ use crate::removal::{self, RemoveRequested};
 use crate::sort_menu::{SortChosen, SortMenu, SortMenuIds};
 use crate::tree_view::{CollapseChanged, OpenRequested, TreeView};
 use crate::{launcher, shell, theme};
+
+/// Key context of the open manage-visibility popover: Tab is left to move between the
+/// filter field and the eye toggles, so a keyboard user can curate by stepping through rows.
+const VISIBILITY_CONTEXT: &str = "VisibilityMenu";
 
 const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Editor   ⌘↵ Terminal   ⌘K Jump to";
 /// Keeps "Last fetch … ago" current.
@@ -51,6 +56,10 @@ struct MainWindow {
     repo_menu: Option<RepoMenu>,
     repo_menu_item: FocusHandle,
     repo_sort: Entity<SortMenu>,
+    /// The manage-visibility button, so closing the popover refocuses it.
+    visibility_button: FocusHandle,
+    /// The open manage-visibility popover.
+    visibility: Option<VisibilityPopover>,
     repo_scroll: ScrollHandle,
     /// The sidebar order last rendered, to scroll the selection back into view on a reorder.
     shown_order: Vec<String>,
@@ -91,6 +100,12 @@ struct RepoMenu {
     at: Point<Pixels>,
 }
 
+/// The open manage-visibility popover; a fresh name filter per session, cleared on close.
+struct VisibilityPopover {
+    filter: Entity<InputState>,
+    _changes: Subscription,
+}
+
 /// The saved repo if it still exists, else the first.
 fn selected_repo(cx: &App) -> Option<String> {
     let library = shell::library(cx);
@@ -104,6 +119,7 @@ fn selected_repo(cx: &App) -> Option<String> {
             repo_order(
                 snapshot,
                 &library.settings.pinned_repos,
+                &library.settings.hidden_repos,
                 &library.settings.last_opened,
                 library.settings.repo_sort,
             )
@@ -177,6 +193,8 @@ impl MainWindow {
             repo_menu: None,
             repo_menu_item: cx.focus_handle(),
             repo_sort,
+            visibility_button: cx.focus_handle(),
+            visibility: None,
             repo_scroll: ScrollHandle::new(),
             shown_order: Vec::new(),
             removal: None,
@@ -684,9 +702,18 @@ impl Render for MainWindow {
         let order = repo_order(
             &snapshot,
             &settings.pinned_repos,
+            &settings.hidden_repos,
             &settings.last_opened,
             sort,
         );
+        // The header counts what the list shows; hidden repos come back as the chip.
+        let shown = order.iter().count();
+        let hidden_count = snapshot.repos.len() - shown;
+        let visibility_menu = if self.visibility.is_some() {
+            Some(self.visibility_popover(cx))
+        } else {
+            None
+        };
         let selected = self.selected(cx);
         let top_bar = self.top_bar(selected.as_deref().and_then(|n| snapshot.repo(n)), cx);
 
@@ -755,11 +782,31 @@ impl Render for MainWindow {
                     .items_center()
                     .justify_between()
                     .gap(px(8.))
-                    .child(group_header(
-                        "repos-header",
-                        format!("REPOSITORIES · {}", snapshot.repos.len()),
-                    ))
-                    .child(self.repo_sort.clone()),
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(5.))
+                            .child(group_header(
+                                "repos-header",
+                                format!("REPOSITORIES · {shown}"),
+                            ))
+                            .when(hidden_count > 0, |d| {
+                                d.child(self.hidden_chip(hidden_count, cx))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .relative()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(self.manage_button(cx))
+                            .child(self.repo_sort.clone())
+                            .children(visibility_menu),
+                    ),
             )
             .child(
                 div()
@@ -900,6 +947,7 @@ impl MainWindow {
         let names: Vec<String> = repo_order(
             library.store.snapshot(),
             &library.settings.pinned_repos,
+            &library.settings.hidden_repos,
             &library.settings.last_opened,
             library.settings.repo_sort,
         )
@@ -943,6 +991,243 @@ impl MainWindow {
             }
             cx.notify();
         }
+    }
+
+    /// Manage visibility: a popover of every repo, each with a show/hide eye. Hiding is a
+    /// header action, next to the sort menu.
+    fn open_visibility(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.visibility.is_some() {
+            return;
+        }
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter repositories…"));
+        let changes = cx.subscribe(&filter, |_, _, ev: &InputEvent, cx| {
+            if matches!(ev, InputEvent::Change) {
+                cx.notify();
+            }
+        });
+        filter.update(cx, |input, cx| input.focus(window, cx));
+        self.visibility = Some(VisibilityPopover {
+            filter,
+            _changes: changes,
+        });
+        cx.notify();
+    }
+
+    fn close_visibility(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.visibility.take().is_some() {
+            window.focus(&self.visibility_button, cx);
+            cx.notify();
+        }
+    }
+
+    fn manage_button(&self, cx: &mut Context<Self>) -> Button {
+        Button::new("manage-visibility")
+            .track_focus(&self.visibility_button)
+            .accessibility_label("Manage repository visibility")
+            .aria_expanded(self.visibility.is_some())
+            .flex_none()
+            .h(px(22.))
+            .px(px(6.))
+            .rounded(px(5.))
+            .border_1()
+            .border_color(gpui_kit::transparent_black())
+            .focus_visible(|s| s.border_color(theme::link()))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::border()))
+            .tooltip(|window, cx| Tooltip::new("Manage visibility").build(window, cx))
+            .child(icon(icons::EYE, 13.).text_color(theme::muted()))
+            .on_click(cx.listener(|this, _, window, cx| {
+                if this.visibility.is_some() {
+                    this.close_visibility(window, cx);
+                } else {
+                    this.open_visibility(window, cx);
+                }
+            }))
+    }
+
+    fn hidden_chip(&self, hidden: usize, cx: &mut Context<Self>) -> Button {
+        Button::new("hidden-chip")
+            .accessibility_label(format!("{hidden} hidden"))
+            .flex_none()
+            .h(px(20.))
+            .px(px(4.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::border()))
+            .text_size(px(11.))
+            .text_color(theme::faint())
+            .child(format!("· {hidden} hidden"))
+            .on_click(cx.listener(move |this, _, window, cx| this.open_visibility(window, cx)))
+    }
+
+    /// One popover row: the repo name, dimmed and struck through when hidden, with an eye
+    /// toggle. `ix` indexes the popover's full (unfiltered) list, so a row keeps its id
+    /// while its neighbours are filtered out.
+    fn visibility_row(
+        &self,
+        ix: usize,
+        name: &str,
+        path: &Path,
+        hidden: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let eye = Button::new(("visibility-eye", ix))
+            .accessibility_label(format!("{} {name}", if hidden { "Show" } else { "Hide" }))
+            .flex_none()
+            .size(px(22.))
+            .rounded(px(5.))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::border()))
+            .child(
+                icon(if hidden { icons::EYE_OFF } else { icons::EYE }, 13.)
+                    .text_color(theme::muted()),
+            )
+            .on_click(cx.listener({
+                let path = path.to_path_buf();
+                move |_, _, _, cx| {
+                    shell::toggle_hidden(&path, cx);
+                    cx.notify();
+                }
+            }));
+        div()
+            .id(("visibility-row", ix))
+            .test_support()
+            .aria_label(format!(
+                "{name}, {}",
+                if hidden { "hidden" } else { "shown" }
+            ))
+            .flex_none()
+            .h(px(26.))
+            .px(px(6.))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(8.))
+            .rounded(px(5.))
+            .text_size(px(13.))
+            .child(
+                theme::mono(name)
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(if hidden {
+                        theme::faint()
+                    } else {
+                        theme::text_soft()
+                    })
+                    .when(hidden, |d| d.line_through()),
+            )
+            .child(eye)
+            .into_any_element()
+    }
+
+    /// The manage popover, dropping from the header buttons, listing every repo in sidebar
+    /// order (pinned first, then the sort mode), including hidden ones.
+    fn visibility_popover(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (matched, filter) = {
+            let library = shell::library(cx);
+            let settings = &library.settings;
+            let query = self.visibility.as_ref().map_or(String::new(), |v| {
+                v.filter.read(cx).value().trim().to_lowercase()
+            });
+            // The popover's list is the sidebar's order with hidden repos shown: an empty
+            // hidden set, since hiding filters before the sort.
+            let matches = |repo: &RepoSnapshot| {
+                query.is_empty()
+                    || repo.display_name.to_lowercase().contains(&query)
+                    || repo.name().to_lowercase().contains(&query)
+            };
+            let matched = repo_order(
+                library.store.snapshot(),
+                &settings.pinned_repos,
+                &[],
+                &settings.last_opened,
+                settings.repo_sort,
+            )
+            .iter()
+            .enumerate()
+            .filter(|(_, repo)| matches(repo))
+            .map(|(ix, repo)| {
+                (
+                    ix,
+                    repo.display_name.clone(),
+                    repo.repo.path.clone(),
+                    settings.is_hidden(&repo.repo.path),
+                )
+            })
+            .collect::<Vec<_>>();
+            let filter = self.visibility.as_ref().map(|v| v.filter.clone());
+            (matched, filter)
+        };
+        let rows = matched
+            .into_iter()
+            .map(|(ix, name, path, hidden)| self.visibility_row(ix, &name, &path, hidden, cx))
+            .collect::<Vec<_>>();
+        deferred(
+            div()
+                .id("visibility-menu")
+                // Below the 22px header buttons, right-aligned with them.
+                .absolute()
+                .top(px(24.))
+                .right(px(0.))
+                .key_context(VISIBILITY_CONTEXT)
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.close_visibility(window, cx);
+                        cx.stop_propagation();
+                    }
+                }))
+                .capture_action(cx.listener(|this, _: &Escape, window, cx| {
+                    this.close_visibility(window, cx);
+                    cx.stop_propagation();
+                }))
+                // Outside click closes and is swallowed, like a native menu.
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if this.visibility.take().is_some() {
+                        cx.stop_propagation();
+                        cx.notify();
+                    }
+                }))
+                .w(px(240.))
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .p(px(4.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .rounded(px(8.))
+                .border_1()
+                .border_color(theme::border_strong())
+                .bg(theme::raised())
+                .shadow_lg()
+                .occlude()
+                .text_size(px(13.))
+                .child(
+                    div()
+                        .id("visibility-filter")
+                        .h(px(26.))
+                        .px(px(6.))
+                        .mb(px(2.))
+                        .rounded(px(5.))
+                        .border_1()
+                        .border_color(theme::border())
+                        .bg(theme::bg())
+                        .when_some(filter, |d, filter| {
+                            d.child(
+                                Input::new(&filter)
+                                    .appearance(false)
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(px(12.)),
+                            )
+                        })
+                        .test_support(),
+                )
+                .children(rows)
+                .test_support(),
+        )
+        .with_priority(1)
+        .into_any_element()
     }
 
     fn repo_row(
@@ -1345,8 +1630,8 @@ mod tests {
     use crate::pull;
     use crate::shell::Library;
     use crate::test_support::{
-        Launches, canned, code, fake_launcher, fake_presence, set_library, settings_file, tab_to,
-        terminal_window,
+        Launches, canned, code, fake_launcher, fake_presence, indexed_labels, set_library,
+        settings_file, tab_to, terminal_window,
     };
 
     fn launch(
@@ -3024,6 +3309,169 @@ mod tests {
         let s = file.load().unwrap();
         assert_eq!(s.pinned_repos, [PathBuf::from("/c/api")]);
         assert_eq!(s.last_selected_repo.as_deref(), Some("gone"));
+    }
+
+    /// The manage popover's rows: every repo, in sidebar order, with its hidden state.
+    fn visibility_rows(cx: &mut TestAppContext, w: AnyWindowHandle) -> Vec<String> {
+        indexed_labels(cx, w, "visibility-row")
+    }
+
+    fn open_visibility(cx: &mut TestAppContext, w: AnyWindowHandle) {
+        click(cx, w, "manage-visibility");
+        assert!(found(cx, w, "visibility-menu"));
+    }
+
+    #[gpui_kit::test]
+    fn manage_popover_lists_every_repo_and_closes_on_escape_outside_and_button(
+        cx: &mut TestAppContext,
+    ) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                pinned_repos: vec!["/c/web".into()],
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        assert_eq!(header_texts(cx, w), ["PINNED · 1", "REPOSITORIES · 2"]);
+        assert!(!found(cx, w, "hidden-chip"), "nothing hidden yet");
+        assert_eq!(
+            cx.update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                Some(window.find("manage-visibility").label()?.to_string())
+            })
+            .unwrap(),
+            Some("Manage repository visibility".into())
+        );
+
+        open_visibility(cx, w);
+        assert_eq!(visibility_rows(cx, w), ["web, shown", "api, shown"]);
+
+        // The filter field starts focused, so Escape goes to the popover.
+        keys(cx, w, &["escape"]);
+        assert!(!found(cx, w, "visibility-menu"));
+
+        open_visibility(cx, w);
+        click(cx, w, "repos-header");
+        assert!(!found(cx, w, "visibility-menu"));
+
+        open_visibility(cx, w);
+        click(cx, w, "manage-visibility");
+        assert!(!found(cx, w, "visibility-menu"));
+    }
+
+    #[gpui_kit::test]
+    fn hiding_applies_at_once_persists_and_the_chip_reopens_the_popover(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+
+        open_visibility(cx, w);
+        click(cx, w, ("visibility-eye", 0usize));
+        // api leaves the sidebar at once; the count follows the list and the chip appears.
+        assert_eq!(header_texts(cx, w), ["REPOSITORIES · 1"]);
+        // The hidden api keeps the selection, so the visible web row is not selected.
+        assert_eq!(label_of(cx, w, ("repo", 0usize)), "web, 1 worktree");
+        assert_eq!(file.load().unwrap().hidden_repos, [PathBuf::from("/c/api")]);
+        // The popover stays open, api now hidden.
+        assert_eq!(visibility_rows(cx, w), ["api, hidden", "web, shown"]);
+
+        // The chip reopens the same popover.
+        keys(cx, w, &["escape"]);
+        click(cx, w, "hidden-chip");
+        assert!(found(cx, w, "visibility-menu"));
+
+        click(cx, w, ("visibility-eye", 0usize));
+        assert_eq!(header_texts(cx, w), ["REPOSITORIES · 2"]);
+        assert!(!found(cx, w, "hidden-chip"));
+        assert!(file.load().unwrap().hidden_repos.is_empty());
+        assert_eq!(visibility_rows(cx, w), ["api, shown", "web, shown"]);
+        assert_eq!(
+            label_of(cx, w, ("repo", 0usize)),
+            "api, 5 worktrees, selected"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn hiding_a_pinned_repo_leaves_pinned_and_returns_it_intact(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                pinned_repos: vec!["/c/web".into()],
+                last_selected_repo: Some("api".into()),
+                ..Default::default()
+            },
+        );
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut web = canned();
+        web.display_name = "web".into();
+        web.repo.name = "web".into();
+        web.repo.path = "/c/web".into();
+        web.repo.git_dir = "/c/web/.git".into();
+        web.worktrees.truncate(1);
+        web.worktrees[0].path = "/c/web".into();
+        let (w, main) = launch_repos(cx, &file, vec![web, canned()], size(px(1180.), px(720.)));
+
+        open_visibility(cx, w);
+        // Rows are pinned web first, then api.
+        assert_eq!(visibility_rows(cx, w), ["web, shown", "api, shown"]);
+        let before = details(cx, &main);
+        click(cx, w, ("visibility-eye", 0usize));
+        assert_eq!(header_texts(cx, w), ["REPOSITORIES · 1"]);
+        assert_eq!(
+            file.load().unwrap().pinned_repos,
+            [PathBuf::from("/c/web")],
+            "the pin is preserved"
+        );
+        // The selected repo keeps the details pane.
+        assert_eq!(details(cx, &main), before);
+
+        // Hidden rows are out of arrow-key navigation: down from api lands back on api.
+        tab_to(cx, w, ("repo", 0usize));
+        keys(cx, w, &["down"]);
+        assert_eq!(
+            label_of(cx, w, ("repo", 0usize)),
+            "api, 5 worktrees, selected"
+        );
+
+        click(cx, w, ("visibility-eye", 0usize));
+        assert_eq!(header_texts(cx, w), ["PINNED · 1", "REPOSITORIES · 2"]);
+        assert_eq!(label_of(cx, w, ("repo", 0usize)), "web, 1 worktree, pinned");
+    }
+
+    #[gpui_kit::test]
+    fn the_filter_narrows_rows_and_resets_on_close(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+
+        open_visibility(cx, w);
+        click(cx, w, "visibility-filter");
+        cx.update_window(w, |_, window, cx| window.input("ap", cx))
+            .unwrap();
+        cx.run_until_parked();
+        assert_eq!(visibility_rows(cx, w), ["api, shown"]);
+
+        keys(cx, w, &["escape"]);
+        open_visibility(cx, w);
+        assert_eq!(visibility_rows(cx, w), ["api, shown", "web, shown"]);
+    }
+
+    #[gpui_kit::test]
+    fn visibility_toggles_have_accessible_labels(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let w = two_repos(cx, &file);
+        open_visibility(cx, w);
+        assert_eq!(label_of(cx, w, ("visibility-eye", 0usize)), "Hide api");
+        click(cx, w, ("visibility-eye", 0usize));
+        assert_eq!(label_of(cx, w, ("visibility-eye", 0usize)), "Show api");
     }
 
     /// A one-worktree repo at `/c/<name>`.

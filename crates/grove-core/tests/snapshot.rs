@@ -183,6 +183,7 @@ fn settings_round_trip() {
     };
     s.collapsed.insert("api".into(), vec!["feature/".into()]);
     s.toggle_pin(&tmp.path().join("code/api"));
+    s.toggle_hidden(&tmp.path().join("code/acme"));
     assert!(s.set_repo_sort(SortMode::Name));
     assert!(!s.set_repo_sort(SortMode::Name));
     assert!(s.set_tree_sort(SortMode::Name));
@@ -203,6 +204,7 @@ fn settings_tolerate_missing_fields() {
     assert_eq!(s.code_dir, Some(PathBuf::from("/x")));
     assert!(s.show_menu_bar_icon && s.launch_at_login && !s.background_fetch);
     assert!(s.pinned_repos.is_empty());
+    assert!(s.hidden_repos.is_empty());
     assert_eq!(s.repo_sort, SortMode::Recent);
     assert_eq!(s.tree_sort, SortMode::Recent);
 }
@@ -224,6 +226,39 @@ fn pin_and_unpin_round_trip() {
     let s = file.load().unwrap();
     assert!(!s.is_pinned(&api));
     assert_eq!(s.pinned_repos, [web]);
+}
+
+#[test]
+fn hide_and_unhide_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    let file = SettingsFile::new(tmp.path().join("settings.json"));
+    let (api, web) = (PathBuf::from("/c/api"), PathBuf::from("/c/web"));
+    let mut s = Settings::default();
+    assert!(s.toggle_hidden(&api));
+    assert!(s.toggle_hidden(&web));
+    file.save(&s).unwrap();
+    let mut s = file.load().unwrap();
+    assert!(s.is_hidden(&api) && s.is_hidden(&web));
+
+    assert!(s.toggle_hidden(&api));
+    file.save(&s).unwrap();
+    let s = file.load().unwrap();
+    assert!(!s.is_hidden(&api));
+    assert_eq!(s.hidden_repos, [web]);
+}
+
+#[test]
+fn hiding_a_pinned_repo_keeps_both_and_save_leaves_hidden_untouched() {
+    let api = PathBuf::from("/c/api");
+    let mut s = Settings::default();
+    s.toggle_pin(&api);
+    s.toggle_hidden(&api);
+    assert!(s.is_pinned(&api) && s.is_hidden(&api));
+
+    let mut edited = s.preferences();
+    edited.background_fetch = true;
+    s.set_preferences(edited);
+    assert!(s.is_pinned(&api) && s.is_hidden(&api));
 }
 
 #[test]
@@ -370,6 +405,7 @@ fn settings_save_keeps_what_changed_while_the_window_was_open() {
     s.record_open(&PathBuf::from("/w/api"), 1_700_000_000);
     s.set_collapsed("api", "fix/", true);
     s.toggle_pin(&PathBuf::from("/w/api"));
+    s.toggle_hidden(&PathBuf::from("/w/acme"));
     s.set_repo_sort(SortMode::Name);
     s.set_tree_sort(SortMode::Name);
     s.set_preferences(edited.clone());
@@ -377,6 +413,7 @@ fn settings_save_keeps_what_changed_while_the_window_was_open() {
     assert_eq!(s.recents, [PathBuf::from("/w/api")]);
     assert_eq!(s.collapsed("api"), ["fix/"]);
     assert_eq!(s.pinned_repos, [PathBuf::from("/w/api")]);
+    assert_eq!(s.hidden_repos, [PathBuf::from("/w/acme")]);
     assert_eq!(s.repo_sort, SortMode::Name);
     assert_eq!(s.tree_sort, SortMode::Name);
     assert_eq!(s.last_opened[&PathBuf::from("/w/api")], 1_700_000_000);
