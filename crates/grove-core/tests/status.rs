@@ -561,3 +561,17 @@ fn files_dated_in_the_future_are_ignored() {
     fs::remove_file(&past).unwrap();
     assert_eq!(worktree(&read(&f), "api").changes_time, None);
 }
+
+#[test]
+fn a_status_read_whose_head_moved_repoints_the_worktree() {
+    let f = Fixture::new();
+    let (api, _) = tracked_repo(&f);
+    let before = read(&f);
+    let old = worktree(&before, "api").head.clone().unwrap();
+    commit(&api, "moved");
+
+    let moved = read(&f);
+
+    let new = worktree(&moved, "api").head.clone().unwrap();
+    assert_ne!(new, old);
+}

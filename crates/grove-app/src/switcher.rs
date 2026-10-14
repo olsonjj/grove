@@ -724,7 +724,8 @@ mod tests {
     use crate::main_window::Status;
     use crate::shell::Library;
     use crate::test_support::{
-        canned, code, fake_launcher, fake_presence, set_library, settings_file, terminal_window,
+        behind, canned, code, fake_launcher, fake_presence, indexed_labels, set_library,
+        settings_file, terminal_window,
     };
 
     fn open_switcher(
@@ -813,6 +814,20 @@ mod tests {
         assert!(posted(cx).is_some_and(|s| s.text.starts_with("Opening ") && !s.error));
         // Seen in the switcher: a main window opened next doesn't replay it as in progress.
         assert_eq!(cx.update(|cx| shell::unseen_notice(cx)), None);
+    }
+
+    #[gpui_kit::test]
+    fn switcher_offers_no_pull(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let mut repo = canned();
+        // Even a worktree behind its upstream gains no Pull here: repo-writing actions
+        // live in the details pane.
+        repo.worktrees[1] = behind(repo.worktrees[1].clone(), "origin/feature/x", 2);
+        let (w, _) = open_switcher(cx, &file, repo);
+        let labels = indexed_labels(cx, w, "switcher-row");
+        assert!(!labels.iter().any(|l| l.contains("Pull")), "{labels:?}");
     }
 
     #[gpui_kit::test]

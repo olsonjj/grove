@@ -206,8 +206,8 @@ impl StatusReads {
         });
     }
 
-    /// Runs every read, collecting the results (blocking).
-    fn collect(&self) -> HashMap<PathBuf, StatusResult> {
+    /// Runs every read, collecting each path's result (blocking).
+    pub fn collect(&self) -> HashMap<PathBuf, StatusResult> {
         let results = Mutex::new(HashMap::with_capacity(self.paths.len()));
         self.run(|path, status| {
             results
@@ -743,6 +743,12 @@ impl SnapshotStore {
         let head_time = head_time_after(&status, Some(current));
         let changes_time = changes_time_after(&status, Some(current));
         if let Some(w) = Arc::make_mut(&mut self.snapshot).worktree_mut(path) {
+            // A read whose HEAD differs repoints the worktree's own, so the details pane's
+            // recent-commits read (keyed on HEAD) re-runs after, say, a pull moved it.
+            w.head = match &status {
+                Ok(s) => s.head.clone(),
+                Err(_) => w.head.clone(),
+            };
             w.status = Some(status);
             w.head_time = head_time;
             w.changes_time = changes_time;

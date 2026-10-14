@@ -7,7 +7,8 @@ use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AnyWindowHandle, App, AppContext, ElementId, TestAppContext};
 use grove_core::{
     Editor, LaunchError, LaunchPlan, OpenTarget, Outcome, Presence, RepoRef, RepoSnapshot,
-    Settings, SettingsFile, Snapshot, SnapshotStore, TargetKind, Terminal, Worktree,
+    Settings, SettingsFile, Snapshot, SnapshotStore, TargetKind, Terminal, Upstream, Worktree,
+    WorktreeStatus,
 };
 use tempfile::TempDir;
 
@@ -27,6 +28,22 @@ pub fn wt(path: &str, branch: Option<&str>, is_main: bool) -> Worktree {
         head_time: None,
         changes_time: None,
     }
+}
+
+/// `wt` with a tracking upstream `behind` commits behind its `name`.
+pub fn behind(mut wt: Worktree, name: &str, behind: u32) -> Worktree {
+    wt.status = Some(Ok(WorktreeStatus {
+        files: vec![],
+        upstream: Upstream::Tracking {
+            name: name.into(),
+            ahead: 0,
+            behind,
+        },
+        head: None,
+        head_time: None,
+        changes_time: None,
+    }));
+    wt
 }
 
 /// main, feature/{x,y}, fix/z, one detached.
@@ -70,6 +87,22 @@ pub fn settings_file(tmp: &TempDir, settings: Settings) -> SettingsFile {
     let file = SettingsFile::new(tmp.path().join("settings.json"));
     file.save(&settings).unwrap();
     file
+}
+
+/// Labels of `id`-indexed rendered elements (e.g. `("popover-row", ix)`), in order.
+pub fn indexed_labels(
+    cx: &mut TestAppContext,
+    w: AnyWindowHandle,
+    id: &'static str,
+) -> Vec<String> {
+    cx.update_window(w, |_, window, cx| {
+        window.render_frame(cx);
+        (0usize..)
+            .map_while(|ix| window.try_find((id, ix)))
+            .filter_map(|r| r.label().map(str::to_string))
+            .collect()
+    })
+    .unwrap()
 }
 
 pub type Launches = Arc<Mutex<Vec<Vec<String>>>>;

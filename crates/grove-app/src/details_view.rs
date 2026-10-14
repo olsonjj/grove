@@ -20,7 +20,9 @@ use grove_core::git::GitError;
 use crate::icons::{self, icon};
 use crate::launcher::Choice;
 use crate::main_window::tilde;
+use crate::pull;
 use crate::removal::{self, RemoveRequested};
+use crate::shell;
 use crate::tree_view::{OpenRequested, TreeView};
 use crate::{launcher, theme};
 
@@ -48,6 +50,8 @@ pub struct DetailsView {
     snapshot: Option<Arc<Snapshot>>,
     details: Option<Details>,
     commits: Commits,
+    /// The worktree being pulled, while its pull runs; a selection change doesn't cancel it.
+    pulling: Option<std::path::PathBuf>,
     /// Which ▾ menu is open.
     menu: Option<Role>,
     /// The ▾ buttons (editor, terminal), for focus to return to.
@@ -88,6 +92,7 @@ impl DetailsView {
             snapshot: None,
             details: None,
             commits: Commits::default(),
+            pulling: None,
             menu: None,
             carets: [cx.focus_handle(), cx.focus_handle()],
             items: Vec::new(),
@@ -293,6 +298,44 @@ impl DetailsView {
             }
         }
     }
+
+    /// The Sync row's Pull: fast-forwards the selected worktree, one pull at a time. Runs
+    /// off the UI thread; a selection change mid-pull doesn't cancel it and its notice, and
+    /// git's refusal still lands through the status bar.
+    fn pull(&mut self, cx: &mut Context<Self>) {
+        let Some(wt) = self.worktree().filter(|wt| pull::offer(wt).is_some()) else {
+            return;
+        };
+        if self.pulling.is_some() {
+            return; // The disabled button already refuses it; this is the belt and braces.
+        }
+        // `pull::offer` guarantees the worktree is on a branch, so its name is here.
+        let Some(branch) = wt.branch.clone() else {
+            return;
+        };
+        let path = wt.path.clone();
+        self.pulling = Some(path.clone());
+        let run = pull::runner(cx);
+        let read_path = path.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { run(&path) }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.pulling = None;
+                let (text, error) = match result {
+                    Ok(()) => {
+                        // Rereads just this worktree so its badge and the sync line catch
+                        // up; recent commits re-read on their own, as HEAD changed.
+                        shell::reread_status(&read_path, cx);
+                        (format!("Pulled {branch}"), false)
+                    }
+                    Err(e) => (format!("Couldn't pull {branch}: {}", e.brief()), true),
+                };
+                this.notice(text, error, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
 }
 
 const fn role_ix(role: Role) -> usize {
@@ -310,6 +353,67 @@ const fn role_key(role: Role) -> &'static str {
 }
 
 impl DetailsView {
+    /// The Sync row: its value, plus Pull when the worktree is behind its upstream. A
+    /// running pull reads "Pulling…" and refuses a second click; the pane pulls one
+    /// worktree at a time.
+    fn sync_field(&self, value: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let pulling = self
+            .pulling
+            .as_ref()
+            .is_some_and(|p| self.details.as_ref().and_then(|d| d.worktree.as_ref()) == Some(p));
+        let enabled = self.pulling.is_none();
+        let label = if pulling { "Pulling…" } else { "Pull" };
+        div()
+            .flex()
+            .gap(px(10.))
+            .text_size(px(13.))
+            .child(
+                div()
+                    .w(px(92.))
+                    .flex_none()
+                    .text_color(theme::muted())
+                    .child(SYNC),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .min_w_0()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme::text_soft())
+                            .child(value),
+                    )
+                    .child(
+                        Button::new("details-pull")
+                            .accessibility_label(label)
+                            .disabled(!enabled)
+                            .h(px(24.))
+                            .px(px(8.))
+                            .rounded(px(6.))
+                            .border_1()
+                            .border_color(theme::border_strong())
+                            .focus_visible(|s| s.border_color(theme::link()))
+                            .bg(theme::raised())
+                            .text_size(px(12.))
+                            .when_else(
+                                enabled,
+                                |b| {
+                                    b.text_color(theme::text())
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(theme::border()))
+                                },
+                                |b| b.text_color(theme::faint()),
+                            )
+                            .child(label)
+                            .on_click(cx.listener(|this, _, _, cx| this.pull(cx))),
+                    ),
+            )
+    }
+
     /// "Open in <default>" plus its ▾ menu of every detected app for `role`.
     fn open_split(&self, role: Role, openable: bool, cx: &mut Context<Self>) -> AnyElement {
         let key = role_key(role);
@@ -570,6 +674,8 @@ fn file_row(i: usize, f: &ChangedFile) -> impl IntoElement {
         .test_support()
 }
 
+const SYNC: &str = "Sync";
+
 /// Label/value rows of the STATUS section.
 fn status_fields(wt: &Worktree) -> Vec<(&'static str, String)> {
     let head = match (&wt.branch, &wt.head) {
@@ -584,7 +690,7 @@ fn status_fields(wt: &Worktree) -> Vec<(&'static str, String)> {
         (Some(Err(e)), true) => out.push(("Working tree", format!("unknown ({e})"))),
         (Some(Ok(s)), true) => out.extend([
             ("Upstream", s.upstream.name().unwrap_or("none").to_string()),
-            ("Sync", s.upstream.sync_words()),
+            (SYNC, s.upstream.sync_words()),
             ("Working tree", s.summary()),
         ]),
     }
@@ -675,9 +781,16 @@ impl DetailsView {
                 .into_any_element(),
         );
 
+        let pull_offered = pull::offer(wt).is_some();
         out.push(
             section("STATUS")
-                .children(status_fields(wt).into_iter().map(|(l, v)| field(l, v)))
+                .children(status_fields(wt).into_iter().map(|(l, v)| {
+                    if pull_offered && l == SYNC {
+                        self.sync_field(v, cx).into_any_element()
+                    } else {
+                        field(l, v).into_any_element()
+                    }
+                }))
                 .into_any_element(),
         );
 

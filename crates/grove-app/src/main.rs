@@ -6,6 +6,7 @@ mod login_item;
 mod macos;
 mod main_window;
 mod popover;
+mod pull;
 mod removal;
 mod settings_window;
 mod setup;

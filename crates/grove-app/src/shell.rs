@@ -519,6 +519,28 @@ pub fn worktree_removed(git_dir: &Path, worktree: &Path, cx: &mut App) {
     reread_repo(git_dir, cx);
 }
 
+/// Rereads one worktree's status off the UI thread and applies it, e.g. right after Grove
+/// pulled it. Like [`read_status`] but for a single path, and without its reader threads
+/// waking the UI as results land: one read, one apply.
+pub fn reread_status(path: &Path, cx: &mut App) {
+    let reads = cx.global_mut::<Library>().store.status_read(path);
+    let stamp = reads.stamp();
+    cx.spawn(async move |cx| {
+        let results = cx.background_spawn(async move { reads.collect() }).await;
+        cx.update(|cx| {
+            let store = &mut cx.global_mut::<Library>().store;
+            let mut changed = false;
+            for (path, status) in results {
+                changed |= store.apply_status(stamp, &path, status);
+            }
+            if changed {
+                save_cache_soon(cx);
+            }
+        });
+    })
+    .detach();
+}
+
 /// After repos or worktrees may have come or gone: re-aim the watcher, update the cache.
 fn snapshot_changed(cx: &mut App) {
     let snapshot = library(cx).store.snapshot().clone();
