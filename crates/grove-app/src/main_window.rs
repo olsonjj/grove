@@ -1221,6 +1221,7 @@ impl MainWindow {
                             d.child(
                                 Input::new(&filter)
                                     .appearance(false)
+                                    .px_0()
                                     .flex_1()
                                     .min_w_0()
                                     .text_size(px(12.)),
