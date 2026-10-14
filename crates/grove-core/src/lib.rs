@@ -27,7 +27,7 @@ pub use details::{Details, cd_command, relative_time, unix_now};
 pub use discovery::{RepoRef, discover};
 pub use env::{PathSource, ShellEnv, resolved_env};
 pub use git::{
-    Change, ChangedFile, Commit, GitError, Upstream, WorktreeStatus, read_worktree_status,
+    Change, ChangedFile, Commit, GitError, Upstream, WorktreeStatus, pull, read_worktree_status,
     recent_commits, remove_worktree,
 };
 pub use launch::{

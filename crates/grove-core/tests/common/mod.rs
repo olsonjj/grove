@@ -65,6 +65,23 @@ pub fn add_worktree(repo: &Path, at: &Path, branch: &str) {
     );
 }
 
+/// Commits `n` empty commits in `dir` and pushes them to its upstream.
+pub fn push_commits(dir: &Path, n: usize) {
+    for i in 0..n {
+        git(
+            dir,
+            &[
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                &format!("theirs {i}"),
+            ],
+        );
+    }
+    git(dir, &["push", "-q"]);
+}
+
 pub struct Fixture {
     pub tmp: TempDir,
 }

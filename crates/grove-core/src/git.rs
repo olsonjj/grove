@@ -1,4 +1,4 @@
-//! The only module that runs `git`. Everything here is read-only except `fetch` and
+//! The only module that runs `git`. Everything here is read-only except `fetch`, `pull` and
 //! worktree removal.
 
 use std::collections::HashSet;
@@ -23,8 +23,9 @@ pub const MIN_VERSION: GitVersion = GitVersion {
 
 const QUICK: Duration = Duration::from_secs(5);
 const READ: Duration = Duration::from_secs(15);
-/// Generous: a first fetch of a big repo is slow, and it runs off the UI thread.
-const FETCH: Duration = Duration::from_secs(5 * 60);
+/// Generous: a first fetch is slow, and pull's inner fetch dominates pull; both run off
+/// the UI thread.
+const NETWORK: Duration = Duration::from_secs(5 * 60);
 /// Worktree removal, unbounded: killing it mid-delete would leave a half-deleted worktree.
 const WRITE: Duration = Duration::MAX;
 
@@ -411,15 +412,39 @@ fn commit_time(path: &Path, oid: &str) -> Option<i64> {
     .ok()
 }
 
-/// `fetch --all --prune`: every remote, deleted remote branches pruned. Grove's only
-/// command that writes to a repo; auto maintenance and gc, which fetch would otherwise
-/// start, are off (config form, as `--no-auto-maintenance` needs git 2.29).
+/// `fetch --all --prune`: every remote, deleted remote branches pruned. One of Grove's
+/// repo-writing commands; auto maintenance and gc, which fetch would otherwise start,
+/// are off (config form, as `--no-auto-maintenance` needs git 2.29).
 ///
 /// # Errors
 ///
 /// Returns [`GitError`] when fetch cannot run, times out, or fails.
 pub fn fetch(repo: &Path) -> Result<(), GitError> {
-    run(Some(repo), FETCH_ARGS, FETCH).map(drop)
+    run(
+        Some(repo),
+        &write_args(&["fetch", "--all", "--prune", "--quiet"]),
+        NETWORK,
+    )
+    .map(drop)
+}
+
+/// `pull --ff-only`, from the worktree itself: fast-forward only, so a diverged branch
+/// is refused with git's reason and nothing changes — never a merge commit or conflict.
+/// One of Grove's repo-writing commands, with fetch's config and budget (the network
+/// fetch inside pull dominates). A killed run is recoverable: a fast-forward is either
+/// done or leaves files `git status` reports as modified, and no `MERGE_HEAD` behind.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when pull cannot run, times out, or fails (no upstream,
+/// diverged, local changes it would overwrite, ...).
+pub fn pull(path: &Path) -> Result<(), GitError> {
+    run(
+        Some(path),
+        &write_args(&["pull", "--ff-only", "--quiet"]),
+        NETWORK,
+    )
+    .map(drop)
 }
 
 /// `git worktree remove [--force] <path>`, run from `repo`'s main worktree (or the bare
@@ -439,16 +464,13 @@ pub fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<(), GitE
     run(Some(repo), &args, WRITE).map(drop)
 }
 
-const FETCH_ARGS: &[&str] = &[
-    "-c",
-    "maintenance.auto=false",
-    "-c",
-    "gc.auto=0",
-    "fetch",
-    "--all",
-    "--prune",
-    "--quiet",
-];
+fn write_args(cmd: &[&'static str]) -> Vec<&'static str> {
+    // Auto maintenance and gc, which fetch or pull would otherwise start, are off
+    // (config form, as `--no-auto-maintenance` needs git 2.29).
+    let mut args = vec!["-c", "maintenance.auto=false", "-c", "gc.auto=0"];
+    args.extend_from_slice(cmd);
+    args
+}
 
 /// The last three commits on the worktree's HEAD, newest first; empty before the first commit.
 ///

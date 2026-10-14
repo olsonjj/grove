@@ -3,9 +3,9 @@
 mod common;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use common::{Fixture, commit_at, git, init_repo};
+use common::{Fixture, commit_at, git, init_repo, push_commits};
 use grove_core::{FetchReport, Snapshot, SnapshotStore};
 
 fn store(f: &Fixture) -> SnapshotStore {
@@ -41,22 +41,6 @@ fn tracked_repo(f: &Fixture) -> (PathBuf, PathBuf, PathBuf) {
         &["clone", "-q", origin.to_str().unwrap(), "other"],
     );
     (api, origin, other)
-}
-
-fn push_commits(other: &Path, n: usize) {
-    for i in 0..n {
-        git(
-            other,
-            &[
-                "commit",
-                "-q",
-                "--allow-empty",
-                "-m",
-                &format!("theirs {i}"),
-            ],
-        );
-    }
-    git(other, &["push", "-q"]);
 }
 
 #[test]
