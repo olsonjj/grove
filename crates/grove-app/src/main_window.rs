@@ -1217,6 +1217,10 @@ impl MainWindow {
                         .border_1()
                         .border_color(theme::border())
                         .bg(theme::bg())
+                        // Column + centering: the input's own height is its line height, so
+                        // this keeps the text vertically centered in the field.
+                        .flex()
+                        .items_center()
                         .when_some(filter, |d, filter| {
                             d.child(
                                 Input::new(&filter)
