@@ -26,6 +26,10 @@ use crate::{launcher, shell, theme};
 /// filter field and the eye toggles, so a keyboard user can curate by stepping through rows.
 const VISIBILITY_CONTEXT: &str = "VisibilityMenu";
 
+/// Sidebar width; also the manage popover's, so it covers the list exactly. Fits
+/// "REPOSITORIES · 99" plus the chip, the manage button and the sort menu.
+const SIDEBAR_W: f32 = 330.;
+
 const SHORTCUTS: &str = "↑↓ Move   ←→ Collapse / expand   ↵ Editor   ⌘↵ Terminal   ⌘K Jump to";
 /// Keeps "Last fetch … ago" current.
 const CLOCK_TICK: std::time::Duration = std::time::Duration::from_secs(30);
@@ -763,7 +767,7 @@ impl Render for MainWindow {
         let repo_menu = self.repo_menu(cx);
 
         let sidebar = div()
-            .w(px(240.))
+            .w(px(SIDEBAR_W))
             .flex_none()
             .h_full()
             .flex()
@@ -1171,7 +1175,7 @@ impl MainWindow {
                 .absolute()
                 .top(px(36.))
                 .left(px(0.))
-                .w(px(240.))
+                .w(px(SIDEBAR_W))
                 .key_context(VISIBILITY_CONTEXT)
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
                     if ev.keystroke.key == "escape" {
@@ -2932,6 +2936,48 @@ mod tests {
             };
             open_with(options, cx).unwrap().0
         })
+    }
+
+    /// The header row (count, chip, manage button, sort menu) must fit inside the sidebar
+    /// even with a two-digit hidden count — widening the sidebar came from this review.
+    #[gpui_kit::test]
+    fn the_header_and_chip_fit_inside_the_sidebar(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let names: Vec<String> = (0..12).map(|i| format!("r{i:02}")).collect();
+        let repos = names.iter().map(|n| repo_named(n)).collect();
+        let (w, _) = launch_repos(cx, &file, repos, size(px(1280.), px(720.)));
+        open_visibility(cx, w);
+        // Hide ten repos, so the chip reads "· 10 hidden".
+        for i in 0..10usize {
+            click(cx, w, ("visibility-eye", i));
+        }
+        assert_eq!(label_of(cx, w, "hidden-chip"), "10 hidden");
+        keys(cx, w, &["escape"]);
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            let sidebar_right = window.find("repo-list").bounds().right();
+            for id in [
+                "repos-header",
+                "hidden-chip",
+                "manage-visibility",
+                "repo-sort",
+            ] {
+                assert!(
+                    window.find(id).bounds().right() <= sidebar_right,
+                    "{id} overflows the sidebar"
+                );
+            }
+            // The manage button keeps its breathing room before the sort menu.
+            let manage = window.find("manage-visibility").bounds().right();
+            let sort_left = window.find("repo-sort").bounds().left();
+            assert!(
+                manage < sort_left,
+                "manage button crowded against the sort menu"
+            );
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
