@@ -2667,22 +2667,22 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn details_list_last_three_commits_in_background(cx: &mut TestAppContext) {
+    fn details_list_last_five_commits_in_background(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         fake_launcher(cx, Ok(Outcome::Opened));
         let repo_dir = tmp.path().join("api");
         std::fs::create_dir(&repo_dir).unwrap();
         git(&repo_dir, &["init", "-q"]);
-        for m in ["one", "two", "three", "four"] {
+        for m in ["one", "two", "three", "four", "five", "six"] {
             git(&repo_dir, &["commit", "-q", "--allow-empty", "-m", m]);
         }
         let mut repo = canned();
         repo.worktrees[0].path = repo_dir;
         let (w, main) = launch_repo(cx, &file, repo);
         cx.run_until_parked();
-        assert!((0..3).all(|i| has(cx, w, "commit", i)));
-        assert!(!has(cx, w, "commit", 3));
+        assert!((0..5).all(|i| has(cx, w, "commit", i)));
+        assert!(!has(cx, w, "commit", 5));
         // A linked worktree that isn't a repo shows the error instead of stale commits.
         keys(cx, w, &["down", "down", "down", "down"]);
         let err = main.read_with(cx, |m, cx| match m.details.read(cx).commits() {
@@ -2690,7 +2690,7 @@ mod tests {
             other => panic!("expected an error, got {other:?}"),
         });
         assert!(
-            err.starts_with("git log -3") && err.contains("failed:"),
+            err.starts_with("git log -5") && err.contains("failed:"),
             "{err}"
         );
         assert!(!has(cx, w, "commit", 0));

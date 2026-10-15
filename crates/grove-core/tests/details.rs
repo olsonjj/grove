@@ -72,7 +72,7 @@ fn clean_worktree_lists_no_files() {
 }
 
 #[test]
-fn last_three_commits_newest_first_with_special_characters() {
+fn last_five_commits_newest_first_with_special_characters() {
     let f = Fixture::new();
     let api = init_repo(&f.code().join("api"));
     let messages = [
@@ -86,7 +86,16 @@ fn last_three_commits_newest_first_with_special_characters() {
     }
     let commits = recent_commits(&api).unwrap();
     let subjects: Vec<&str> = commits.iter().map(|c| c.subject.as_str()).collect();
-    assert_eq!(subjects, ["newest", "tabs\tand  spaces", messages[1]]);
+    assert_eq!(
+        subjects,
+        [
+            "newest",
+            "tabs\tand  spaces",
+            messages[1],
+            messages[0],
+            "init"
+        ]
+    );
     assert!(
         commits
             .iter()
@@ -94,6 +103,22 @@ fn last_three_commits_newest_first_with_special_characters() {
     );
     let now = grove_core::unix_now();
     assert!(commits.iter().all(|c| (now - c.time).abs() < 600));
+}
+
+#[test]
+fn recent_commits_caps_at_five() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    for n in 1..=7 {
+        git(
+            &api,
+            &["commit", "-q", "--allow-empty", "-m", &format!("c{n}")],
+        );
+    }
+    let commits = recent_commits(&api).unwrap();
+    assert_eq!(commits.len(), 5);
+    assert_eq!(commits[0].subject, "c7");
+    assert_eq!(commits[4].subject, "c3");
 }
 
 #[test]

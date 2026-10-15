@@ -472,7 +472,7 @@ fn write_args(cmd: &[&'static str]) -> Vec<&'static str> {
     args
 }
 
-/// The last three commits on the worktree's HEAD, newest first; empty before the first commit.
+/// The last five commits on the worktree's HEAD, newest first; empty before the first commit.
 ///
 /// # Errors
 ///
@@ -482,7 +482,7 @@ pub fn recent_commits(path: &Path) -> Result<Vec<Commit>, GitError> {
         Some(path),
         &[
             "log",
-            "-3",
+            "-5",
             "-z",
             "--no-show-signature",
             "--format=%h%x1f%ct%x1f%s",
