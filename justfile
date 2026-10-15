@@ -31,6 +31,10 @@ check:
 fmt:
     cargo fmt
 
+# Remove the target directory
+clean:
+    cargo clean
+
 # Build ad-hoc-signed Grove.app, incrementing the build number
 bundle:
     echo $(( $(cat {{build_file}}) + 1 )) > {{build_file}}
