@@ -147,6 +147,65 @@ pub fn relative_time(then: i64, now: i64) -> String {
     format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
 }
 
+/// Total size in bytes of `path`'s regular files, walking the directory tree without
+/// following symlinks (so aliased trees can't loop); unreadable entries count nothing,
+/// so the total is a floor. `.git` is skipped: in a main worktree it's repo data, not
+/// the working tree, and in a linked worktree it's a one-line file.
+pub fn directory_size(path: &Path) -> u64 {
+    fn walk(dir: &Path, total: &mut u64) {
+        let Ok(read) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in read.flatten() {
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            // `entry.metadata` reads the link itself, never its target.
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                walk(&entry.path(), total);
+            } else if meta.is_file() {
+                *total += meta.len();
+            }
+        }
+    }
+    let mut total = 0;
+    if path.file_name().is_some_and(|n| n == ".git") {
+        return 0;
+    }
+    walk(path, &mut total);
+    total
+}
+
+/// A directory size in words: "512 B", "1.5 kB", "452 MB", at most one decimal, binary
+/// units (1 kB = 1024 B). Beyond one megabyte, whole units; a gigabyte is Grove's ceiling.
+pub fn size_words(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = KIB * KIB;
+    let b = bytes as f64;
+    let (n, unit) = if bytes < KIB as u64 {
+        return format!("{bytes} B");
+    } else if bytes < MIB as u64 {
+        (b / KIB, "kB")
+    } else if b < MIB * KIB {
+        (b / MIB, "MB")
+    } else {
+        (b / (MIB * KIB), "GB")
+    };
+    if n < 10. {
+        let mut one = format!("{n:.1}");
+        if one.ends_with(".0") {
+            one.truncate(one.len() - 2);
+        }
+        format!("{one} {unit}")
+    } else {
+        format!("{} {unit}", n.round())
+    }
+}
+
 /// Seconds since the Unix epoch, for `relative_time`.
 pub fn unix_now() -> i64 {
     SystemTime::now()
@@ -211,6 +270,57 @@ mod tests {
         };
         assert_eq!(gone.sync_words(), "upstream gone");
         assert_eq!(gone.name(), Some("origin/x"));
+    }
+
+    #[test]
+    fn size_words_rounds_to_the_nearest_named_unit() {
+        const K: u64 = 1024;
+        const M: u64 = K * K;
+        let cases = [
+            (0, "0 B"),
+            (512, "512 B"),
+            (1023, "1023 B"),
+            (K, "1 kB"),
+            (1536, "1.5 kB"),
+            (10 * K, "10 kB"),
+            (10486, "10 kB"),
+            (M, "1 MB"),
+            (M * 5 / 2, "2.5 MB"),
+            (452 * M, "452 MB"),
+            (M * 10 + K * 200, "10 MB"),
+            (1024 * M, "1 GB"),
+            (3 * 1024 * M, "3 GB"),
+        ];
+        for (bytes, want) in cases {
+            assert_eq!(size_words(bytes), want, "{bytes} bytes");
+        }
+    }
+
+    #[test]
+    fn directory_size_sums_regular_files_without_following_links() {
+        let tmp = std::env::temp_dir().join(format!("grove-size-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let nested = tmp.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(tmp.join("one"), vec![0u8; 100]).unwrap();
+        std::fs::write(tmp.join("a").join("two"), vec![0u8; 200]).unwrap();
+        std::fs::write(nested.join("three"), vec![0u8; 30]).unwrap();
+        // A `.git` dir is skipped: repo data, not the working tree.
+        std::fs::create_dir(tmp.join(".git")).unwrap();
+        std::fs::write(tmp.join(".git").join("packed"), vec![0u8; 9999]).unwrap();
+        // A symlink counts its own nothing: not the target's bytes, no cycle.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(nested.join("three"), tmp.join("link")).unwrap();
+        assert_eq!(directory_size(&tmp), 330);
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(nested.join("three")).unwrap();
+            assert_eq!(directory_size(&tmp), 300);
+        }
+
+        // A missing dir reads as empty.
+        assert_eq!(directory_size(&tmp.join("nope")), 0);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

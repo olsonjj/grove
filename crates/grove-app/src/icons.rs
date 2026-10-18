@@ -20,6 +20,7 @@ pub const PIN: &str = "grove/pin.svg";
 pub const PIN_FILLED: &str = "grove/pin-filled.svg";
 pub const EYE: &str = "grove/eye.svg";
 pub const EYE_OFF: &str = "grove/eye-off.svg";
+pub const CHECK: &str = "grove/check.svg";
 
 const ICONS: &[(&str, &str)] = &[
     (
@@ -81,6 +82,10 @@ const ICONS: &[(&str, &str)] = &[
     (
         EYE_OFF,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10 10 0 0 1 12 19c-6.5 0-10-7-10-7a18.4 18.4 0 0 1 5.1-5.9"/><path d="M9.9 4.2A10 10 0 0 1 12 5c6.5 0 10 7 10 7a18.5 18.5 0 0 1-2.2 3.2"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/><path d="M2 2l20 20"/></svg>"#,
+    ),
+    (
+        CHECK,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.6l5 5L20 6.6"/></svg>"#,
     ),
 ];
 

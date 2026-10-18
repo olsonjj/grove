@@ -1,0 +1,28 @@
+# CI: every PR must pass what the justfile's `check` enforces — fmt, clippy, tests, docs.
+# A macOS runner: Grove is a macOS app (objc2/AppKit, tray icon), so the app crate only
+# builds there. GPUI's tests run headless, so no display is needed.
+name: check
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `just` as a prebuilt binary: the check recipe is the repo's own gate.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: just check

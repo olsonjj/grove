@@ -70,6 +70,19 @@ pub struct Fetcher {
 
 impl Global for Fetcher {}
 
+/// Completed single-repo rereads: what repo, how many — the Fetcher pattern. A watcher
+/// ref hit's reread may change nothing in the repo snapshot yet still change its branch
+/// list, so the details pane follows this to keep the branch switcher's dropdown honest.
+#[derive(Default)]
+pub struct RepoReads {
+    /// Bumped per completed reread, so windows read each bump once.
+    pub finished: u64,
+    /// The repo the last reread was for.
+    pub repo: Option<String>,
+}
+
+impl Global for RepoReads {}
+
 /// Lines for the main window's status bar from windows that may close before their launch
 /// finishes (switcher, popover).
 #[derive(Default)]
@@ -491,17 +504,34 @@ fn apply_changes(changes: &Changes, cx: &mut App) {
     }
 }
 
-/// Rereads one repo's worktrees and statuses in the background.
-fn reread_repo(git_dir: &Path, cx: &mut App) {
+/// Rereads one repo's worktrees and statuses in the background: the single-repo refresh
+/// that re-derives branch names from the worktree list, so a switched worktree re-nests
+/// under its new branch node and the snapshot cache saves. Grove removal and branch
+/// switching both end by calling this on their repo.
+pub fn reread_repo(git_dir: &Path, cx: &mut App) {
     let Some(read) = cx.global_mut::<Library>().store.repo_read(git_dir) else {
         return;
     };
+    let git_dir = git_dir.to_path_buf();
     cx.spawn(async move |cx| {
         let result = cx.background_spawn(async move { read.run() }).await;
         cx.update(|cx| {
             if cx.global_mut::<Library>().store.apply_repo(result) {
                 snapshot_changed(cx);
             }
+            // A branch deleted or created outside Grove leaves the snapshot unchanged,
+            // but the repo's branch list moves, so every completed reread is announced.
+            let repo = cx
+                .global_mut::<Library>()
+                .store
+                .snapshot()
+                .repos
+                .iter()
+                .find(|r| r.repo.git_dir == git_dir)
+                .map(|r| r.repo.name.clone());
+            let reads = cx.default_global::<RepoReads>();
+            reads.finished += 1;
+            reads.repo = repo;
         });
     })
     .detach();

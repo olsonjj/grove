@@ -1,5 +1,5 @@
-//! The only module that runs `git`. Everything here is read-only except `fetch`, `pull` and
-//! worktree removal.
+//! The only module that runs `git`. Everything here is read-only except `fetch`, `pull`,
+//! worktree removal and `switch`.
 
 use std::collections::HashSet;
 use std::fmt;
@@ -26,6 +26,9 @@ const READ: Duration = Duration::from_secs(15);
 /// Generous: a first fetch is slow, and pull's inner fetch dominates pull; both run off
 /// the UI thread.
 const NETWORK: Duration = Duration::from_secs(5 * 60);
+/// Switch: a kill mid-checkout loses nothing (see `switch`), so the write is bounded here
+/// like pull, not never-killed like removal.
+const SWITCH: Duration = Duration::from_secs(60);
 /// Worktree removal, unbounded: killing it mid-delete would leave a half-deleted worktree.
 const WRITE: Duration = Duration::MAX;
 
@@ -447,6 +450,55 @@ pub fn pull(path: &Path) -> Result<(), GitError> {
     .map(drop)
 }
 
+/// Local branch short names, alphabetically. Includes branches no worktree has checked
+/// out; which worktree holds a branch is in the snapshot, not this list.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when the refs cannot be read.
+pub fn branches(path: &Path) -> Result<Vec<String>, GitError> {
+    // Full refnames, stripped here, not `%(refname:short)`: shortening tries the
+    // shortest unique form, so a branch sharing a tag's name reads `heads/<name>` —
+    // which matches nothing and cannot be switched to.
+    let out = run(
+        Some(path),
+        &["for-each-ref", "refs/heads", "--format=%(refname)"],
+        QUICK,
+    )?;
+    Ok(out
+        .lines()
+        .map(|refname| {
+            refname
+                .strip_prefix("refs/heads/")
+                .unwrap_or(refname)
+                .to_string()
+        })
+        .collect())
+}
+
+/// `switch --quiet --no-guess -- <branch>`, run from the worktree itself: git carries
+/// compatible uncommitted changes over and refuses with its one-line reason when it
+/// can't — it never discards anything, and a switch creates or deletes no refs.
+/// `--no-guess` keeps git's remote-branch guessing off, so the write can't resurrect a
+/// deleted local branch from its remote tracking branch. One of Grove's repo-writing
+/// commands, with fetch's config and a 60-second budget: git carries compatible changes
+/// or refuses, a kill creates no merge state and loses nothing, and a mid-checkout kill
+/// leaves only a stale index lock and files git reports as modified — bounded like
+/// pull's, not removal's never-kill.
+///
+/// # Errors
+///
+/// Returns [`GitError`] when git cannot run, times out, or refuses the switch (another
+/// worktree's branch, changes it would overwrite, no such branch, ...).
+pub fn switch(path: &Path, branch: &str) -> Result<(), GitError> {
+    run(
+        Some(path),
+        &write_args(&["switch", "--quiet", "--no-guess", "--", branch]),
+        SWITCH,
+    )
+    .map(drop)
+}
+
 /// `git worktree remove [--force] <path>`, run from `repo`'s main worktree (or the bare
 /// repo). The branch stays. A missing folder's entry goes without `--force`. Never timed out:
 /// killing it mid-delete would leave a half-deleted worktree.
@@ -464,7 +516,7 @@ pub fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<(), GitE
     run(Some(repo), &args, WRITE).map(drop)
 }
 
-fn write_args(cmd: &[&'static str]) -> Vec<&'static str> {
+fn write_args<'a>(cmd: &[&'a str]) -> Vec<&'a str> {
     // Auto maintenance and gc, which fetch or pull would otherwise start, are off
     // (config form, as `--no-auto-maintenance` needs git 2.29).
     let mut args = vec!["-c", "maintenance.auto=false", "-c", "gc.auto=0"];

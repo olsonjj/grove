@@ -23,12 +23,12 @@ mod watch;
 
 pub use badge::Badge;
 pub use cache::SnapshotCache;
-pub use details::{Details, cd_command, relative_time, unix_now};
+pub use details::{Details, cd_command, directory_size, relative_time, size_words, unix_now};
 pub use discovery::{RepoRef, discover};
 pub use env::{PathSource, ShellEnv, resolved_env};
 pub use git::{
-    Change, ChangedFile, Commit, GitError, Upstream, WorktreeStatus, pull, read_worktree_status,
-    recent_commits, remove_worktree,
+    Change, ChangedFile, Commit, GitError, Upstream, WorktreeStatus, branches, pull,
+    read_worktree_status, recent_commits, remove_worktree, switch,
 };
 pub use launch::{
     CommandError, Fallback, LaunchError, LaunchPlan, Outcome, Permission, Runner, command_line,
