@@ -854,16 +854,18 @@ impl DetailsView {
         }
         let git_dir = repo.repo.git_dir.clone();
         let path = wt.path.clone();
+        // The trigger reads "Switching…" (no committed value) while the write runs.
+        // Guard on the select before committing switching state, so a missing select
+        // falls back without leaving branch switching disabled.
+        let Some(select) = self.select.clone() else {
+            return self.show_current_branch(window, cx);
+        };
         self.switching = Some(Switching {
             path: path.clone(),
             target: target.clone(),
             git_dir: git_dir.clone(),
         });
-        // The trigger reads "Switching…" (no committed value) while the write runs.
         self.branch_applied = Some((path.clone(), None));
-        let Some(select) = self.select.clone() else {
-            return self.show_current_branch(window, cx);
-        };
         select.update(cx, |state, cx| state.set_selected_index(None, window, cx));
         cx.notify();
         let run = branch::switch_runner(cx);
