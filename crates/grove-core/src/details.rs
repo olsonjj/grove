@@ -114,7 +114,7 @@ impl WorktreeStatus {
     }
 }
 
-fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
+const fn plural<'a>(n: usize, one: &'a str, many: &'a str) -> &'a str {
     if n == 1 { one } else { many }
 }
 

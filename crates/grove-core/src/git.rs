@@ -146,7 +146,7 @@ pub struct WorktreeStatus {
 
 impl WorktreeStatus {
     /// Returns the number of changed paths.
-    pub fn changed(&self) -> usize {
+    pub const fn changed(&self) -> usize {
         self.files.len()
     }
 }
@@ -185,7 +185,7 @@ pub enum Change {
 
 impl Change {
     /// Git's short status code.
-    pub fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::Modified => "M",
             Self::Added => "A",
