@@ -5090,6 +5090,59 @@ mod tests {
         assert_eq!(size_line(cx, &main), "4 kB");
     }
 
+    /// An edit mid-session re-keys the walk (newest changes mtime); the last landed
+    /// size keeps showing until the fresh walk lands, however much the key moves around.
+    #[gpui_kit::test]
+    fn an_edit_during_size_walks_keeps_the_last_size_showing(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let api = tmp.path().join("code/api");
+        std::fs::create_dir_all(&api).unwrap();
+        git(&api, &["init", "-q"]);
+        std::fs::write(api.join("f.txt"), "base\n").unwrap();
+        git(&api, &["add", "-A"]);
+        git(&api, &["commit", "-q", "-m", "base"]);
+        let mut repo = grove_core::scan(&tmp.path().join("code")).repos.remove(0);
+        // Test setup: the scan leaves statuses unread; the app fills them in the background.
+        let wt_path = repo.worktrees[0].path.clone();
+        repo.worktrees[0].status = Some(grove_core::read_worktree_status(&wt_path));
+        let (w, main) = launch_repo(cx, &file, repo);
+        /// The pane's Size line, across the edit below.
+        fn size_line(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> String {
+            main.read_with(cx, |m, cx| {
+                m.details
+                    .read(cx)
+                    .status_fields()
+                    .into_iter()
+                    .find_map(|(l, v)| (l == "Size").then_some(v))
+                    .unwrap()
+            })
+        }
+        select_worktree(cx, w, &main, wt_path.to_str().unwrap());
+        cx.run_until_parked();
+        assert_eq!(size_line(cx, &main), "5 B");
+
+        // The edit moves the key and starts a fresh walk — still in flight, since the
+        // executor isn't parked.
+        std::fs::write(wt_path.join("f.txt"), vec![b'x'; 4096]).unwrap();
+        let m = main.clone();
+        cx.update_window(w, |_, window, cx| {
+            m.update(cx, |m, cx| {
+                m.details.update(cx, |d, cx| {
+                    d.hold_size_walk(cx);
+                });
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        // The last known size shows across the pending read, not the placeholder.
+        assert_eq!(size_line(cx, &main), "5 B");
+
+        cx.run_until_parked();
+        // The fresh walk lands and the row catches up with the edit.
+        assert_eq!(size_line(cx, &main), "4 kB");
+    }
+
     /// The trigger is in the focus order, and the dropdown works by keyboard alone:
     /// Enter opens, arrows move the cursor, Enter picks, and Escape closes without picking.
     #[gpui_kit::test]

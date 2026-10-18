@@ -112,7 +112,8 @@ struct Sizes {
     /// The walk in flight, its key and id: returning to a worktree mid-walk can start a
     /// second walk of the same key, and only the newer may land.
     flight: Option<(SizeSource, u64)>,
-    /// The key and bytes of the last landed walk, shown while `want` is unmet.
+    /// The key and bytes of the last landed walk, shown for the same path while `want` is
+    /// unmet — the stale bytes are the best known size until the fresh walk lands.
     shown: Option<(SizeSource, u64)>,
     /// Bumped per walk started; identifies landings.
     next: u64,
@@ -496,11 +497,14 @@ impl DetailsView {
         .detach();
     }
 
-    /// What Size shows while the wanted read hasn't landed: the pane's usual placeholder;
-    /// a landed walk for an unmet key keeps showing until the fresh one lands.
+    /// What Size shows while the wanted read hasn't landed: the pane's usual placeholder
+    /// until this worktree's first walk lands; after that, the last known size keeps
+    /// showing until a fresh walk lands — a landing for a moved key keeps the row alive
+    /// across the trailing read, and repeated edits (each re-keying the walk) can't hold
+    /// the row on the placeholder. A different worktree shows only its own walks.
     fn size_line(&self) -> String {
         match (&self.sizes.want, &self.sizes.shown) {
-            (Some(want), Some((shown, bytes))) if shown == want => size_words(*bytes),
+            (Some(want), Some((shown, bytes))) if shown.path == want.path => size_words(*bytes),
             _ => "reading…".into(),
         }
     }
@@ -776,6 +780,21 @@ impl DetailsView {
     #[cfg(test)]
     fn switching_is_path(&self, path: &std::path::Path) -> bool {
         self.switching.as_ref().is_some_and(|s| s.path == path)
+    }
+
+    /// Seeds the state an edit leaves while a size walk rides out — `want` re-keyed on
+    /// the status's fresh mtime, the last landed walk still `shown` — and starts the
+    /// trailing walk, so the row's behavior across a pending read is testable without
+    /// waiting on an async walk.
+    #[cfg(test)]
+    pub fn hold_size_walk(&mut self, cx: &mut Context<Self>) {
+        let Some(mut want) = self.size_source() else {
+            return;
+        };
+        // Far past any real mtime, so the key has moved however the status was read.
+        want.changes_time = Some(unix_now() + 100_000);
+        self.sizes.want = Some(want);
+        self.sync_sizes(cx);
     }
 
     /// Commits the displayed worktree's branch into the select, when it changed; commit
