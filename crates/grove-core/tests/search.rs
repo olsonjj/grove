@@ -1,3 +1,5 @@
+//! Search matching and highlighting over a built snapshot.
+
 #![expect(
     clippy::single_range_in_vec_init,
     reason = "expected highlight ranges read best as `[start..end]`"

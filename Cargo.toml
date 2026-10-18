@@ -43,6 +43,9 @@ objc2-service-management = { version = "=0.3.2", default-features = false, featu
     "objc2-foundation",
 ] }
 
+[workspace.lints.rust]
+missing_docs = "warn"
+
 [workspace.lints.clippy]
 allow_attributes_without_reason = "warn"
 dbg_macro = "warn"

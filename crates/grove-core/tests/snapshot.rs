@@ -1,3 +1,5 @@
+//! Snapshot assembly and refresh, against real git in temp dirs.
+
 mod common;
 
 use std::fs;

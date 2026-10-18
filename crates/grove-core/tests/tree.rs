@@ -1,3 +1,5 @@
+//! The worktree tree the main window renders, through the Snapshot store.
+
 mod common;
 
 use std::path::Path;
