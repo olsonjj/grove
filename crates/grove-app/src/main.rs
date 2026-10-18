@@ -1,3 +1,4 @@
+mod branch;
 mod details_view;
 mod hotkeys;
 mod icons;
