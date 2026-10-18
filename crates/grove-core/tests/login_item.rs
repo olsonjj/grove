@@ -1,3 +1,5 @@
+//! Login-item detection through a stub SMAppService host.
+
 use std::path::{Path, PathBuf};
 
 use grove_core::LoginItemStatus::{Enabled, NotRegistered, RequiresApproval, Unavailable};

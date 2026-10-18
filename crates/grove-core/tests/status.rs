@@ -1,3 +1,5 @@
+//! git status parsing through the git module, against real repos.
+
 mod common;
 
 use std::fs;

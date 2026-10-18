@@ -1,3 +1,5 @@
+//! Directory-size and relative-time details, against real files.
+
 mod common;
 
 use std::fs;

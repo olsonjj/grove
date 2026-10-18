@@ -1,3 +1,5 @@
+//! Grove: a native macOS menu-bar app for managing git worktrees.
+
 mod branch;
 mod details_view;
 mod hotkeys;
@@ -27,8 +29,17 @@ use gpui_kit::{App, QuitMode};
 
 /// Events from platform callbacks (status item, hotkeys), forwarded into GPUI's foreground loop.
 pub enum PlatformEvent {
-    StatusItemClicked { anchor: status_item::Anchor },
-    ToggleSwitcher { at: Instant },
+    /// The status item was clicked at the given screen anchor.
+    StatusItemClicked {
+        /// Where on screen the status item sits, for placing the popover.
+        anchor: status_item::Anchor,
+    },
+    /// The global switcher hotkey was pressed at the given instant.
+    ToggleSwitcher {
+        /// When the press happened, for the reopen guard and first-frame timing.
+        at: Instant,
+    },
+    /// The dock icon was reopened or the show-main hotkey was pressed.
     ShowMain,
 }
 
