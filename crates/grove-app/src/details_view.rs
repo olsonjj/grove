@@ -103,14 +103,19 @@ struct Commits {
 /// walking a big worktree off every status refresh would spend real time for nothing.
 /// Reads run single-flight per path (walks can't be cancelled): a key change during a
 /// walk rides out the flight, shows its bytes, and follows with one trailing read.
+/// Returning to a worktree mid-walk starts a second walk of the same key; the first
+/// walk's landing is discarded by id, so the fresh walk wins.
 #[derive(Debug, Default)]
 struct Sizes {
     /// The size key the pane wants now.
     want: Option<SizeSource>,
-    /// The walk in flight, keyed so a replaced walk's landing is discarded.
-    flight: Option<SizeSource>,
+    /// The walk in flight, its key and id: returning to a worktree mid-walk can start a
+    /// second walk of the same key, and only the newer may land.
+    flight: Option<(SizeSource, u64)>,
     /// The key and bytes of the last landed walk, shown while `want` is unmet.
     shown: Option<(SizeSource, u64)>,
+    /// Bumped per walk started; identifies landings.
+    next: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,19 +456,24 @@ impl DetailsView {
             .sizes
             .flight
             .as_ref()
-            .is_some_and(|f| f.path == want.path)
+            .is_some_and(|(f, _)| f.path == want.path)
         {
             return;
         }
-        self.sizes.flight = Some(want.clone());
+        self.sizes.next += 1;
+        let id = self.sizes.next;
+        self.sizes.flight = Some((want.clone(), id));
         let path = want.path.clone();
         cx.spawn(async move |this, cx| {
             let bytes = cx
                 .background_spawn(async move { directory_size(&path) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.sizes.flight.as_ref() != Some(&want) {
-                    return; // Another path's walk took over; its own landing lands.
+                if !matches!(
+                    &this.sizes.flight,
+                    Some((f, fid)) if f == &want && *fid == id
+                ) {
+                    return; // A newer walk took over; its own landing lands.
                 }
                 this.sizes.flight = None;
                 if this
