@@ -249,9 +249,9 @@ pub enum Upstream {
 pub fn binary() -> Option<&'static Path> {
     static BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
     BINARY
-        .get_or_init(|| match std::env::var_os("GROVE_GIT") {
-            Some(p) => Some(PathBuf::from(p)),
-            None => resolved_env().which("git"),
+        .get_or_init(|| {
+            std::env::var_os("GROVE_GIT")
+                .map_or_else(|| resolved_env().which("git"), |p| Some(PathBuf::from(p)))
         })
         .as_deref()
 }
@@ -642,7 +642,7 @@ fn parse_worktree_list(out: &str) -> Vec<WorktreeEntry> {
         match key {
             "HEAD" => entry.head = Some(value.to_string()),
             "branch" => {
-                entry.branch = Some(value.strip_prefix("refs/heads/").unwrap_or(value).into())
+                entry.branch = Some(value.strip_prefix("refs/heads/").unwrap_or(value).into());
             }
             "detached" => entry.detached = true,
             "bare" => entry.bare = true,
