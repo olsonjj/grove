@@ -36,7 +36,7 @@ pub enum PlatformEvent {
     },
     /// The global switcher hotkey was pressed at the given instant.
     ToggleSwitcher {
-        /// When the press happened, for double-press timing.
+        /// When the press happened, for the reopen guard and first-frame timing.
         at: Instant,
     },
     /// The dock icon was reopened or the show-main hotkey was pressed.
