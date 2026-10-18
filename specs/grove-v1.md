@@ -69,6 +69,7 @@ Audience: two developers. No distribution, pricing, onboarding for strangers, or
 32. As a developer, I want Open in [default terminal] with the same ▾ menu for terminals, so that terminals work the same way.
 33. As a developer, I want Reveal in Finder and Copy cd command, so that I can hand the folder to other tools.
 34. As a developer, I want upstream, sync status in words, and working tree status in the details pane, so that I can decide what to do next.
+34a. As a developer, I want a Size row in the STATUS section showing the working directory's size on disk ("3 kB", "452 MB"), rounded to the nearest binary unit with at most one decimal, so that I can spot worktrees eating disk.
 35. As a developer, I want uncommitted files listed with Git status codes (M, A, D, ??), so that I know what's in flight without opening the worktree.
 36. As a developer, I want the three most recent commits (short SHA, message, relative time), so that I remember where I left off.
 37. As a developer, I want a top bar with the app name, selected repo, "Jump to… ⌘K", Fetch all and an Open-with settings button, so that the main actions are one click away.

@@ -2473,6 +2473,7 @@ mod tests {
             changes_time: None,
         }));
         let (w, main) = launch_repo(cx, &file, repo);
+        cx.run_until_parked();
         let fields = main.read_with(cx, |m, cx| m.details.read(cx).status_fields());
         assert_eq!(
             fields,
@@ -2480,6 +2481,7 @@ mod tests {
                 ("Upstream", "origin/main".into()),
                 ("Sync", "2 ahead, 1 behind".into()),
                 ("Working tree", "2 changed files".into()),
+                ("Size", "0 B".into()),
             ]
         );
         assert!(has(cx, w, "changed-file", 0));
@@ -2693,6 +2695,37 @@ mod tests {
             "{err}"
         );
         assert!(!has(cx, w, "commit", 0));
+    }
+
+    #[gpui_kit::test]
+    fn details_show_the_worktree_size(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let repo_dir = tmp.path().join("api");
+        std::fs::create_dir(&repo_dir).unwrap();
+        git(&repo_dir, &["init", "-q"]);
+        // Three kilobytes across a nested folder, committed so the tree is clean: "3 kB".
+        std::fs::create_dir(repo_dir.join("d")).unwrap();
+        std::fs::write(repo_dir.join("d/plain.bin"), vec![0u8; 3072]).unwrap();
+        git(&repo_dir, &["add", "-A"]);
+        git(&repo_dir, &["commit", "-q", "-m", "one"]);
+        let mut repo = grove_core::scan(tmp.path()).repos.remove(0);
+        repo.worktrees[0].status = grove_core::read_worktree_status(&repo.worktrees[0].path)
+            .ok()
+            .map(Ok);
+        let (_w, main) = launch_repo(cx, &file, repo);
+        cx.run_until_parked();
+        let fields = main.read_with(cx, |m, cx| m.details.read(cx).status_fields());
+        assert_eq!(
+            fields,
+            [
+                ("Upstream", "none".into()),
+                ("Sync", "no upstream".into()),
+                ("Working tree", "clean".into()),
+                ("Size", "3 kB".into()),
+            ]
+        );
     }
 
     #[gpui_kit::test]
@@ -5000,7 +5033,10 @@ mod tests {
         git(&api, &["add", "-A"]);
         git(&api, &["commit", "-q", "-m", "base"]);
         git(&api, &["switch", "-q", "-c", "feature"]);
-        git(&api, &["commit", "-q", "--allow-empty", "-m", "theirs"]);
+        // feature's checkout differs in size, so a switch must move the Size row too.
+        std::fs::write(api.join("f.txt"), vec![b'x'; 4096]).unwrap();
+        git(&api, &["add", "-A"]);
+        git(&api, &["commit", "-q", "-m", "theirs"]);
         git(&api, &["switch", "-q", "main"]);
         let mut repo = grove_core::scan(&tmp.path().join("code")).repos.remove(0);
         // Test setup: the scan leaves statuses unread; the app fills them in the background.
@@ -5008,7 +5044,21 @@ mod tests {
         repo.worktrees[0].status = Some(grove_core::read_worktree_status(&wt_path));
         let (w, main) = launch_repo(cx, &file, repo);
         select_worktree(cx, w, &main, wt_path.to_str().unwrap());
+        cx.run_until_parked();
         assert_eq!(trigger_text(cx, &main).as_deref(), Some("main"));
+
+        /// The pane's Size line as SizeSource keys it, across the switch below.
+        fn size_line(cx: &mut TestAppContext, main: &Entity<MainWindow>) -> String {
+            main.read_with(cx, |m, cx| {
+                m.details
+                    .read(cx)
+                    .status_fields()
+                    .into_iter()
+                    .find_map(|(l, v)| (l == "Size").then_some(v))
+                    .unwrap()
+            })
+        }
+        assert_eq!(size_line(cx, &main), "5 B");
 
         click(cx, w, "details-branch");
         assert_eq!(dropdown(cx, w), ["feature", "main"]);
@@ -5035,6 +5085,9 @@ mod tests {
             Ok(commits) => assert_eq!(commits[0].subject, "theirs"),
             err => panic!("expected commits, got {err:?}"),
         }
+        // The checkout also moved HEAD, so the size key moved and the walk re-read:
+        // feature's f.txt is bigger.
+        assert_eq!(size_line(cx, &main), "4 kB");
     }
 
     /// The trigger is in the focus order, and the dropdown works by keyboard alone:
