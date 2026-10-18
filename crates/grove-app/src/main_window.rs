@@ -1828,13 +1828,13 @@ mod tests {
         .unwrap()
     }
 
-    /// The tree panel's width: from the sidebar's edge (`SIDEBAR_W`, where the
+    /// The tree panel's width: from the sidebar's edge (where the
     /// group starts) to the pane divider.
     fn tree_panel_width(cx: &mut TestAppContext, w: AnyWindowHandle) -> f32 {
         cx.update_window(w, |_, window, cx| {
             window.render_frame(cx);
             let pane = window.find("details").bounds();
-            pane.left().as_f32() - 330.
+            pane.left().as_f32() - SIDEBAR_W
         })
         .unwrap()
     }
@@ -1860,7 +1860,7 @@ mod tests {
             // fixed column, flush to the left edge.
             let sidebar = window.find("repo-list").bounds();
             assert_eq!(sidebar.left().as_f32(), 0.);
-            assert_eq!(sidebar.right().as_f32(), 329.);
+            assert_close(sidebar.right(), SIDEBAR_W - 1., "sidebar right edge");
         })
         .unwrap();
     }
@@ -1874,19 +1874,19 @@ mod tests {
 
         // Dragging left widens the pane at the tree's expense.
         drag_divider(cx, w, 150.);
-        cx.update_window(w, |_, window, cx| {
-            window.render_frame(cx);
-            let details = window.find("details").bounds();
-            assert_close(details.right() - details.left(), 470., "pane after drag");
-            assert!(
-                // The tree flexes to exactly what the pane took:
-                // pane gained 150 px, tree lost them.
-                (details.left().as_f32() - 330. - 700.).abs() < 1.,
-                "tree after drag: {} px",
-                details.left().as_f32() - 330.
-            );
-        })
-        .unwrap();
+        let pane = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("details").bounds()
+            })
+            .unwrap();
+        assert_close(pane.right() - pane.left(), 470., "pane after drag");
+        // The tree flexes to exactly what the pane took:
+        // pane gained 150 px, tree lost them. Expected tree width comes
+        // from the launch above: window width minus sidebar minus pane.
+        let tree_after = tree_panel_width(cx, w);
+        let tree_before = 1500. - SIDEBAR_W - DETAILS_PANE_WIDTH;
+        assert_close(px(tree_after), tree_before - 150., "tree after drag");
         // The write happens once, at drag end, through the saved settings file.
         assert_eq!(
             file.load().unwrap().details_pane_width,
@@ -1907,8 +1907,26 @@ mod tests {
         assert_eq!(pane_width(cx, w).round() as i64, 720);
         drag_divider(cx, w, -2000.);
         assert_eq!(pane_width(cx, w).round() as i64, 260);
-        // The tree keeps its own minimum in both cases.
+        // The tree keeps its own minimum in both cases, and the pane's buttons
+        // render inside its bounds even at the 260 px minimum (story: nothing
+        // overflows or overlaps at any width in the clamp range).
         assert!(tree_panel_width(cx, w) >= 480.);
+        let pane = cx
+            .update_window(w, |_, window, _| window.find("details").bounds())
+            .unwrap();
+        for what in [
+            "details-open-editor",
+            "details-open-terminal",
+            "details-copy-path",
+        ] {
+            let button = cx
+                .update_window(w, |_, window, _| window.find(what).bounds())
+                .unwrap();
+            assert!(
+                button.left() >= pane.left() && button.right() <= pane.right(),
+                "{what} must sit inside the clamped pane"
+            );
+        }
     }
 
     #[gpui_kit::test]

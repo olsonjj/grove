@@ -303,6 +303,12 @@ impl Settings {
         std::mem::replace(&mut self.tree_sort, mode) != mode
     }
 
+    /// Records the details pane's width the last drag ended at. Returns whether anything
+    /// changed.
+    pub fn set_details_pane_width(&mut self, width: i32) -> bool {
+        self.details_pane_width.replace(width) != Some(width)
+    }
+
     /// Moves `worktree` to the front of recents and stamps it opened `at` (Unix seconds).
     /// Returns whether anything changed.
     pub fn record_open(&mut self, worktree: &Path, at: i64) -> bool {

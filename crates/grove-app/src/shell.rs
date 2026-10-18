@@ -635,9 +635,11 @@ pub fn set_tree_sort(mode: SortMode, cx: &mut App) {
 
 /// Records the details pane's width the drag (or programmatic resize) ended at.
 pub fn set_details_pane_width(width: i32, cx: &mut App) {
-    let library = cx.global_mut::<Library>();
-    if library.settings.details_pane_width != Some(width) {
-        library.settings.details_pane_width = Some(width);
+    if cx
+        .global_mut::<Library>()
+        .settings
+        .set_details_pane_width(width)
+    {
         save_settings(cx);
     }
 }
