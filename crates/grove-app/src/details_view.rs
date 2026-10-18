@@ -101,19 +101,23 @@ struct Commits {
 
 /// Directory sizes are read per selection, like commits: only this pane shows one, and
 /// walking a big worktree off every status refresh would spend real time for nothing.
-/// The read keys on the worktree path plus the status read's newest changes mtime, so an
-/// edit (a new size) re-reads while mere re-reads of an unchanged tree don't.
+/// Reads run single-flight per path (walks can't be cancelled): a key change during a
+/// walk rides out the flight, shows its bytes, and follows with one trailing read.
 #[derive(Debug, Default)]
 struct Sizes {
-    source: Option<SizeSource>,
-    result: Option<u64>,
-    /// Bumped per read so a slow read for an old selection can't land.
-    seq: u64,
+    /// The size key the pane wants now.
+    want: Option<SizeSource>,
+    /// The walk in flight, keyed so a replaced walk's landing is discarded.
+    flight: Option<SizeSource>,
+    /// The key and bytes of the last landed walk, shown while `want` is unmet.
+    shown: Option<(SizeSource, u64)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SizeSource {
     path: std::path::PathBuf,
+    /// The checked-out commit; a checkout changes the tree as surely as an edit does.
+    head: Option<String>,
     /// The status read's newest changes mtime; a plain re-read reuses the shown size.
     changes_time: Option<i64>,
 }
@@ -409,49 +413,85 @@ impl DetailsView {
         .detach();
     }
 
+    /// The size key the pane wants: which worktree, at which HEAD and changes mtime — a
+    /// checkout or an edit changes the tree, so either re-reads. `None` (and so no read)
+    /// while the status hasn't landed or failed: no Size row is shown then either, and
+    /// waiting avoids a throwaway walk before the status's mtime is known.
+    fn size_source(&self) -> Option<SizeSource> {
+        let wt = self.worktree().filter(|w| w.presence.is_openable())?;
+        let status = match wt.status.as_ref() {
+            Some(Ok(s)) => s,
+            _ => return None,
+        };
+        Some(SizeSource {
+            path: wt.path.clone(),
+            head: wt.head.clone(),
+            changes_time: status.changes_time,
+        })
+    }
+
     /// (Re)reads the shown worktree's directory size off the UI thread.
     fn read_sizes(&mut self, cx: &mut Context<Self>) {
-        let source = self
-            .worktree()
-            .filter(|w| w.presence.is_openable())
-            .map(|wt| SizeSource {
-                path: wt.path.clone(),
-                changes_time: match &wt.status {
-                    // Without a status, there's no mtime to key on; wait for one.
-                    Some(Ok(s)) => s.changes_time,
-                    _ => None,
-                },
-            });
-        if source == self.sizes.source {
+        let want = self.size_source();
+        if want == self.sizes.want {
             return;
         }
-        self.sizes.result = None;
-        self.sizes.seq += 1;
-        let seq = self.sizes.seq;
-        let path = source.as_ref().map(|s| s.path.clone());
-        self.sizes.source = source;
-        let Some(path) = path else {
+        self.sizes.want = want;
+        self.sync_sizes(cx);
+    }
+
+    /// Starts the wanted read unless that path's walk is already running; the walk's
+    /// landing re-checks and re-reads once, so a key change during a walk costs one
+    /// trailing read, never another concurrent walk.
+    fn sync_sizes(&mut self, cx: &mut Context<Self>) {
+        let Some(want) = self.sizes.want.clone() else {
             return;
         };
+        if self
+            .sizes
+            .flight
+            .as_ref()
+            .is_some_and(|f| f.path == want.path)
+        {
+            return;
+        }
+        self.sizes.flight = Some(want.clone());
+        let path = want.path.clone();
         cx.spawn(async move |this, cx| {
-            let result = cx
+            let bytes = cx
                 .background_spawn(async move { directory_size(&path) })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.sizes.seq == seq {
-                    this.sizes.result = Some(result);
+                if this.sizes.flight.as_ref() != Some(&want) {
+                    return; // Another path's walk took over; its own landing lands.
+                }
+                this.sizes.flight = None;
+                if this
+                    .sizes
+                    .want
+                    .as_ref()
+                    .is_some_and(|w| w.path == want.path)
+                {
+                    // The key moved during the walk: show these bytes anyway (closest
+                    // known) and follow with one trailing read.
+                    let moved = this.sizes.want.as_ref() != Some(&want);
+                    this.sizes.shown = Some((want.clone(), bytes));
                     cx.notify();
+                    if moved {
+                        this.sync_sizes(cx);
+                    }
                 }
             });
         })
         .detach();
     }
 
-    /// What Size shows while no read has landed: the pane's usual reading placeholder.
+    /// What Size shows while the wanted read hasn't landed: the pane's usual placeholder;
+    /// a landed walk for an unmet key keeps showing until the fresh one lands.
     fn size_line(&self) -> String {
-        match self.sizes.result {
-            Some(bytes) => size_words(bytes),
-            None => "reading…".into(),
+        match (&self.sizes.want, &self.sizes.shown) {
+            (Some(want), Some((shown, bytes))) if shown == want => size_words(*bytes),
+            _ => "reading…".into(),
         }
     }
 
