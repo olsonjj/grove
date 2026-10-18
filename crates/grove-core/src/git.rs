@@ -457,21 +457,34 @@ pub fn pull(path: &Path) -> Result<(), GitError> {
 ///
 /// Returns [`GitError`] when the refs cannot be read.
 pub fn branches(path: &Path) -> Result<Vec<String>, GitError> {
+    // Full refnames, stripped here, not `%(refname:short)`: shortening tries the
+    // shortest unique form, so a branch sharing a tag's name reads `heads/<name>` —
+    // which matches nothing and cannot be switched to.
     let out = run(
         Some(path),
-        &["for-each-ref", "refs/heads", "--format=%(refname:short)"],
+        &["for-each-ref", "refs/heads", "--format=%(refname)"],
         QUICK,
     )?;
-    Ok(out.lines().map(str::to_string).collect())
+    Ok(out
+        .lines()
+        .map(|refname| {
+            refname
+                .strip_prefix("refs/heads/")
+                .unwrap_or(refname)
+                .to_string()
+        })
+        .collect())
 }
 
-/// `switch --quiet -- <branch>`, run from the worktree itself: git carries compatible
-/// uncommitted changes over and refuses with its one-line reason when it can't — it
-/// never discards anything, and a switch creates or deletes no refs. One of Grove's
-/// repo-writing commands, with fetch's config and a 60-second budget: git carries
-/// compatible changes or refuses, a kill creates no merge state and loses nothing, and a
-/// mid-checkout kill leaves only a stale index lock and files git reports as modified —
-/// bounded like pull's, not removal's never-kill.
+/// `switch --quiet --no-guess -- <branch>`, run from the worktree itself: git carries
+/// compatible uncommitted changes over and refuses with its one-line reason when it
+/// can't — it never discards anything, and a switch creates or deletes no refs.
+/// `--no-guess` keeps git's remote-branch guessing off, so the write can't resurrect a
+/// deleted local branch from its remote tracking branch. One of Grove's repo-writing
+/// commands, with fetch's config and a 60-second budget: git carries compatible changes
+/// or refuses, a kill creates no merge state and loses nothing, and a mid-checkout kill
+/// leaves only a stale index lock and files git reports as modified — bounded like
+/// pull's, not removal's never-kill.
 ///
 /// # Errors
 ///
@@ -480,7 +493,7 @@ pub fn branches(path: &Path) -> Result<Vec<String>, GitError> {
 pub fn switch(path: &Path, branch: &str) -> Result<(), GitError> {
     run(
         Some(path),
-        &write_args(&["switch", "--quiet", "--", branch]),
+        &write_args(&["switch", "--quiet", "--no-guess", "--", branch]),
         SWITCH,
     )
     .map(drop)

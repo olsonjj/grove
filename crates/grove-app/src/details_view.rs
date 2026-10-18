@@ -480,12 +480,13 @@ impl DetailsView {
 
     /// The Sync row's Pull: fast-forwards the selected worktree, one pull at a time. Runs
     /// off the UI thread; a selection change mid-pull doesn't cancel it and its notice, and
-    /// git's refusal still lands through the status bar.
+    /// git's refusal still lands through the status bar. Pull waits out a running switch,
+    /// as the switcher waits out a running pull (pulls and checkouts never collide).
     fn pull(&mut self, cx: &mut Context<Self>) {
         let Some(wt) = self.worktree().filter(|wt| pull::offer(wt).is_some()) else {
             return;
         };
-        if self.pulling.is_some() {
+        if self.pulling.is_some() || self.switching.is_some() {
             return; // The disabled button already refuses it; this is the belt and braces.
         }
         // `pull::offer` guarantees the worktree is on a branch, so its name is here.
@@ -520,8 +521,11 @@ impl DetailsView {
     /// the component select. The dropdown lists the repo's local branches, searchable,
     /// alphabetically, with the current one check-marked in place and a branch another
     /// worktree holds grayed with that worktree's folder. A running switch reads
-    /// "Switching…" and is disabled — the pane runs one switch at a time, and a selection
-    /// change during one doesn't cancel it (its notice still lands), like pull's.
+    /// "Switching…" and is disabled — the pane runs one write (switch or pull) at a
+    /// time, and a selection change during one doesn't cancel it (its notice still
+    /// lands), like pull's. A failed branch-list read keeps the worktree's own branch as
+    /// the value and reports itself in the dropdown rather than reading as an empty
+    /// repository.
     fn branch_switch(
         &mut self,
         wt: &Worktree,
@@ -545,7 +549,9 @@ impl DetailsView {
         let select = self.select.as_ref().unwrap().clone();
 
         // The dropdown's items: the repo's read branch list joined with the snapshot's
-        // worktrees. Derived per render; `set_items` only on real changes.
+        // worktrees; a failed read falls back to the worktree's own branch, so the
+        // trigger keeps naming it while the list is unavailable. Derived per render;
+        // `set_items` only on real changes.
         let offers = match &self.branches.result {
             Some(Ok(list)) => {
                 let worktrees = self
@@ -553,6 +559,7 @@ impl DetailsView {
                     .map_or(&[][..], |repo| repo.worktrees.as_slice());
                 branch::items(&wt.path, list, worktrees)
             }
+            Some(Err(_)) => self.fallback_offers(wt),
             _ => Vec::new(),
         };
         if self.offers_shown.as_ref() != Some(&offers) {
@@ -570,20 +577,30 @@ impl DetailsView {
         if !self.switching_is(wt) {
             self.apply_branch(wt, window, cx);
         }
+        let read_failed = matches!(&self.branches.result, Some(Err(_)));
         Select::new(&select)
             .id("details-branch")
             .placeholder(placeholder)
             .accessibility_label(SWITCH_LABEL)
             .when(disabled, |s| s.disabled(true))
-            .empty(|_, _| {
+            .empty(move |_, _| {
+                // A failed read is its own reason, not an empty repo's "No branches".
+                let text = if read_failed {
+                    "Couldn't list branches"
+                } else {
+                    "No branches"
+                };
                 div()
+                    .id("branch-empty")
+                    .test_support()
+                    .aria_label(text)
                     .flex()
                     .w_full()
                     .justify_center()
                     .py(px(10.))
                     .text_color(theme::muted())
                     .text_size(px(12.))
-                    .child("No branches")
+                    .child(text)
             })
             .text_size(px(13.))
             .into_any_element()
@@ -591,8 +608,8 @@ impl DetailsView {
 
     /// What the trigger reads when it has no committed value, and whether picks are on:
     /// "Switching…" while this worktree's switch runs, else the no-branch placeholder;
-    /// picks are off while any switch runs (single-flight per pane) and for a worktree
-    /// that isn't on disk.
+    /// picks are off while any write — switch or pull — runs (one write at a time per
+    /// pane) and for a worktree that isn't on disk.
     fn trigger_state(&self, wt: &Worktree) -> (&'static str, bool) {
         let switching_this = self.switching_is(wt);
         (
@@ -601,12 +618,24 @@ impl DetailsView {
             } else {
                 "No branch"
             },
-            self.switching.is_some() || !wt.presence.is_openable(),
+            self.switching.is_some() || self.pulling.is_some() || !wt.presence.is_openable(),
         )
     }
 
     fn switching_is(&self, wt: &Worktree) -> bool {
         self.switching.as_ref().is_some_and(|s| s.path == wt.path)
+    }
+
+    /// The offers a failed branch-list read still allows: the worktree's own branch, so
+    /// the trigger keeps it as the value while the list is unavailable.
+    fn fallback_offers(&self, wt: &Worktree) -> Vec<Offer> {
+        let Some(branch) = wt.branch.as_deref() else {
+            return Vec::new();
+        };
+        let worktrees = self
+            .repo_of(Some(&wt.path))
+            .map_or(&[][..], |repo| repo.worktrees.as_slice());
+        branch::items(&wt.path, &[branch.to_string()], worktrees)
     }
 
     /// Same, by the worktree's path alone.
@@ -658,7 +687,7 @@ impl DetailsView {
         let Some(wt) = self.worktree().cloned() else {
             return;
         };
-        if self.switching.is_some() || !wt.presence.is_openable() {
+        if self.switching.is_some() || self.pulling.is_some() || !wt.presence.is_openable() {
             return self.show_current_branch(window, cx);
         }
         let Some(repo) = self.repo_of(Some(&wt.path)) else {
@@ -695,8 +724,12 @@ impl DetailsView {
                         // The single-repo refresh: the worktree re-nests under its new
                         // branch node, badges and recent commits update, the cache saves.
                         shell::reread_repo(&s.git_dir, cx);
-                        let switched = s.target.clone();
-                        this.branch_applied = Some((s.path, Some(switched)));
+                        // The committed value was cleared for the run, so the marker
+                        // goes with it: the next render re-applies from the worktree
+                        // (which the reread brings to the new branch). Keeping the
+                        // target here would leave a no-op switch's trigger on the
+                        // placeholder, since the worktree's branch never changed.
+                        this.branch_applied = None;
                         (format!("Switched to `{}`", s.target), false)
                     }
                     Err(e) => {
@@ -731,14 +764,15 @@ const fn role_key(role: Role) -> &'static str {
 
 impl DetailsView {
     /// The Sync row: its value, plus Pull when the worktree is behind its upstream. A
-    /// running pull reads "Pulling…" and refuses a second click; the pane pulls one
-    /// worktree at a time.
+    /// running pull reads "Pulling…" and refuses a second click, and Pull waits out a
+    /// running switch: the pane runs one git write at a time, so pull's fast-forward and
+    /// a concurrent checkout never collide on the same worktree.
     fn sync_field(&self, value: String, cx: &mut Context<Self>) -> impl IntoElement {
         let pulling = self
             .pulling
             .as_ref()
             .is_some_and(|p| self.details.as_ref().and_then(|d| d.worktree.as_ref()) == Some(p));
-        let enabled = self.pulling.is_none();
+        let enabled = self.pulling.is_none() && self.switching.is_none();
         let label = if pulling { "Pulling…" } else { "Pull" };
         div()
             .flex()

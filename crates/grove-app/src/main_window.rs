@@ -4602,6 +4602,20 @@ mod tests {
         });
     }
 
+    /// Fakes the branch-list read with a failed read carrying `stderr`.
+    fn failing_lister(cx: &mut TestAppContext, stderr: &'static str) {
+        cx.update(|cx| {
+            cx.set_global(crate::branch::ListRunner {
+                run: Arc::new(move |_| {
+                    Err(GitError::Failed {
+                        args: "for-each-ref refs/heads".into(),
+                        stderr: stderr.into(),
+                    })
+                }),
+            })
+        });
+    }
+
     fn select_worktree(
         cx: &mut TestAppContext,
         w: AnyWindowHandle,
@@ -4851,6 +4865,126 @@ mod tests {
         // Nothing changed: the trigger is back on the worktree's branch.
         assert_eq!(trigger_text(cx, &main).as_deref(), Some("main"));
         assert_eq!(switches.lock().unwrap().len(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn picking_the_current_branch_puts_the_trigger_back_on_the_branch(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        lister(cx, &["feature/x", "main", "spare"]);
+        let switches = fake_switcher(cx, None);
+        let (w, main) = launch_repo(cx, &file, canned());
+        select_worktree(cx, w, &main, "/c/api");
+
+        // `main` is the worktree's own branch: git calls the pick a no-op and Grove
+        // reports it like any switch.
+        click(cx, w, "details-branch");
+        click(cx, w, ("branch-item", 1usize));
+        cx.run_until_parked();
+
+        let s = status(cx, &main).unwrap();
+        assert_eq!(s.text, "Switched to `main`");
+        assert_eq!(
+            *switches.lock().unwrap(),
+            [(PathBuf::from("/c/api"), "main".into())]
+        );
+        // The value cleared for the run comes back after the success: the trigger reads
+        // the branch, not the placeholder.
+        assert_eq!(trigger_text(cx, &main).as_deref(), Some("main"));
+    }
+
+    #[gpui_kit::test]
+    fn a_running_pull_blocks_the_switcher_until_it_finishes(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        lister(cx, &["feature/x", "main", "spare"]);
+        fake_puller(cx, None);
+        let switches = fake_switcher(cx, None);
+        let (w, main) = launch_repo(cx, &file, pull_repo());
+        select_worktree(cx, w, &main, "/c/api");
+
+        // The pull starts and stays in flight (the executor isn't parked).
+        click_now(cx, w, "details-pull");
+        assert_eq!(label_of(cx, w, "details-pull"), "Pulling…");
+
+        // The branch trigger is disabled while the pull runs: the dropdown stays shut
+        // and no switch starts, so pull's fast-forward can't collide with a checkout.
+        click_now(cx, w, "details-branch");
+        assert!(dropdown(cx, w).is_empty());
+        assert!(switches.lock().unwrap().is_empty());
+
+        cx.run_until_parked();
+        let s = status(cx, &main).unwrap();
+        assert_eq!(s.text, "Pulled main");
+        // The pull done, the switcher is back; no switch ever started.
+        click(cx, w, "details-branch");
+        assert!(!dropdown(cx, w).is_empty());
+        assert!(switches.lock().unwrap().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn a_running_switch_blocks_pull(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        lister(cx, &["feature/x", "main", "spare"]);
+        let pulls = fake_puller(cx, None);
+        let (w, main) = launch_repo(cx, &file, pull_repo());
+        select_worktree(cx, w, &main, "/c/api");
+
+        // A switch is held in flight, exactly as the pick handler leaves it.
+        let m = main.clone();
+        cx.update_window(w, |_, window, cx| {
+            m.update(cx, |m, cx| {
+                m.details.update(cx, |d, cx| {
+                    d.hold_switch(
+                        PathBuf::from("/c/api"),
+                        "spare".into(),
+                        PathBuf::from("/c/api/.git"),
+                        window,
+                        cx,
+                    );
+                });
+            });
+        })
+        .unwrap();
+        cx.update_window(w, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+
+        // Pull waits: the button reads Pull, stays disabled, and the click starts no
+        // pull — two writes never race on one worktree.
+        assert_eq!(label_of(cx, w, "details-pull"), "Pull");
+        click_now(cx, w, "details-pull");
+        assert!(pulls.lock().unwrap().is_empty());
+    }
+
+    /// A failed branch-list read keeps the worktree's own branch as the value and names
+    /// the failure in the dropdown, instead of reading as an empty repository.
+    #[gpui_kit::test]
+    fn failed_branch_read_keeps_the_branch_and_names_the_failure(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        failing_lister(cx, "fatal: not a git repository\n");
+        let (w, main) = launch_repo(cx, &file, canned());
+
+        select_worktree(cx, w, &main, "/c/api");
+        assert_eq!(trigger_text(cx, &main).as_deref(), Some("main"));
+        click(cx, w, "details-branch");
+        // The one branch the pane knows is still offered, and it is the value.
+        assert_eq!(dropdown(cx, w), ["main"]);
+        cx.update_window(w, |_, window, cx| window.press("escape", cx))
+            .unwrap();
+
+        // A worktree with no branch of its own gets the read's failure as its empty row,
+        // not the same words an empty repository would say.
+        select_worktree(cx, w, &main, "/c/wt/bisect");
+        assert_eq!(trigger_text(cx, &main).as_deref(), Some("No branch"));
+        click(cx, w, "details-branch");
+        assert!(dropdown(cx, w).is_empty());
+        assert_eq!(label_of(cx, w, "branch-empty"), "Couldn't list branches");
     }
 
     /// A real repo through the real switch read and write: the worktree re-nests under

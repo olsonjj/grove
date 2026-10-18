@@ -163,6 +163,34 @@ fn nonexistent_branch_fails_and_nothing_changes() {
     assert_eq!(changed(&api), 0);
 }
 
+#[test]
+fn a_deleted_local_branch_isnt_recreated_from_its_remote_branch() {
+    // Git's DWIM guessing (on by default) builds a local branch from a matching remote
+    // tracking branch; Grove's write is local-only and ref-neutral, so `--no-guess`
+    // must refuse instead. A branch deleted in a terminal but still on a stale dropdown
+    // is exactly this shape.
+    let f = Fixture::new();
+    let api = two_branch_repo(&f);
+    let origin = f.outside("origin.git");
+    fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "-q", "--bare"]);
+    git(&api, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&api, &["push", "-q", "origin", "feature"]);
+    git(&api, &["fetch", "-q"]);
+    git(&api, &["branch", "-D", "feature"]);
+    let refs_before = refs(&api);
+
+    let err = switch(&api, "feature").unwrap_err();
+
+    // Git's own refusal, and nothing came back: no local branch, no ref touched.
+    let msg = err.brief();
+    assert!(msg.contains("feature"), "unexpected refusal reason: {err}");
+    assert_eq!(branches(&api).unwrap(), ["main"]);
+    assert_eq!(refs(&api), refs_before);
+    assert_eq!(head_branch(&api), "main");
+    assert_eq!(changed(&api), 0);
+}
+
 /// The switch's recoverability under an interrupt: the run is stopped with SIGTERM (a
 /// user's ^C — git then removes its own lock, unlike Grove's SIGKILL timeout) while a
 /// slow smudge filter holds the one write the switch has left. Git has recorded nothing:

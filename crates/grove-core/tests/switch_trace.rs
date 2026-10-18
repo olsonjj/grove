@@ -1,5 +1,5 @@
-//! Switch runs exactly the quiet switch command, no auto maintenance. Its own binary: it
-//! sets `GIT_TRACE` for the process.
+//! Switch runs exactly the quiet switch command, no remote-branch guess and no auto
+//! maintenance. Its own binary: it sets `GIT_TRACE` for the process.
 
 mod common;
 
@@ -8,7 +8,8 @@ use std::fs;
 use common::{Fixture, git, init_repo};
 use grove_core::git::switch;
 
-/// The command switch runs, traced: `switch --quiet -- <branch>` under the writer config.
+/// The command switch runs, traced: `switch --quiet --no-guess -- <branch>` under the
+/// writer config.
 #[test]
 fn switch_runs_quiet_without_auto_maintenance() {
     let f = Fixture::new();
@@ -36,7 +37,7 @@ fn switch_runs_quiet_without_auto_maintenance() {
         .unwrap_or_else(|| panic!("no start event in {trace2}"));
     assert!(
         start
-            .contains("\"-c\",\"maintenance.auto=false\",\"-c\",\"gc.auto=0\",\"switch\",\"--quiet\",\"--\",\"big\""),
+            .contains("\"-c\",\"maintenance.auto=false\",\"-c\",\"gc.auto=0\",\"switch\",\"--quiet\",\"--no-guess\",\"--\",\"big\""),
         "{start}"
     );
 }
