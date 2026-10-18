@@ -670,21 +670,24 @@ impl DetailsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if self.select.is_none() {
-            let state = cx.new(|cx| {
-                SelectState::new(BranchMenu::default(), None, window, cx).searchable(true)
-            });
-            let sub = cx.subscribe_in(
-                &state,
-                window,
-                |this, _, ev: &SelectEvent<BranchMenu>, window, cx| {
-                    this.on_branch_pick(ev, window, cx);
-                },
-            );
-            self._select_subs.push(sub);
-            self.select = Some(state);
-        }
-        let select = self.select.as_ref().unwrap().clone();
+        let select = match self.select.as_ref() {
+            Some(select) => select.clone(),
+            None => {
+                let state = cx.new(|cx| {
+                    SelectState::new(BranchMenu::default(), None, window, cx).searchable(true)
+                });
+                let sub = cx.subscribe_in(
+                    &state,
+                    window,
+                    |this, _, ev: &SelectEvent<BranchMenu>, window, cx| {
+                        this.on_branch_pick(ev, window, cx);
+                    },
+                );
+                self._select_subs.push(sub);
+                self.select = Some(state.clone());
+                state
+            }
+        };
 
         // The dropdown's items: the repo's read branch list joined with the snapshot's
         // worktrees; a failed read falls back to the worktree's own branch, so the
@@ -851,14 +854,18 @@ impl DetailsView {
         }
         let git_dir = repo.repo.git_dir.clone();
         let path = wt.path.clone();
+        // The trigger reads "Switching…" (no committed value) while the write runs.
+        // Guard on the select before committing switching state, so a missing select
+        // falls back without leaving branch switching disabled.
+        let Some(select) = self.select.clone() else {
+            return self.show_current_branch(window, cx);
+        };
         self.switching = Some(Switching {
             path: path.clone(),
             target: target.clone(),
             git_dir: git_dir.clone(),
         });
-        // The trigger reads "Switching…" (no committed value) while the write runs.
         self.branch_applied = Some((path.clone(), None));
-        let select = self.select.clone().unwrap();
         select.update(cx, |state, cx| state.set_selected_index(None, window, cx));
         cx.notify();
         let run = branch::switch_runner(cx);
