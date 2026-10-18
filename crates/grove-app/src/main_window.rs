@@ -2473,6 +2473,7 @@ mod tests {
             changes_time: None,
         }));
         let (w, main) = launch_repo(cx, &file, repo);
+        cx.run_until_parked();
         let fields = main.read_with(cx, |m, cx| m.details.read(cx).status_fields());
         assert_eq!(
             fields,
@@ -2480,6 +2481,7 @@ mod tests {
                 ("Upstream", "origin/main".into()),
                 ("Sync", "2 ahead, 1 behind".into()),
                 ("Working tree", "2 changed files".into()),
+                ("Size", "0 B".into()),
             ]
         );
         assert!(has(cx, w, "changed-file", 0));
@@ -2693,6 +2695,37 @@ mod tests {
             "{err}"
         );
         assert!(!has(cx, w, "commit", 0));
+    }
+
+    #[gpui_kit::test]
+    fn details_show_the_worktree_size(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let repo_dir = tmp.path().join("api");
+        std::fs::create_dir(&repo_dir).unwrap();
+        git(&repo_dir, &["init", "-q"]);
+        // Three kilobytes across a nested folder, committed so the tree is clean: "3 kB".
+        std::fs::create_dir(repo_dir.join("d")).unwrap();
+        std::fs::write(repo_dir.join("d/plain.bin"), vec![0u8; 3072]).unwrap();
+        git(&repo_dir, &["add", "-A"]);
+        git(&repo_dir, &["commit", "-q", "-m", "one"]);
+        let mut repo = grove_core::scan(tmp.path()).repos.remove(0);
+        repo.worktrees[0].status = grove_core::read_worktree_status(&repo.worktrees[0].path)
+            .ok()
+            .map(Ok);
+        let (_w, main) = launch_repo(cx, &file, repo);
+        cx.run_until_parked();
+        let fields = main.read_with(cx, |m, cx| m.details.read(cx).status_fields());
+        assert_eq!(
+            fields,
+            [
+                ("Upstream", "none".into()),
+                ("Sync", "no upstream".into()),
+                ("Working tree", "clean".into()),
+                ("Size", "3 kB".into()),
+            ]
+        );
     }
 
     #[gpui_kit::test]

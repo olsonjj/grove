@@ -13,7 +13,7 @@ use gpui_kit::{
 };
 use grove_core::{
     ChangedFile, Commit, Details, RepoSnapshot, Role, Snapshot, Worktree, cd_command,
-    recent_commits, relative_time, unix_now,
+    directory_size, recent_commits, relative_time, size_words, unix_now,
 };
 
 use grove_core::git::GitError;
@@ -56,6 +56,7 @@ pub struct DetailsView {
     snapshot: Option<Arc<Snapshot>>,
     details: Option<Details>,
     commits: Commits,
+    sizes: Sizes,
     /// The branch select at the pane's top, created lazily (its state needs a window).
     select: Option<Entity<SelectState<BranchMenu>>>,
     /// Subscriptions of `select`.
@@ -98,6 +99,25 @@ struct Commits {
     seq: u64,
 }
 
+/// Directory sizes are read per selection, like commits: only this pane shows one, and
+/// walking a big worktree off every status refresh would spend real time for nothing.
+/// The read keys on the worktree path plus the status read's newest changes mtime, so an
+/// edit (a new size) re-reads while mere re-reads of an unchanged tree don't.
+#[derive(Debug, Default)]
+struct Sizes {
+    source: Option<SizeSource>,
+    result: Option<u64>,
+    /// Bumped per read so a slow read for an old selection can't land.
+    seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SizeSource {
+    path: std::path::PathBuf,
+    /// The status read's newest changes mtime; a plain re-read reuses the shown size.
+    changes_time: Option<i64>,
+}
+
 /// The branch list is read per repo, like commits: the dropdown is repo-wide, so the read
 /// keys on the repo and re-reads whenever that repo's snapshot is re-read — the watcher's
 /// ref and HEAD hits already produce those, which keeps a branch created in a terminal on
@@ -138,6 +158,7 @@ impl DetailsView {
             snapshot: None,
             details: None,
             commits: Commits::default(),
+            sizes: Sizes::default(),
             select: None,
             _select_subs: Vec::new(),
             branches: BranchList::default(),
@@ -163,13 +184,29 @@ impl DetailsView {
 
     #[cfg(test)]
     pub fn status_fields(&self) -> Vec<(&'static str, String)> {
-        self.worktree().map(status_fields).unwrap_or_default()
+        self.worktree()
+            .map_or_else(Vec::new, |_| self.status_rows())
     }
 
     /// `None` while reading.
     #[cfg(test)]
     pub fn commits(&self) -> Option<&Result<Vec<Commit>, GitError>> {
         self.commits.result.as_ref()
+    }
+
+    /// The STATUS section's rows, Size included: what the section renders from, and
+    /// what the tests assert.
+    fn status_rows(&self) -> Vec<(&'static str, String)> {
+        let Some(wt) = self.worktree() else {
+            return Vec::new();
+        };
+        let mut fields = status_fields(wt);
+        if wt.presence.is_openable()
+            && let Some(Ok(_)) = wt.status.as_ref()
+        {
+            fields.push(("Size", self.size_line()));
+        }
+        fields
     }
 
     /// The switch write in flight: which worktree, to what branch.
@@ -251,6 +288,7 @@ impl DetailsView {
         self.snapshot = snapshot;
         self.details = details;
         self.read_commits(cx);
+        self.read_sizes(cx);
         self.sync_branches(!same_snapshot, cx);
         cx.notify();
     }
@@ -369,6 +407,52 @@ impl DetailsView {
             });
         })
         .detach();
+    }
+
+    /// (Re)reads the shown worktree's directory size off the UI thread.
+    fn read_sizes(&mut self, cx: &mut Context<Self>) {
+        let source = self
+            .worktree()
+            .filter(|w| w.presence.is_openable())
+            .map(|wt| SizeSource {
+                path: wt.path.clone(),
+                changes_time: match &wt.status {
+                    // Without a status, there's no mtime to key on; wait for one.
+                    Some(Ok(s)) => s.changes_time,
+                    _ => None,
+                },
+            });
+        if source == self.sizes.source {
+            return;
+        }
+        self.sizes.result = None;
+        self.sizes.seq += 1;
+        let seq = self.sizes.seq;
+        let path = source.as_ref().map(|s| s.path.clone());
+        self.sizes.source = source;
+        let Some(path) = path else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { directory_size(&path) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.sizes.seq == seq {
+                    this.sizes.result = Some(result);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// What Size shows while no read has landed: the pane's usual reading placeholder.
+    fn size_line(&self) -> String {
+        match self.sizes.result {
+            Some(bytes) => size_words(bytes),
+            None => "reading…".into(),
+        }
     }
 
     fn open(
@@ -1166,7 +1250,7 @@ impl DetailsView {
         let pull_offered = pull::offer(wt).is_some();
         out.push(
             section("STATUS")
-                .children(status_fields(wt).into_iter().map(|(l, v)| {
+                .children(self.status_rows().into_iter().map(|(l, v)| {
                     if pull_offered && l == SYNC {
                         self.sync_field(v, cx).into_any_element()
                     } else {
