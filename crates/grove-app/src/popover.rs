@@ -770,6 +770,22 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn popover_offers_no_branch_switcher(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        fake_launcher(cx, Ok(Outcome::Opened));
+        let (w, _) = open_popover(cx, &file, vec![canned()]);
+        // Repo-writing actions live in the details pane; the popover has no branch line
+        // and no branch dropdown.
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("details-branch").is_none());
+            assert!(window.try_find(("branch-item", 0usize)).is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn popover_offers_no_pull(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());

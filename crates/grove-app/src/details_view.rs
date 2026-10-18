@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use gpui_kit::base::Button;
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, AppContext, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
@@ -11,12 +12,14 @@ use gpui_kit::{
     anchored, deferred, div, px,
 };
 use grove_core::{
-    ChangedFile, Commit, Details, Role, Snapshot, Worktree, cd_command, recent_commits,
-    relative_time, unix_now,
+    ChangedFile, Commit, Details, RepoSnapshot, Role, Snapshot, Worktree, cd_command,
+    recent_commits, relative_time, unix_now,
 };
 
 use grove_core::git::GitError;
 
+use crate::branch::BranchMenu;
+use crate::branch::{self, Offer};
 use crate::icons::{self, icon};
 use crate::launcher::Choice;
 use crate::main_window::tilde;
@@ -37,6 +40,9 @@ gpui_kit::actions!(details, [LeaveMenu, LeaveMenuBack]);
 
 pub(crate) const MENU_CONTEXT: &str = "OpenWithMenu";
 
+/// What the trigger changes, for VoiceOver: the selected worktree's checked-out branch.
+const SWITCH_LABEL: &str = "Switch the worktree's branch";
+
 /// Tab out of an open menu (▾, a repo's context menu) closes it; this context outranks the window's own Tab.
 pub fn init(cx: &mut App) {
     cx.bind_keys([
@@ -50,6 +56,24 @@ pub struct DetailsView {
     snapshot: Option<Arc<Snapshot>>,
     details: Option<Details>,
     commits: Commits,
+    /// The branch select at the pane's top, created lazily (its state needs a window).
+    select: Option<Entity<SelectState<BranchMenu>>>,
+    /// Subscriptions of `select`.
+    _select_subs: Vec<Subscription>,
+    /// The pane follows completed repo rereads, for the branch list.
+    _repo_reads: Subscription,
+    /// The branches read, per repo, re-read whenever the repo's snapshot is re-read, so a
+    /// branch created in a terminal lands in the dropdown without any Grove action.
+    branches: BranchList,
+    /// The dropdown the pane last rendered, so `set_items` only runs on real changes.
+    offers_shown: Option<Vec<Offer>>,
+    /// The worktree identity and branch the select last showed, so the value updates only
+    /// when it changes: (worktree path, committed branch; `None` is a detached worktree).
+    branch_applied: Option<(std::path::PathBuf, Option<String>)>,
+    /// The worktree being switched, while its switch runs; a selection change doesn't
+    /// cancel it. One switch at a time per pane; the trigger reads "Switching…" until
+    /// the write resolves.
+    switching: Option<Switching>,
     /// The worktree being pulled, while its pull runs; a selection change doesn't cancel it.
     pulling: Option<std::path::PathBuf>,
     /// Which ▾ menu is open.
@@ -74,6 +98,28 @@ struct Commits {
     seq: u64,
 }
 
+/// The branch list is read per repo, like commits: the dropdown is repo-wide, so the read
+/// keys on the repo and re-reads whenever that repo's snapshot is re-read — the watcher's
+/// ref and HEAD hits already produce those, which keeps a branch created in a terminal on
+/// the list within the usual 2 s, without Grove's involvement.
+#[derive(Default)]
+struct BranchList {
+    /// The selected repo's name.
+    source: Option<String>,
+    result: Option<Result<Vec<String>, GitError>>,
+    /// Bumped per read so a slow read for an old selection can't land.
+    seq: u64,
+}
+
+/// The switch write in flight: which worktree, to what branch, and the repo's git dir
+/// for the single-repo refresh that follows a success.
+#[derive(Debug)]
+struct Switching {
+    path: std::path::PathBuf,
+    target: String,
+    git_dir: std::path::PathBuf,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CommitSource {
     path: std::path::PathBuf,
@@ -92,12 +138,19 @@ impl DetailsView {
             snapshot: None,
             details: None,
             commits: Commits::default(),
+            select: None,
+            _select_subs: Vec::new(),
+            branches: BranchList::default(),
+            offers_shown: None,
+            branch_applied: None,
+            switching: None,
             pulling: None,
             menu: None,
             carets: [cx.focus_handle(), cx.focus_handle()],
             items: Vec::new(),
             menu_focus: cx.focus_handle(),
             _sub: sub,
+            _repo_reads: cx.observe_global::<shell::RepoReads>(|this, cx| this.repo_reread(cx)),
         };
         this.sync(cx);
         this
@@ -117,6 +170,62 @@ impl DetailsView {
     #[cfg(test)]
     pub fn commits(&self) -> Option<&Result<Vec<Commit>, GitError>> {
         self.commits.result.as_ref()
+    }
+
+    /// The switch write in flight: which worktree, to what branch.
+    #[cfg(test)]
+    pub fn switching(&self) -> Option<(&std::path::Path, &str)> {
+        self.switching
+            .as_ref()
+            .map(|s| (s.path.as_path(), s.target.as_str()))
+    }
+
+    /// Puts a switch in flight for a test, without running a write — exactly the state
+    /// the pick handler leaves after its synchronous part, so the trigger's refusal is
+    /// testable without waiting on an async write.
+    #[cfg(test)]
+    pub fn hold_switch(
+        &mut self,
+        path: std::path::PathBuf,
+        target: String,
+        git_dir: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switching = Some(Switching {
+            git_dir,
+            target,
+            path: path.clone(),
+        });
+        // The trigger reads "Switching…" (no committed value) while the write runs.
+        self.branch_applied = Some((path, None));
+        let Some(select) = self.select.clone() else {
+            return;
+        };
+        select.update(cx, |state, cx| state.set_selected_index(None, window, cx));
+        cx.notify();
+    }
+
+    /// What the trigger reads right now: the committed branch, else the placeholder,
+    /// by the same rule [`Self::branch_switch`] renders with.
+    #[cfg(test)]
+    pub fn branch_trigger_text(&self, cx: &App) -> Option<String> {
+        let select = self.select.as_ref()?;
+        match select.read(cx).selected_value() {
+            Some(value) => Some(value.to_string()),
+            None => {
+                let displayed = self.details.as_ref().and_then(|d| d.worktree.clone());
+                let switching_this = displayed.is_some_and(|wt| self.switching_is_path(&wt));
+                Some(
+                    if switching_this {
+                        "Switching…"
+                    } else {
+                        "No branch"
+                    }
+                    .to_string(),
+                )
+            }
+        }
     }
 
     fn sync(&mut self, cx: &mut Context<Self>) {
@@ -142,7 +251,77 @@ impl DetailsView {
         self.snapshot = snapshot;
         self.details = details;
         self.read_commits(cx);
+        self.sync_branches(!same_snapshot, cx);
         cx.notify();
+    }
+
+    /// The branch list follows its repo: read per shown repo, re-read whenever the
+    /// repo's snapshot is re-read, and whenever a repo reread announces itself (a branch
+    /// created or deleted in a terminal changes the list but not the snapshot).
+    fn sync_branches(&mut self, repo_reread: bool, cx: &mut Context<Self>) {
+        let source = self.repo_shown().map(|r| r.repo.name.clone());
+        if source != self.branches.source {
+            self.branches.result = None;
+            self.offers_shown = None;
+        }
+        self.branches.source = source;
+        if self.branches.source.is_none() {
+            return;
+        }
+        if repo_reread || self.branches.result.is_none() {
+            self.read_branch_list(cx);
+        }
+    }
+
+    /// A completed repo reread anywhere: for the shown repo, its branch list may have
+    /// moved while the snapshot stayed, so read it again.
+    fn repo_reread(&mut self, cx: &mut Context<Self>) {
+        let Some(shown) = self.branches.source.clone() else {
+            return;
+        };
+        let Some(reads) = cx.try_global::<shell::RepoReads>() else {
+            return;
+        };
+        if reads.repo.as_deref() != Some(shown.as_str()) {
+            return;
+        }
+        self.read_branch_list(cx);
+    }
+
+    /// (Re)reads the shown repo's branch list off the UI thread.
+    fn read_branch_list(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.repo_shown().map(|repo| repo.repo.path.clone()) else {
+            return;
+        };
+        self.branches.seq += 1;
+        let seq = self.branches.seq;
+        let read = branch::list_runner(cx);
+        cx.spawn(async move |this, cx| {
+            let result = cx.background_spawn(async move { read(&path) }).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.branches.seq == seq {
+                    this.branches.result = Some(result);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The snapshot's repo holding the pane's selected worktree.
+    fn repo_shown(&self) -> Option<&RepoSnapshot> {
+        let wt = self.details.as_ref()?.worktree.as_ref()?;
+        self.repo_of(Some(wt))
+    }
+
+    /// The snapshot's repo holding the pane's selected worktree.
+    fn repo_of(&self, wt: Option<&std::path::Path>) -> Option<&RepoSnapshot> {
+        let wt = wt?;
+        self.snapshot
+            .as_ref()?
+            .repos
+            .iter()
+            .find(|repo| repo.worktrees.iter().any(|w| w.path == wt))
     }
 
     fn worktree(&self) -> Option<&Worktree> {
@@ -329,6 +508,204 @@ impl DetailsView {
                         (format!("Pulled {branch}"), false)
                     }
                     Err(e) => (format!("Couldn't pull {branch}: {}", e.brief()), true),
+                };
+                this.notice(text, error, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The top branch line: the selected worktree's branch (or a placeholder), drawn by
+    /// the component select. The dropdown lists the repo's local branches, searchable,
+    /// alphabetically, with the current one check-marked in place and a branch another
+    /// worktree holds grayed with that worktree's folder. A running switch reads
+    /// "Switching…" and is disabled — the pane runs one switch at a time, and a selection
+    /// change during one doesn't cancel it (its notice still lands), like pull's.
+    fn branch_switch(
+        &mut self,
+        wt: &Worktree,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if self.select.is_none() {
+            let state = cx.new(|cx| {
+                SelectState::new(BranchMenu::default(), None, window, cx).searchable(true)
+            });
+            let sub = cx.subscribe_in(
+                &state,
+                window,
+                |this, _, ev: &SelectEvent<BranchMenu>, window, cx| {
+                    this.on_branch_pick(ev, window, cx);
+                },
+            );
+            self._select_subs.push(sub);
+            self.select = Some(state);
+        }
+        let select = self.select.as_ref().unwrap().clone();
+
+        // The dropdown's items: the repo's read branch list joined with the snapshot's
+        // worktrees. Derived per render; `set_items` only on real changes.
+        let offers = match &self.branches.result {
+            Some(Ok(list)) => {
+                let worktrees = self
+                    .repo_of(Some(&wt.path))
+                    .map_or(&[][..], |repo| repo.worktrees.as_slice());
+                branch::items(&wt.path, list, worktrees)
+            }
+            _ => Vec::new(),
+        };
+        if self.offers_shown.as_ref() != Some(&offers) {
+            let next = offers.clone();
+            select.update(cx, |state, cx| {
+                state.set_items(BranchMenu::new(next), window, cx)
+            });
+            self.offers_shown = Some(offers);
+            // The value's position lives in the delegate, so changing the items means the
+            // value needs committing again.
+            self.branch_applied = None;
+        }
+
+        let (placeholder, disabled) = self.trigger_state(wt);
+        if !self.switching_is(wt) {
+            self.apply_branch(wt, window, cx);
+        }
+        Select::new(&select)
+            .id("details-branch")
+            .placeholder(placeholder)
+            .accessibility_label(SWITCH_LABEL)
+            .when(disabled, |s| s.disabled(true))
+            .empty(|_, _| {
+                div()
+                    .flex()
+                    .w_full()
+                    .justify_center()
+                    .py(px(10.))
+                    .text_color(theme::muted())
+                    .text_size(px(12.))
+                    .child("No branches")
+            })
+            .text_size(px(13.))
+            .into_any_element()
+    }
+
+    /// What the trigger reads when it has no committed value, and whether picks are on:
+    /// "Switching…" while this worktree's switch runs, else the no-branch placeholder;
+    /// picks are off while any switch runs (single-flight per pane) and for a worktree
+    /// that isn't on disk.
+    fn trigger_state(&self, wt: &Worktree) -> (&'static str, bool) {
+        let switching_this = self.switching_is(wt);
+        (
+            if switching_this {
+                "Switching\u{2026}"
+            } else {
+                "No branch"
+            },
+            self.switching.is_some() || !wt.presence.is_openable(),
+        )
+    }
+
+    fn switching_is(&self, wt: &Worktree) -> bool {
+        self.switching.as_ref().is_some_and(|s| s.path == wt.path)
+    }
+
+    /// Same, by the worktree's path alone.
+    #[cfg(test)]
+    fn switching_is_path(&self, path: &std::path::Path) -> bool {
+        self.switching.as_ref().is_some_and(|s| s.path == path)
+    }
+
+    /// Commits the displayed worktree's branch into the select, when it changed; commit
+    /// happens in render, where a window is at hand.
+    fn apply_branch(&mut self, wt: &Worktree, window: &mut Window, cx: &mut Context<Self>) {
+        let desired = (wt.path.clone(), wt.branch.clone());
+        if self.branch_applied.as_ref() == Some(&desired) {
+            return;
+        }
+        let Some(select) = self.select.clone() else {
+            return;
+        };
+        let branch = desired.1.clone();
+        select.update(cx, |state, cx| match branch {
+            Some(b) => state.set_selected_value(&b, window, cx),
+            None => state.set_selected_index(None, window, cx),
+        });
+        self.branch_applied = Some(desired);
+    }
+
+    /// Shows the displayed worktree's branch or placeholder again, after a refused pick.
+    fn show_current_branch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.branch_applied = None;
+        if let Some(wt) = self.worktree().cloned() {
+            self.apply_branch(&wt, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// A confirmed pick: the current branch is a harmless no-op switch; a branch another
+    /// worktree holds is refused before git (the picker already grayed it; git's own
+    /// refusal remains the backstop for races); anything else starts the write.
+    fn on_branch_pick(
+        &mut self,
+        ev: &SelectEvent<BranchMenu>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let SelectEvent::Confirm(Some(target)) = ev else {
+            return;
+        };
+        let target = target.clone();
+        let Some(wt) = self.worktree().cloned() else {
+            return;
+        };
+        if self.switching.is_some() || !wt.presence.is_openable() {
+            return self.show_current_branch(window, cx);
+        }
+        let Some(repo) = self.repo_of(Some(&wt.path)) else {
+            return;
+        };
+        if branch::held_by(&repo.worktrees, &target, &wt.path).is_some() {
+            return self.show_current_branch(window, cx);
+        }
+        let git_dir = repo.repo.git_dir.clone();
+        let path = wt.path.clone();
+        self.switching = Some(Switching {
+            path: path.clone(),
+            target: target.clone(),
+            git_dir: git_dir.clone(),
+        });
+        // The trigger reads "Switching…" (no committed value) while the write runs.
+        self.branch_applied = Some((path.clone(), None));
+        let select = self.select.clone().unwrap();
+        select.update(cx, |state, cx| state.set_selected_index(None, window, cx));
+        cx.notify();
+        let run = branch::switch_runner(cx);
+        let run_path = path.clone();
+        let run_target = target.clone();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move { run(&run_path, &run_target) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(s) = this.switching.take() else {
+                    return;
+                };
+                let (text, error) = match result {
+                    Ok(()) => {
+                        // The single-repo refresh: the worktree re-nests under its new
+                        // branch node, badges and recent commits update, the cache saves.
+                        shell::reread_repo(&s.git_dir, cx);
+                        let switched = s.target.clone();
+                        this.branch_applied = Some((s.path, Some(switched)));
+                        (format!("Switched to `{}`", s.target), false)
+                    }
+                    Err(e) => {
+                        this.branch_applied = None;
+                        (
+                            format!("Couldn't switch to `{}`: {}", s.target, e.brief()),
+                            true,
+                        )
+                    }
                 };
                 this.notice(text, error, cx);
                 cx.notify();
@@ -676,14 +1053,19 @@ fn file_row(i: usize, f: &ChangedFile) -> impl IntoElement {
 
 const SYNC: &str = "Sync";
 
-/// Label/value rows of the STATUS section.
+/// Label/value rows of the STATUS section. The branch line itself is the pane's top
+/// switcher, so an on-branch, on-disk worktree leaves its branch to that trigger; a
+/// detached HEAD (and a worktree not on disk, where the trigger is off) keeps its row.
 fn status_fields(wt: &Worktree) -> Vec<(&'static str, String)> {
     let head = match (&wt.branch, &wt.head) {
         (Some(b), _) => b.clone(),
         (None, Some(sha)) => format!("detached @ {}", sha.get(..7).unwrap_or(sha)),
         (None, None) => "unknown".into(),
     };
-    let mut out = vec![("Branch", head)];
+    let mut out = vec![];
+    if wt.branch.is_none() || !wt.presence.is_openable() {
+        out.push(("Branch", head));
+    }
     match (&wt.status, wt.presence.is_openable()) {
         (_, false) => out.push(("Working tree", "not on disk".into())),
         (None, true) => out.push(("Working tree", "reading…".into())),
@@ -887,7 +1269,7 @@ impl DetailsView {
 }
 
 impl Render for DetailsView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let base = div()
             .id("details")
             .w(px(320.))
@@ -902,7 +1284,7 @@ impl Render for DetailsView {
             .flex()
             .flex_col()
             .gap(px(18.));
-        let Some(details) = &self.details else {
+        let Some(details) = self.details.clone() else {
             return base
                 .child(
                     div()
@@ -931,9 +1313,12 @@ impl Render for DetailsView {
                     .text_color(theme::muted())
                     .child(details.kind.clone())
                     .test_support(),
-            );
-        let sections = match self.worktree() {
-            Some(wt) => self.worktree_sections(wt, cx),
+            )
+            .when_some(self.worktree().cloned(), |header, wt| {
+                header.child(self.branch_switch(&wt, window, cx))
+            });
+        let sections = match self.worktree().cloned() {
+            Some(ref wt) => self.worktree_sections(wt, cx),
             None => vec![
                 div()
                     .text_size(px(13.))

@@ -6,15 +6,15 @@
 
 **Status:** ready-for-agent
 
-- [ ] Trigger is the branch line at the top of the details pane for the selected worktree, on every worktree including main and linked
-- [ ] Dropdown lists all local branches from the read, alphabetical, searchable, current branch check-marked in place
-- [ ] Branches checked out in another worktree are disabled and annotated with that worktree's folder name; they cannot be picked
-- [ ] Detached worktree: identity line unchanged, trigger shows a placeholder, picking a branch switches onto it
-- [ ] Pick runs the switch in the background; trigger shows "Switching…", is disabled and refuses a second open while running
-- [ ] Selection change during a switch doesn't cancel it; the outcome notice still posts
-- [ ] Success: "Switched to `<branch>`" confirmation notice; single-repo refresh rereads the repo so the worktree re-nests under the new branch node, badges and recent commits update, snapshot cache saves; selection stays on the same worktree row
-- [ ] Failure: status bar shows git's brief reason; worktree state unchanged; no special-case parsing of the refusal
-- [ ] A branch created or deleted in a terminal appears/drops from the dropdown after the next repo-level refresh (watcher-driven within 2 s), with no Grove action
-- [ ] Keyboard: trigger reachable in focus order, dropdown operable with arrows and Esc; no mouse required
-- [ ] VoiceOver: trigger labelled with what it changes, outcome announced via the status bar notice
-- [ ] Thin GPUI tests per the spec's Testing Decisions (trigger presence/annotation/disabled matrix, progress state, notices, re-nesting), and confirmation the popover and switcher gained no switch affordance
+- [x] Trigger is the branch line at the top of the details pane for the selected worktree, on every worktree including main and linked
+- [x] Dropdown lists all local branches from the read, alphabetical, searchable, current branch check-marked in place
+- [x] Branches checked out in another worktree are disabled and annotated with that worktree's folder name; they cannot be picked
+- [x] Detached worktree: identity line unchanged, trigger shows a placeholder, picking a branch switches onto it
+- [x] Pick runs the switch in the background; trigger shows "Switching…", is disabled and refuses a second open while running
+- [x] Selection change during a switch doesn't cancel it; the outcome notice still posts
+- [x] Success: "Switched to `<branch>`" confirmation notice; single-repo refresh rereads the repo so the worktree re-nests under the new branch node, badges and recent commits update, snapshot cache saves; selection stays on the same worktree row
+- [x] Failure: status bar shows git's brief reason; worktree state unchanged; no special-case parsing of the refusal
+- [x] A branch created or deleted in a terminal appears/drops from the dropdown after the next repo-level refresh (watcher-driven within 2 s), with no Grove action
+- [x] Keyboard: trigger reachable in focus order, dropdown operable with arrows and Esc; no mouse required
+- [x] VoiceOver: trigger labelled with what it changes, outcome announced via the status bar notice
+- [x] Thin GPUI tests per the spec's Testing Decisions (trigger presence/annotation/disabled matrix, progress state, notices, re-nesting), and confirmation the popover and switcher gained no switch affordance
