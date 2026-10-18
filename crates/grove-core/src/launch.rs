@@ -364,9 +364,9 @@ tell application id "com.googlecode.iterm2"
 	tell s to write text {cd}
 end tell"#;
 
-const ITERM_TAB: &str = r#"		tell current window to set t to (create tab with default profile)
+const ITERM_TAB: &str = r"		tell current window to set t to (create tab with default profile)
 		set s to current session of t
-"#;
+";
 
 /// Error number a script raises to hand over to its fallback quietly.
 const NOT_RUNNING: &str = "(9001)";
@@ -1285,7 +1285,7 @@ mod tests {
         else {
             panic!()
         };
-        let front = script.find(r#"if not frontmost then error"#).unwrap();
+        let front = script.find(r"if not frontmost then error").unwrap();
         let keystroke = script.find("keystroke").unwrap();
         assert!(front < keystroke, "{script}");
         assert!(script.contains("repeat 100 times"), "~5 s cold-launch wait");

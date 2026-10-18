@@ -69,10 +69,10 @@ fn resolve() -> ShellEnv {
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "/bin/zsh".into());
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let (base, source) = match login_shell_path(&shell) {
-        Some(path) => (path, PathSource::LoginShell),
-        None => (inherited, PathSource::Fallback),
-    };
+    let (base, source) = login_shell_path(&shell)
+        .map_or((inherited, PathSource::Fallback), |path| {
+            (path, PathSource::LoginShell)
+        });
     ShellEnv {
         path: with_fallbacks(&base),
         source,
