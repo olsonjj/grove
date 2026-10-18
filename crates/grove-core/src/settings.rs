@@ -56,6 +56,10 @@ pub struct Settings {
     pub tree_sort: SortMode,
     /// Stable name of the repository last shown in the main window.
     pub last_selected_repo: Option<String>,
+    /// Details pane's width in pixels, as chosen by its last drag. `None` until one
+    /// happens, so the pane starts at Grove's default; older settings files load as-is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details_pane_width: Option<i32>,
 }
 
 impl Default for Settings {
@@ -78,6 +82,7 @@ impl Default for Settings {
             repo_sort: SortMode::Recent,
             tree_sort: SortMode::Recent,
             last_selected_repo: None,
+            details_pane_width: None,
         }
     }
 }
@@ -473,4 +478,43 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, bytes)?;
     fs::rename(&tmp, path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn round_trip(settings: &Settings) -> Settings {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        file.save(settings).unwrap();
+        file.load().unwrap()
+    }
+
+    #[test]
+    fn details_pane_width_round_trips() {
+        let settings = Settings {
+            details_pane_width: Some(470),
+            ..Default::default()
+        };
+        assert_eq!(round_trip(&settings), settings);
+    }
+
+    #[test]
+    fn settings_without_a_pane_width_load_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        // A pre-existing settings.json predating the pane width; it must load unchanged
+        // and keep round-tripping without the field appearing in its JSON.
+        std::fs::write(file.path(), br#"{"code_dir": "/c"}"#).unwrap();
+        let loaded = file.load().unwrap();
+        assert_eq!(loaded.details_pane_width, None);
+        assert_eq!(loaded.code_dir, Some(PathBuf::from("/c")));
+        file.save(&loaded).unwrap();
+        assert!(
+            !std::fs::read_to_string(file.path())
+                .unwrap()
+                .contains("details_pane_width")
+        );
+    }
 }

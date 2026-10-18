@@ -1464,15 +1464,13 @@ impl DetailsView {
 
 impl Render for DetailsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The resizable panel owns the width; this view fills it.
         let base = div()
             .id("details")
-            .w(px(320.))
-            .min_w(px(260.))
-            .flex_shrink(1.)
+            .flex_1()
+            .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .border_l_1()
-            .border_color(theme::border())
             .bg(theme::panel())
             .p(px(16.))
             .flex()
