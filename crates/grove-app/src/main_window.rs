@@ -1671,7 +1671,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{Point, TestAppContext};
+    use gpui_kit::{
+        InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Point,
+        TestAppContext, point,
+    };
     use grove_core::{
         Change, ChangedFile, Fallback, LaunchError, Outcome, Permission, Presence, RowId, RowKind,
         Settings, SettingsFile, Snapshot, SnapshotStore, SortMode, TerminalOpensIn, Upstream,
@@ -1940,6 +1943,101 @@ mod tests {
         assert!((pane_width(cx, w) - 470.).abs() < 1.);
     }
 
+    /// Presses the divider, moves the pointer in steps, leaving the drag open
+    /// (`released: false`): the events a real drag delivers, split so the middle
+    /// can be observed. A press that never moved is no-op for the pane.
+    fn pressed_divider_drag(
+        cx: &mut TestAppContext,
+        w: AnyWindowHandle,
+        from: Point<Pixels>,
+        to: Point<Pixels>,
+    ) {
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.dispatch_event(
+                MouseMoveEvent {
+                    position: from,
+                    pressed_button: None,
+                    modifiers: Default::default(),
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            for step in 1..=8 {
+                let fraction = step as f32 / 8.;
+                window.dispatch_event(
+                    MouseMoveEvent {
+                        position: point(
+                            from.x + (to.x - from.x) * fraction,
+                            from.y + (to.y - from.y) * fraction,
+                        ),
+                        pressed_button: Some(MouseButton::Left),
+                        modifiers: Default::default(),
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.render_frame(cx);
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn pane_saves_when_the_drag_ends_not_while_it_moves(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        let (w, _) = launch_at(cx, &file, canned(), size(px(1560.), px(720.)));
+        let divider = cx
+            .update_window(w, |_, window, _| window.find("details").bounds())
+            .unwrap()
+            .origin;
+        let to = point(divider.x - px(150.), divider.y);
+
+        // Press, move, and leave the drag open: no save may have landed while
+        // the pointer moves (settings writes happen on background threads, so
+        // parking first would flush a mid-move save if one existed).
+        pressed_divider_drag(cx, w, divider, to);
+        cx.run_until_parked();
+        assert_eq!(file.load().unwrap().details_pane_width, None);
+        assert_eq!(
+            pane_width(cx, w).round() as i64,
+            470,
+            "pane grew while dragging"
+        );
+
+        // Release the still-open drag: the single write carries the final width.
+        cx.update_window(w, |_, window, cx| {
+            window.dispatch_event(
+                MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: to,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(file.load().unwrap().details_pane_width, Some(470));
+        assert_eq!(pane_width(cx, w).round() as i64, 470);
+    }
+
     #[gpui_kit::test]
     fn resizable_width_is_restored_on_relaunch(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
@@ -1952,6 +2050,36 @@ mod tests {
         // Same window size as the first launch, so the saved width fits.
         let (w, _) = launch_at(cx, &file, canned(), size(px(1500.), px(720.)));
         assert!((pane_width(cx, w) - 470.).abs() < 1.);
+    }
+
+    #[gpui_kit::test]
+    fn saved_max_width_compressed_keep_tree_at_its_minimum(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        // Saved at the pane's maximum, in the wide window it was earned in.
+        let file = settings_file(
+            &tmp,
+            Settings {
+                details_pane_width: Some(DETAILS_PANE_MAX_WIDTH as i32),
+                ..Settings::default()
+            },
+        );
+        // The app's real default window (1180 px) is too narrow to honor the
+        // saved 720: the tree holds its 480 minimum and the pane absorbs the
+        // rest rather than overflowing the window.
+        let (w, _) = launch_at(cx, &file, canned(), size(px(1180.), px(720.)));
+        assert_close(
+            px(pane_width(cx, w)),
+            1180. - SIDEBAR_W - TREE_MIN_WIDTH,
+            "pane at launch",
+        );
+        assert!(
+            tree_panel_width(cx, w) >= TREE_MIN_WIDTH,
+            "tree kept its minimum"
+        );
+        assert!(
+            pane_width(cx, w) >= DETAILS_PANE_MIN_WIDTH,
+            "pane kept its minimum"
+        );
     }
 
     fn keys(cx: &mut TestAppContext, w: AnyWindowHandle, keys: &[&str]) {

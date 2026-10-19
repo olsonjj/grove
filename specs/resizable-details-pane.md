@@ -8,7 +8,7 @@ The details pane is a hard-coded 320 px column. On a wide window it wastes space
 
 ## Solution
 
-A draggable divider between the branch tree and the details pane. Drag right to widen the pane, left to shrink it, within sensible clamps so neither column becomes unusable. The chosen width sticks — across re-renders, repo switches, and app relaunches. Everything else stays where it is.
+A draggable divider between the branch tree and the details pane. Drag left to widen the pane, right to shrink it, within sensible clamps so neither column becomes unusable. The chosen width sticks — across re-renders, repo switches, and app relaunches. Everything else stays where it is.
 
 ## User Stories
 
