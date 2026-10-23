@@ -220,6 +220,9 @@ pub struct Commit {
     pub short_sha: String,
     /// First line of the commit message.
     pub subject: String,
+    /// The author's plain name (who wrote it, not the committer who landed it); empty
+    /// when git knows none, e.g. a malformed config. Absent never fails the read.
+    pub author: String,
     /// Committer time, Unix seconds.
     pub time: i64,
 }
@@ -537,7 +540,7 @@ pub fn recent_commits(path: &Path) -> Result<Vec<Commit>, GitError> {
             "-5",
             "-z",
             "--no-show-signature",
-            "--format=%h%x1f%ct%x1f%s",
+            "--format=%h%x1f%ct%x1f%an%x1f%s",
             "--ignore-missing",
             "HEAD",
             "--",
@@ -731,15 +734,19 @@ fn parse_entry<'a>(
     }
 }
 
-/// Parses `log -z --format=%h%x1f%ct%x1f%s`.
+/// Parses `log -z --format=%h%x1f%ct%x1f%an%x1f%s`.
 fn parse_log(out: &str) -> Vec<Commit> {
     out.split('\0')
         .filter_map(|record| {
-            let mut f = record.splitn(3, '\x1f');
+            let mut f = record.splitn(4, '\x1f');
             let short_sha = f.next().filter(|s| !s.is_empty())?.to_string();
             let time = f.next()?.parse().ok()?;
+            // An absent or empty author slot degrades to an empty name; it never fails
+            // the read.
+            let author = f.next().unwrap_or_default().to_string();
             Some(Commit {
                 short_sha,
+                author,
                 time,
                 subject: f.next().unwrap_or_default().to_string(),
             })
@@ -880,22 +887,34 @@ mod tests {
 
     #[test]
     fn parses_log_with_special_characters() {
-        let out = "abc1234\x1f1700000000\x1ffix: \"quotes\" $HOME `tick` | pipe\0\
-                   def5678\x1f1690000000\x1f\0";
+        let out = "abc1234\x1f1700000000\x1fA. Uthor \"odd\"  🌳\x1ffix: \"quotes\" $HOME `tick` | pipe\0\
+                   def5678\x1f1690000000\x1f\x1f\0";
         assert_eq!(
             parse_log(out),
             [
                 Commit {
                     short_sha: "abc1234".into(),
                     subject: "fix: \"quotes\" $HOME `tick` | pipe".into(),
+                    author: "A. Uthor \"odd\"  🌳".into(),
                     time: 1_700_000_000,
                 },
                 Commit {
                     short_sha: "def5678".into(),
                     subject: String::new(),
+                    author: String::new(),
                     time: 1_690_000_000,
                 },
             ]
+        );
+        // A record missing the author slot degrades to an empty author, not a failed read.
+        assert_eq!(
+            parse_log("9998888\x1f1680000000\x1f\0"),
+            [Commit {
+                short_sha: "9998888".into(),
+                subject: String::new(),
+                author: String::new(),
+                time: 1_680_000_000,
+            }]
         );
         assert!(parse_log("").is_empty());
     }

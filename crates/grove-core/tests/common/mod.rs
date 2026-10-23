@@ -12,6 +12,11 @@ pub fn git(dir: &Path, args: &[&str]) {
     git_env(dir, args, &[]);
 }
 
+/// Runs git with extra environment (e.g. `GIT_AUTHOR_NAME`) set for it.
+pub fn git_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) {
+    git_env(dir, args, env);
+}
+
 /// An empty commit in `dir` committed at Unix time `secs`.
 pub fn commit_at(dir: &Path, secs: i64) {
     let date = format!("@{secs} +0000");

@@ -6,7 +6,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use common::{Fixture, add_worktree, git, init_repo};
+use common::{Fixture, add_worktree, git, git_with_env, init_repo};
 use grove_core::{RowId, Snapshot, SnapshotStore, WorktreeStatus, recent_commits};
 
 fn read(f: &Fixture) -> Snapshot {
@@ -121,6 +121,27 @@ fn recent_commits_caps_at_five() {
     assert_eq!(commits.len(), 5);
     assert_eq!(commits[0].subject, "c7");
     assert_eq!(commits[4].subject, "c3");
+}
+
+#[test]
+fn recent_commits_carry_the_author_name() {
+    let f = Fixture::new();
+    let api = init_repo(&f.code().join("api"));
+    // The author (who wrote it) is carried, not the committer (who landed it); an
+    // emailed-patch style commit has different identities for the two.
+    git_with_env(
+        &api,
+        &["commit", "-q", "--allow-empty", "-m", "landed"],
+        &[("GIT_AUTHOR_NAME", "olsonjj"), ("GIT_COMMITTER_NAME", "T")],
+    );
+    let commits = recent_commits(&api).unwrap();
+    assert_eq!(commits[0].author, "olsonjj");
+    assert_eq!(commits[0].subject, "landed");
+    assert!(commits[0].short_sha.len() >= 7);
+    assert!((grove_core::unix_now() - commits[0].time).abs() < 600);
+    // Every other commit keeps the repo's own identity.
+    assert_eq!(commits[1].author, "Grove Test");
+    assert_eq!(commits[1].subject, "init");
 }
 
 #[test]

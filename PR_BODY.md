@@ -1,50 +1,57 @@
 ## Summary
 
-- STATUS gains a `Size` row: the selected worktree's working tree size on disk, in words ("3 kB", "452 MB", "2.5 MB"), at most one decimal. [PR: 34a added in specs/grove-v1.md]
+The details pane's RECENT COMMITS list becomes two lines per commit: the subject alone on line one, and the metadata (`hash · author · time`) on line two in the quiet tier, with a hairline divider between rows. Ticket 26 carried the author through the core read; ticket 27 places it on screen.
 
 ```diff
- STATUS
-   Upstream    origin/main
-   Sync        2 ahead, 1 behind
-   Working tree  2 changed files
-+  Size        452 MB
+ (commit, i)                      # id + unit preserved (tests, VoiceOver)
+-  493794a  chore: bump deps  just now
++  chore: bump deps             # truncates on its line only
++  493794a  olsonjj     just now  # author is the flexible, truncating piece
++  ────────────────────────────  # commit_divider, none after the last row
 ```
 
-The read follows the recent-commits pattern — per selection, off the UI thread, sequence-guarded — keyed on worktree path plus the status read's newest changes mtime, so edits refresh the size while plain re-reads of an unchanged tree reuse the shown value:
+The read gains one field end to end:
 
 ```text
-DetailsView.sync
-  read_commits          # unchanged
-  read_sizes            # new: background directory walk
-    directory_size      # skips .git, doesn't follow symlinks
-  size_line             # "reading…" until it lands, then size_words
+recent_commits                       # --format gains %an (author, not committer)
+  parse_log                          # splitn(3) → splitn(4)
+    Commit.author                    # absent/empty degrades to "", never fails
+DetailsView.commit_row
+  subject line                       # unchanged size/color, truncate
+  metadata line                      # hash (link, mono) · author (muted) · time (faint)
 ```
 
-`.git` is skipped: in the main worktree it's repo data (packs, objects), not the working tree, and in a linked worktree it's a one-line file — excluding it keeps main and linked worktrees measured alike.
+Empty author absorbs the gap (no dangling separator, time stays put); inter-row spacing is the rows' inner padding, so the divider is symmetric and owned by the row.
 
 ## Evidence
 
-- **Before:** `just check` on `branch-switcher` — no Size row, 195 app tests.
-  **After:** same gate green (196 app tests + 2 new core unit tests); real-disk UI test asserts the rendered row:
+- **Before:** one cramped line per commit — title ellipsized first, no author anywhere.
+- **After:** same gate green (`just check`: fmt, clippy, all tests, docs). New/extended tests:
 
 ```text
-main_window::tests::details_show_the_worktree_size
-  fields == [("Upstream", "none"), ("Sync", "no upstream"),
-             ("Working tree", "clean"), ("Size", "3 kB")]
-
-details::tests::size_words_rounds_to_the_nearest_named_unit
-  512 B → "512 B"; 1.5 kB → "1.5 kB"; 2.5 MB → "2.5 MB"; 452 MB → "452 MB"
-
-details::tests::directory_size_sums_regular_files_without_following_links
-  100 + 200 + 30 + symlink(→30) = 330; after deleting target: 300; `.git` dir: skipped
+git::tests::parses_log_with_special_characters     # populated author, empty/absent slot
+details::recent_commits_carry_the_author_name      # real repo: author "olsonjj",
+                                                   # committer "T" asserted distinct
+main_window::tests::details_list_last_five_commits_in_background
+                                                   # each row's unit names the author
+                                                   # and relative time, ids preserved;
+                                                   # five-rows + error guards unchanged
 ```
+
+Built app (build 15), 4-commit repo:
+
+![two-line rows with hairline dividers](qa-shots/rows-with-divider.png)
+
+2-commit repo, bottom of the list — divider between rows, none after the last:
+
+![no divider after the final commit](qa-shots/last-row-no-divider.png)
 
 ## Merge Danger
 
 **Door:** two-way
 
-One detail-pane row plus pure functions in core; a revert restores the previous STATUS exactly.
+One struct field threaded through an existing read seam, plus view layout. A revert restores the single-line rows exactly; the format string and parser change together or not at all.
 
-**Blast Radius:** small
+**Blast Radius:** pane-local
 
-The only user-visible change is the new row on openable worktrees with a read status. Staleness matches recent commits' per-selection philosophy: an untracked-file deletion that doesn't move the changes mtime won't re-read until the next selection or status change.
+The only user-visible change is the RECENT COMMITS block of the details pane. The read path (per selection, keyed on HEAD), the count of five, row ids, and the loading/error/empty states are untouched. Theme gains one color token used by nothing else.
