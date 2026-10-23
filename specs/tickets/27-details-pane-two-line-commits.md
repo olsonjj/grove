@@ -4,12 +4,12 @@
 
 **Blocked by:** 26 (Core: commit record and log read carry the author name)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Each commit renders as a vertical pair: full-width truncating subject, then hash · author · relative time beneath in the muted/faint tier at one size step below the subject
-- [ ] The short hash keeps its link color on the metadata line; the relative time sits at the metadata line's right edge
-- [ ] The author takes the flexible, truncating slot on the metadata line between the non-shrinking hash and time; a long author ellipsizes before pushing the time off the pane
-- [ ] A commit with an empty author renders with the gap absorbed — no dangling separator or shifted time
-- [ ] Hairline dividers sit between rows (none after the last), in the new theme token; row spacing comes from inner padding, not the container gap
-- [ ] Existing commit-row element ids and per-commit unit structure are preserved, so the app-level five-rows and read-error tests pass unchanged
-- [ ] Thin GPUI render tests per the spec's Testing Decisions: rendered row text includes the author and relative time on the preserved ids; regression guards for the five-rows matrix and the linked non-repo worktree error
+- [x] Each commit renders as a vertical pair: full-width truncating subject, then hash · author · relative time beneath in the muted/faint tier at one size step below the subject
+- [x] The short hash keeps its link color on the metadata line; the relative time sits at the metadata line's right edge
+- [x] The author takes the flexible, truncating slot on the metadata line between the non-shrinking hash and time; a long author ellipsizes before pushing the time off the pane
+- [x] A commit with an empty author renders with the gap absorbed — no dangling separator or shifted time
+- [x] Hairline dividers sit between rows (none after the last), in the new theme token; row spacing comes from inner padding, not the container gap
+- [x] Existing commit-row element ids and per-commit unit structure are preserved, so the app-level five-rows and read-error tests pass unchanged
+- [x] Thin GPUI render tests per the spec's Testing Decisions: rendered row text includes the author and relative time on the preserved ids; regression guards for the five-rows matrix and the linked non-repo worktree error

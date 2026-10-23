@@ -1273,21 +1273,20 @@ fn status_fields(wt: &Worktree) -> Vec<(&'static str, String)> {
     out
 }
 
-fn commit_row(i: usize, c: &Commit, now: i64) -> impl IntoElement {
+fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
+    let time = relative_time(c.time, now);
+    // Headline, then metadata: the row reads as one unit for VoiceOver too.
     div()
         .id(("commit", i))
         .flex()
-        .items_baseline()
-        .gap(px(10.))
+        .flex_col()
+        .py(px(4.))
+        .when(!last, |d| {
+            d.border_b_1().border_color(theme::commit_divider())
+        })
         .text_size(px(12.))
         .child(
-            theme::mono(c.short_sha.clone())
-                .flex_none()
-                .text_color(theme::link()),
-        )
-        .child(
             div()
-                .flex_1()
                 .min_w_0()
                 .truncate()
                 .text_color(theme::text_soft())
@@ -1295,9 +1294,45 @@ fn commit_row(i: usize, c: &Commit, now: i64) -> impl IntoElement {
         )
         .child(
             div()
-                .flex_none()
-                .text_color(theme::faint())
-                .child(relative_time(c.time, now)),
+                .flex()
+                .items_baseline()
+                .gap(px(8.))
+                .text_size(px(11.))
+                .child(
+                    theme::mono(c.short_sha.clone())
+                        .flex_none()
+                        .text_color(theme::link()),
+                )
+                // The author is the flexible piece: at the pane's narrowest it
+                // ellipsizes while the fixed-width identifiers survive. An empty author
+                // absorbs the gap; no dangling separator, no shifted time.
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(theme::muted())
+                        .when(!c.author.is_empty(), |d| {
+                            d.truncate().child(c.author.clone())
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(theme::faint())
+                        .child(time.clone()),
+                ),
+        )
+        .aria_label(
+            [
+                c.short_sha.as_str(),
+                c.author.as_str(),
+                time.as_str(),
+                c.subject.as_str(),
+            ]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" "),
         )
         .test_support()
 }
@@ -1400,12 +1435,20 @@ impl DetailsView {
                     .text_color(theme::faint())
                     .child("No commits yet")
                     .into_any_element(),
-                Some(Ok(c)) => div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .children(c.iter().enumerate().map(|(i, c)| commit_row(i, c, now)))
-                    .into_any_element(),
+                Some(Ok(c)) => {
+                    // Inter-row spacing is the rows' inner padding, owned by the row so
+                    // its divider sits symmetrically; the container carries no gap.
+                    let count = c.len();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .children(
+                            c.iter()
+                                .enumerate()
+                                .map(|(i, c)| commit_row(i, c, now, i == count - 1)),
+                        )
+                        .into_any_element()
+                }
             };
             out.push(section("RECENT COMMITS").child(body).into_any_element());
         }

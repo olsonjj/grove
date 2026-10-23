@@ -1676,9 +1676,9 @@ mod tests {
         TestAppContext, point,
     };
     use grove_core::{
-        Change, ChangedFile, Fallback, LaunchError, Outcome, Permission, Presence, RowId, RowKind,
-        Settings, SettingsFile, Snapshot, SnapshotStore, SortMode, TerminalOpensIn, Upstream,
-        WorktreeStatus,
+        Change, ChangedFile, Commit, Fallback, LaunchError, Outcome, Permission, Presence, RowId,
+        RowKind, Settings, SettingsFile, Snapshot, SnapshotStore, SortMode, TerminalOpensIn,
+        Upstream, WorktreeStatus, relative_time,
     };
     use tempfile::TempDir;
 
@@ -3018,7 +3018,18 @@ mod tests {
         std::fs::create_dir(&repo_dir).unwrap();
         git(&repo_dir, &["init", "-q"]);
         for m in ["one", "two", "three", "four", "five", "six"] {
-            git(&repo_dir, &["commit", "-q", "--allow-empty", "-m", m]);
+            git(
+                &repo_dir,
+                &[
+                    "-c",
+                    "user.name=olsonjj",
+                    "commit",
+                    "-q",
+                    "--allow-empty",
+                    "-m",
+                    m,
+                ],
+            );
         }
         let mut repo = canned();
         repo.worktrees[0].path = repo_dir;
@@ -3026,6 +3037,37 @@ mod tests {
         cx.run_until_parked();
         assert!((0..5).all(|i| has(cx, w, "commit", i)));
         assert!(!has(cx, w, "commit", 5));
+        // Two-line rows: each commit's unit (its preserved `commit` id) names who wrote
+        // it and when, per the pane's own read.
+        let commits = main
+            .read_with(cx, |m, cx| m.details.read(cx).commits().cloned())
+            .unwrap()
+            .unwrap();
+        let labels: Vec<String> = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                (0..5)
+                    .map(|i: usize| window.find(("commit", i)).label().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        let now = grove_core::unix_now();
+        for (c, label) in commits.iter().zip(&labels) {
+            let Commit {
+                short_sha,
+                subject,
+                author,
+                time,
+            } = c;
+            assert_eq!(author, "olsonjj");
+            assert!(label.contains(short_sha.as_str()), "{label}");
+            assert!(label.contains(author.as_str()), "{label}");
+            assert!(
+                label.contains(relative_time(*time, now).as_str()),
+                "{label}"
+            );
+            assert!(label.contains(subject.as_str()), "{label}");
+        }
         // A linked worktree that isn't a repo shows the error instead of stale commits.
         keys(cx, w, &["down", "down", "down", "down"]);
         let err = main.read_with(cx, |m, cx| match m.details.read(cx).commits() {

@@ -86,6 +86,11 @@ pub fn warn_text() -> Rgba {
 pub fn worktree_row() -> Rgba {
     rgb(0x151d27)
 }
+/// Hairline between recent-commit rows in the details pane: half a step above the panel
+/// background, well below the card color, so it separates without reading as card chrome.
+pub fn commit_divider() -> Rgba {
+    rgb(0x191d23)
+}
 pub fn worktree_text() -> Rgba {
     rgb(0xbfdbff)
 }
