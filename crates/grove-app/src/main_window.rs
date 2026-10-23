@@ -1676,9 +1676,9 @@ mod tests {
         TestAppContext, point,
     };
     use grove_core::{
-        Change, ChangedFile, Commit, Fallback, LaunchError, Outcome, Permission, Presence, RowId,
-        RowKind, Settings, SettingsFile, Snapshot, SnapshotStore, SortMode, TerminalOpensIn,
-        Upstream, WorktreeStatus, relative_time,
+        Change, ChangedFile, Fallback, LaunchError, Outcome, Permission, Presence, RowId, RowKind,
+        Settings, SettingsFile, Snapshot, SnapshotStore, SortMode, TerminalOpensIn, Upstream,
+        WorktreeStatus, relative_time,
     };
     use tempfile::TempDir;
 
@@ -3043,30 +3043,39 @@ mod tests {
             .read_with(cx, |m, cx| m.details.read(cx).commits().cloned())
             .unwrap()
             .unwrap();
-        let labels: Vec<String> = cx
-            .update_window(w, |_, window, cx| {
-                window.render_frame(cx);
-                (0..5)
-                    .map(|i: usize| window.find(("commit", i)).label().unwrap().to_string())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap();
         let now = grove_core::unix_now();
-        for (c, label) in commits.iter().zip(&labels) {
-            let Commit {
-                short_sha,
-                subject,
-                author,
-                time,
-            } = c;
-            assert_eq!(author, "olsonjj");
-            assert!(label.contains(short_sha.as_str()), "{label}");
-            assert!(label.contains(author.as_str()), "{label}");
+        for (i, c) in commits.iter().enumerate() {
+            let label = cx
+                .update_window(w, |_, window, cx| {
+                    window.render_frame(cx);
+                    window.find(("commit", i)).label().unwrap().to_string()
+                })
+                .unwrap();
+            // The row reads as one unit (VoiceOver): hash, author, time, subject.
+            assert!(label.contains(c.short_sha.as_str()), "{label}");
+            assert!(label.contains(c.author.as_str()), "{label}");
             assert!(
-                label.contains(relative_time(*time, now).as_str()),
+                label.contains(relative_time(c.time, now).as_str()),
                 "{label}"
             );
-            assert!(label.contains(subject.as_str()), "{label}");
+            assert!(label.contains(c.subject.as_str()), "{label}");
+            // And the visible leaves themselves carry what they render: the metadata
+            // line's author and time, not just the row's composed label.
+            let (author, time_text) = cx
+                .update_window(w, |_, window, cx| {
+                    window.render_frame(cx);
+                    (
+                        window
+                            .find(("commit-author", i))
+                            .label()
+                            .unwrap_or_default()
+                            .to_string(),
+                        window.find(("commit-time", i)).label().unwrap().to_string(),
+                    )
+                })
+                .unwrap();
+            assert_eq!(author, "olsonjj");
+            assert_eq!(time_text, relative_time(c.time, now));
         }
         // A linked worktree that isn't a repo shows the error instead of stale commits.
         keys(cx, w, &["down", "down", "down", "down"]);

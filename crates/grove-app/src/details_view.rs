@@ -1308,18 +1308,25 @@ fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
                 // absorbs the gap; no dangling separator, no shifted time.
                 .child(
                     div()
+                        .id(("commit-author", i))
                         .flex_1()
                         .min_w_0()
                         .text_color(theme::muted())
                         .when(!c.author.is_empty(), |d| {
-                            d.truncate().child(c.author.clone())
-                        }),
+                            d.truncate()
+                                .child(c.author.clone())
+                                .aria_label(c.author.clone())
+                        })
+                        .test_support(),
                 )
                 .child(
                     div()
+                        .id(("commit-time", i))
                         .flex_none()
                         .text_color(theme::faint())
-                        .child(time.clone()),
+                        .child(time.clone())
+                        .aria_label(time.clone())
+                        .test_support(),
                 ),
         )
         .aria_label(
