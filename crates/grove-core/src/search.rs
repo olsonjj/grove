@@ -180,7 +180,9 @@ fn fuzzy(word: &str, text: &str) -> Option<(i32, Vec<Range<usize>>)> {
 }
 
 fn same(a: char, b: char) -> bool {
-    a == b || a.to_lowercase().eq(b.to_lowercase())
+    a == b
+        || a.to_lowercase().eq(b.to_lowercase())
+        || matches!((a, b), ('-', '_') | ('_', '-'))
 }
 
 /// Start of the text, after a separator, or a camelCase hump.
