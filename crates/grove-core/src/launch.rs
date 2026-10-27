@@ -1188,6 +1188,7 @@ mod tests {
 
     /// The quoting really round-trips: osascript decodes the literal back to the `cd`
     /// command, and sh/zsh running it land in the directory. Runs no app's AppleScript.
+    #[cfg(target_os = "macos")]
     #[test]
     fn cd_quoting_round_trips_through_osascript_and_shells() {
         let tmp = tempfile::TempDir::new().unwrap();
