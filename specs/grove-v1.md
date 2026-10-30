@@ -102,7 +102,7 @@ Audience: two developers. No distribution, pricing, onboarding for strangers, or
 ### Opening
 
 57. As a developer, I want Grove to detect installed editors (VS Code, Cursor, Zed, IntelliJ IDEA, Sublime Text) with the command each runs, so that I don't configure them by hand.
-58. As a developer, I want Grove to detect installed terminals (Terminal, iTerm2, Warp, Ghostty, Kitty), so that I don't configure them by hand.
+58. As a developer, I want Grove to detect installed terminals (Terminal, iTerm2, Warp, Ghostty, Kitty, Herdr), so that I don't configure them by hand.
 59. As a developer, I want to pick one default editor and one default terminal, so that Enter and ⌘Enter do what I expect everywhere.
 60. As a developer, I want to choose new tab or new window for terminals that support both, so that terminals open the way I like.
 61. As a developer, I want a custom command template with `{path}` (shell-quoted), so that I can use editors Grove doesn't detect.

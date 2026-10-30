@@ -217,6 +217,29 @@ fn terminal_plan(
             let url = format!("warp://action/{action}?path={}", percent_encode(worktree));
             spawn(OPEN.into(), vec![url.into()], worktree)
         }
+        // The `herdr` CLI drives the running GUI: Tab opens a tab in the focused workspace,
+        // Window a new workspace. Either can't also run a command (see `runs_commands`);
+        // exec args need no quoting or encoding. Falls back to the resolved PATH when the
+        // CLI wasn't detected.
+        Terminal::Herdr => {
+            debug_assert!(command.is_none(), "Herdr can't run commands");
+            let mut args = vec![
+                (if tab { "tab" } else { "workspace" }).into(),
+                "create".into(),
+                "--cwd".into(),
+                path,
+            ];
+            if let Some(name) = worktree.file_name() {
+                args.push("--label".into());
+                args.push(name.to_owned());
+            }
+            args.push("--focus".into());
+            spawn(
+                target.cli.clone().unwrap_or_else(|| PathBuf::from("herdr")),
+                args,
+                worktree,
+            )
+        }
         Terminal::Ghostty => {
             let mut wd = OsString::from("--working-directory=");
             wd.push(&path);
@@ -1094,6 +1117,47 @@ mod tests {
     }
 
     #[test]
+    fn herdr_plans_cli_create_for_tab_and_workspace() {
+        let target = term(Terminal::Herdr, Some("/Applications/Herdr.app"), None);
+        for o in TABS {
+            let sub = if o == TerminalOpensIn::Tab {
+                "tab"
+            } else {
+                "workspace"
+            };
+            for (path, _, _) in TRICKY {
+                let p = plan(&target, Path::new(path), &opens_in(o));
+                let name = Path::new(path).file_name().unwrap().to_string_lossy();
+                assert_eq!(
+                    argv(&p),
+                    [
+                        "herdr".to_string(),
+                        sub.into(),
+                        "create".into(),
+                        "--cwd".into(),
+                        (*path).into(),
+                        "--label".into(),
+                        name.into_owned(),
+                        "--focus".into(),
+                    ]
+                );
+                assert_eq!(cwd(&p), Path::new(path));
+            }
+        }
+        // Absolute CLI when detected.
+        let cli = term(
+            Terminal::Herdr,
+            Some("/Applications/Herdr.app"),
+            Some("/Users/me/.local/bin/herdr"),
+        );
+        let p = plan(&cli, Path::new("/w"), &opens_in(TerminalOpensIn::Tab));
+        assert_eq!(
+            argv(&p).first().map(String::as_str),
+            Some("/Users/me/.local/bin/herdr")
+        );
+    }
+
+    #[test]
     fn warp_plans_uri_for_tab_and_window() {
         let target = term(Terminal::Warp, Some("/Applications/Warp.app"), None);
         for o in TABS {
@@ -1463,18 +1527,21 @@ mod tests {
     fn command_on_needs_a_terminal_that_runs_commands() {
         let cmd = command("nvim {path}", true);
         let dir = Path::new("/c");
-        let (s, targets) = with_terminal(term(Terminal::Warp, None, None), TerminalOpensIn::Tab);
-        let err = plan_command(&cmd, dir, &s, &targets).unwrap_err();
-        assert_eq!(err, NoTarget::CantRunCommands(Terminal::Warp).into());
-        assert!(err.in_settings());
-        assert!(
-            err.to_string()
-                .starts_with("Warp can't run custom commands")
-        );
-        assert_eq!(
-            plan_command(&cmd, dir, &Settings::default(), &targets[..1]),
-            Err(NoTarget::NoneDetected(crate::targets::Role::Terminal).into())
-        );
+        for terminal in [Terminal::Warp, Terminal::Herdr] {
+            let (s, targets) = with_terminal(term(terminal, None, None), TerminalOpensIn::Tab);
+            let err = plan_command(&cmd, dir, &s, &targets).unwrap_err();
+            assert_eq!(err, NoTarget::CantRunCommands(terminal).into());
+            assert!(err.in_settings());
+            assert!(
+                err.to_string()
+                    .starts_with(&format!("{} can't run custom commands", terminal.name()))
+            );
+            // No terminal at all is a different error, fixable in settings.
+            assert_eq!(
+                plan_command(&cmd, dir, &Settings::default(), &targets[..1]),
+                Err(NoTarget::NoneDetected(crate::targets::Role::Terminal).into())
+            );
+        }
     }
 
     #[test]

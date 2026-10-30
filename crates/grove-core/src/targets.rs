@@ -136,6 +136,8 @@ pub enum Terminal {
     Ghostty,
     /// Kitty.
     Kitty,
+    /// Herdr, a terminal multiplexer with a GUI; its `herdr` CLI drives the running app.
+    Herdr,
 }
 
 impl Terminal {
@@ -152,18 +154,20 @@ impl Terminal {
         self != Terminal::Kitty
     }
 
-    /// Warp's URI scheme opens a tab or window but can't run a command in it.
+    /// Warp's URI scheme and Herdr's `create` commands open a destination but can't run a
+    /// command in it.
     pub fn runs_commands(self) -> bool {
-        self != Terminal::Warp
+        !matches!(self, Terminal::Warp | Terminal::Herdr)
     }
 
     /// Detection order; Terminal.app ships with macOS, so it's the usual default.
-    pub const ALL: [Terminal; 5] = [
+    pub const ALL: [Terminal; 6] = [
         Terminal::Terminal,
         Terminal::ITerm2,
         Terminal::Warp,
         Terminal::Ghostty,
         Terminal::Kitty,
+        Terminal::Herdr,
     ];
 
     /// Returns the stable settings id.
@@ -174,6 +178,7 @@ impl Terminal {
             Terminal::Warp => "warp",
             Terminal::Ghostty => "ghostty",
             Terminal::Kitty => "kitty",
+            Terminal::Herdr => "herdr",
         }
     }
 
@@ -190,6 +195,7 @@ impl Terminal {
             Terminal::Warp => "Warp",
             Terminal::Ghostty => "Ghostty",
             Terminal::Kitty => "Kitty",
+            Terminal::Herdr => "Herdr",
         }
     }
 
@@ -200,6 +206,7 @@ impl Terminal {
             Terminal::Warp => &["dev.warp.Warp-Stable"],
             Terminal::Ghostty => &["com.mitchellh.ghostty"],
             Terminal::Kitty => &["net.kovidgoyal.kitty"],
+            Terminal::Herdr => &["so.pen.herdr-gpui"],
         }
     }
 
@@ -210,6 +217,7 @@ impl Terminal {
             Terminal::Warp => &["Warp.app"],
             Terminal::Ghostty => &["Ghostty.app"],
             Terminal::Kitty => &["kitty.app"],
+            Terminal::Herdr => &["Herdr.app"],
         }
     }
 
@@ -217,6 +225,8 @@ impl Terminal {
         match self {
             Terminal::Ghostty => Some("ghostty"),
             Terminal::Kitty => Some("kitty"),
+            // The CLI Grove plans against; `~/.local/bin/herdr` ships with the app.
+            Terminal::Herdr => Some("herdr"),
             _ => None,
         }
     }
@@ -225,6 +235,7 @@ impl Terminal {
         match self {
             Terminal::Ghostty => Some("Contents/MacOS/ghostty"),
             Terminal::Kitty => Some("Contents/MacOS/kitty"),
+            // Herdr's bundle binary (`herdr-gpui`) is the GUI client, not the CLI.
             _ => None,
         }
     }
@@ -693,14 +704,16 @@ mod tests {
         let utils = tmp.path().join("System/Applications/Utilities");
         let bin = tmp.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
-        // Terminal in Utilities, Warp app only, Ghostty with bundled CLI, kitty CLI only.
+        // Terminal in Utilities, Warp app only, Ghostty with bundled CLI, kitty CLI only,
+        // Herdr CLI only.
         fs::create_dir_all(utils.join("Terminal.app")).unwrap();
         fs::create_dir_all(apps.join("Warp.app")).unwrap();
         executable(&apps.join("Ghostty.app/Contents/MacOS/ghostty"));
         executable(&bin.join("kitty"));
+        executable(&bin.join("herdr"));
 
         let t = detect_in(&env(&bin), &[apps.clone(), utils.clone()], false);
-        assert_eq!(ids(&t), ["terminal", "warp", "ghostty", "kitty"]);
+        assert_eq!(ids(&t), ["terminal", "warp", "ghostty", "kitty", "herdr"]);
         assert!(t.iter().all(|t| t.role() == Role::Terminal));
         assert_eq!(t[0].app, Some(utils.join("Terminal.app")));
         assert_eq!(t[0].cli, None);
@@ -740,7 +753,7 @@ mod tests {
             default_terminal(&Settings::default(), &targets[..1])
                 .unwrap_err()
                 .to_string(),
-            "No terminal found (looked for Terminal, iTerm2, Warp, Ghostty, Kitty)"
+            "No terminal found (looked for Terminal, iTerm2, Warp, Ghostty, Kitty, Herdr)"
         );
     }
 
