@@ -1151,7 +1151,10 @@ mod tests {
             Some("/Users/me/.local/bin/herdr"),
         );
         let p = plan(&cli, Path::new("/w"), &opens_in(TerminalOpensIn::Tab));
-        assert_eq!(argv(&p).first().map(String::as_str), Some("/Users/me/.local/bin/herdr"));
+        assert_eq!(
+            argv(&p).first().map(String::as_str),
+            Some("/Users/me/.local/bin/herdr")
+        );
     }
 
     #[test]
@@ -1529,10 +1532,10 @@ mod tests {
             let err = plan_command(&cmd, dir, &s, &targets).unwrap_err();
             assert_eq!(err, NoTarget::CantRunCommands(terminal).into());
             assert!(err.in_settings());
-            assert!(err.to_string().starts_with(&format!(
-                "{} can't run custom commands",
-                terminal.name()
-            )));
+            assert!(
+                err.to_string()
+                    .starts_with(&format!("{} can't run custom commands", terminal.name()))
+            );
             // No terminal at all is a different error, fixable in settings.
             assert_eq!(
                 plan_command(&cmd, dir, &Settings::default(), &targets[..1]),

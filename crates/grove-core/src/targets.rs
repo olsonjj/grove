@@ -713,10 +713,7 @@ mod tests {
         executable(&bin.join("herdr"));
 
         let t = detect_in(&env(&bin), &[apps.clone(), utils.clone()], false);
-        assert_eq!(
-            ids(&t),
-            ["terminal", "warp", "ghostty", "kitty", "herdr"]
-        );
+        assert_eq!(ids(&t), ["terminal", "warp", "ghostty", "kitty", "herdr"]);
         assert!(t.iter().all(|t| t.role() == Role::Terminal));
         assert_eq!(t[0].app, Some(utils.join("Terminal.app")));
         assert_eq!(t[0].cli, None);
