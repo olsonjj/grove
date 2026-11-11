@@ -152,7 +152,8 @@ jobs:
 
       - name: Record notarization skip
         if: env.APPLE_API_ISSUER_ID == '' || env.APPLE_API_KEY_BASE64 == ''
-        run: echo "Notarization: skipped (APPLE_API_* secrets not set — DMG is Developer ID–signed but unstapled)" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Notarization: skipped (APPLE_API_* secrets not set — DMG is Developer ID–signed but unstapled)" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
