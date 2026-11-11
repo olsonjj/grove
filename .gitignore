@@ -1,2 +1,9 @@
 target/
 .DS_Store
+# Apple signing material — secrets, never commit
+certs/
+*.p12
+*.p8
+*.base64
+*.certSigningRequest
+*.cer

@@ -1,0 +1,168 @@
+# Release build: Developer ID–signed, notarized DMG of Grove.
+#
+# Triggers:
+#   - manual `workflow_dispatch` (great for testing the pipeline; notarization
+#     steps auto-skip if the APPLE_* secrets aren't configured)
+#   - pushing a tag `v*` (cuts a real GitHub Release with the stapled DMG)
+#
+# Secrets required (repo → Settings → Secrets and variables → Actions):
+#   APPLE_CERTIFICATE_BASE64     base64 of the Developer ID .p12
+#   APPLE_CERTIFICATE_PASSWORD   password set on that .p12 export
+#   KEYCHAIN_PASSWORD            random string; CI's throwaway keychain password
+#   APPLE_API_ISSUER_ID          App Store Connect API issuer (notarization)
+#   APPLE_API_KEY_ID             App Store Connect API key id
+#   APPLE_API_KEY_BASE64         base64 of the AuthKey_<KEYID>.p8
+#   APPLE_TEAM_ID                10-char Team ID (notarization profile)
+#
+# Build number comes from github.run_number (no commit-back to the repo).
+
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # needed to attach the DMG to a GitHub Release on tag push
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: macos-latest
+    env:
+      APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `just` and `cargo-bundle` as prebuilt binaries.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just,cargo-bundle
+
+      # Import the Developer ID cert into a throwaway keychain and let
+      # codesign touch the private key without a GUI prompt.
+      - name: Import Developer ID certificate
+        run: |
+          set -euo pipefail
+
+          KEYCHAIN=build.keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > developerID.p12
+          security import developerID.p12 \
+            -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          rm developerID.p12
+
+          # Apple's Developer ID G2 intermediate: the runner root store only
+          # ships an older CA, so codesign would refuse to build the chain.
+          curl -sfL -o /tmp/DeveloperIDG2CA.cer \
+            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
+          security import /tmp/DeveloperIDG2CA.cer -k "$KEYCHAIN"
+
+          security set-key-partition-list \
+            -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+
+          IDENTITY_HASH=$(security find-identity -v -p codesigning "$KEYCHAIN" \
+            | awk '/Developer ID Application/ {print $2; exit}')
+          echo "Signed with identity: $IDENTITY_HASH"
+          [ -n "$IDENTITY_HASH" ] || { echo "No DEVELOPER ID identity found in keychain" >&2; exit 1; }
+          echo "SIGN_IDENTITY=$IDENTITY_HASH" >> "$GITHUB_ENV"
+
+      - name: Determine version
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            # Manual dispatch: take the workspace version and mark it as a CI build.
+            VERSION="$(awk '/^\[workspace.package\]/,/^\[/ { if ($1 == "version") { gsub(/"/, "", $3); print $3; exit } }' Cargo.toml)+ci.$(date +%Y%m%d)"
+          fi
+          echo "Version: $VERSION (build $GITHUB_RUN_NUMBER)"
+          {
+            echo "VERSION=$VERSION"
+            echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER"
+          } >> "$GITHUB_ENV"
+
+      - name: Bundle app
+        run: |
+          set -euo pipefail
+          cargo bundle -p grove-app --release
+          APP="target/release/bundle/osx/Grove.app"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$APP/Contents/Info.plist"
+
+      # Sign without --deep (deprecated by Apple). The bundle contains only the
+      # single grove binary, but sign any nested Mach-O first, just in case.
+      - name: Sign (Developer ID, hardened runtime)
+        run: |
+          set -euo pipefail
+          APP="target/release/bundle/osx/Grove.app"
+          find "$APP/Contents/Frameworks" -type f 2>/dev/null \
+            | xargs -r codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
+            || true
+          codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
+          codesign --verify --strict --verbose=2 "$APP"
+
+      - name: Build DMG
+        run: |
+          set -euo pipefail
+          APP="target/release/bundle/osx/Grove.app"
+          hdiutil create -volname Grove -srcfolder "$APP" -ov -format UDZO "Grove-$VERSION.dmg"
+
+      # Notarization: skipped when the APPLE_API_* secrets are absent
+      # (e.g. a manual dispatch before secrets were configured).
+      - name: Notarize + staple DMG
+        if: env.APPLE_API_ISSUER_ID != '' && env.APPLE_API_KEY_BASE64 != ''
+        run: |
+          set -euo pipefail
+          DMG="Grove-$VERSION.dmg"
+
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > notary_key.p8
+          chmod 400 notary_key.p8
+
+          xcrun notarytool submit "$DMG" \
+            --key notary_key.p8 \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+
+          rm notary_key.p8
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          echo "Notarization: stapled and validated ✅" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record notarization skip
+        if: env.APPLE_API_ISSUER_ID == '' || env.APPLE_API_KEY_BASE64 == ''
+        run: echo "Notarization: skipped (APPLE_API_* secrets not set — DMG is Developer ID–signed but unstapled)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Grove-${{ env.VERSION }}
+          path: Grove-*.dmg
+
+      # Attach the DMG to a GitHub Release when the build was triggered by a v* tag.
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Grove-*.dmg
+          draft: true

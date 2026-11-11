@@ -59,6 +59,42 @@ bump part:
     cargo metadata --format-version 1 > /dev/null
     echo "$cur -> $next"
 
+# Build a Developer ID–signed (hardened runtime) DMG, notarizing if creds are set.
+# Requires APPLE_SIGN_IDENTITY, e.g.:
+#   export APPLE_SIGN_IDENTITY=$(security find-identity -v -p codesigning | sed -E 's/.*)" (.*)"$/\2/' )
+# Optional notarization envs: APPLE_API_ISSUER_ID, APPLE_API_KEY_ID, APPLE_API_KEY_PATH.
+release:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    version=$(sed -nE '/^\[workspace.package\]/,/^\[/ s/^version = "(.*)"/\1/p' Cargo.toml)
+    DMG="target/Grove-$version.dmg"
+
+    # Bump build number and bundle, mirroring the `bundle` recipe.
+    echo $(( $(cat {{build_file}}) + 1 )) > {{build_file}}
+    cargo bundle -p grove-app --release
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(cat {{build_file}})" {{app}}/Contents/Info.plist
+
+    # Sign binary-first then bundle (no --deep), hardened runtime + timestamp.
+    codesign --force --options runtime --timestamp --sign "$APPLE_SIGN_IDENTITY" {{app}}
+    # A "timestamps differ" failure here = clock skew (System Settings → Date & Time → auto).
+    codesign --verify --strict --verbose=2 {{app}}
+
+    hdiutil create -volname Grove -srcfolder {{app}} -ov -format UDZO "$DMG"
+
+    # Notarize + staple when credentials are exported; otherwise signed-but-unstapled.
+    if [ -n "${APPLE_API_ISSUER_ID:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_KEY_PATH:-}" ]; then
+        xcrun notarytool submit "$DMG" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait
+        xcrun stapler staple "$DMG"
+        xcrun stapler validate "$DMG"
+        echo "Notarized and stapled: $DMG"
+    else
+        echo "Signed (not notarized — no APPLE_API_* envs): $DMG"
+    fi
+
 # Zip the Apple silicon Grove.app for a beta tester
 zip: bundle
     ditto -c -k --keepParent {{app}} target/Grove.zip
