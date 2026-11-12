@@ -6,6 +6,7 @@
 
 **Status:** ready-for-agent
 
+- [ ] Raw color literals outside the theme module are gone too — e.g. the tree-view legend folder chip, `.bg(rgb(0x17222f))` in `tree_view.rs` (pre-existing before ticket 29, flagged by the ticket-29 review) — replaced with palette tokens/derivations
 - [ ] Fixed-color helpers and their constants are gone; no caller remains outside the theme module's own tests
 - [ ] The contrast matrix (every text token on every surface, incl. on-accent pairs) runs on resolved tokens under Grove Dark
 - [ ] Tooltips/inputs and other gpui-kit widgets keep their existing contrast guarantees (their gpui-kit test still passes)

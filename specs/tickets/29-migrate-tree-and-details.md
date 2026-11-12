@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Tree view reads only the cx-aware palette (no new fixed-color helper uses introduced)
-- [ ] Details view reads only the cx-aware palette
-- [ ] Existing tree/details tests pass on context-threaded colors; no visual change
-- [ ] `just check` green
+- [x] Tree view reads only the cx-aware palette (no new fixed-color helper uses introduced; pre-existing legend chip rgb(0x17222f) deferred to ticket 32 by review)
+- [x] Details view reads only the cx-aware palette
+- [x] Existing tree/details tests pass on context-threaded colors; no visual change
+- [x] `just check` green (full `cargo test --all-features --locked` run; only the pre-existing unrelated `grove-core::freshness::pruned_worktree_outside_code_dir_disappears` flake failed)
