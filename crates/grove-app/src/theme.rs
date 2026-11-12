@@ -557,6 +557,17 @@ mod tests {
         assert!(failing.is_empty(), "below 4.5:1: {failing:?}");
     }
 
+    /// Every text over every surface, as `(text, fg, surface, bg)` rows.
+    fn cross<'a>(
+        texts: &'a [(&'a str, Rgba)],
+        surfaces: &'a [(&'a str, Rgba)],
+    ) -> Vec<(&'a str, Rgba, &'a str, Rgba)> {
+        texts
+            .iter()
+            .flat_map(|(f, fg)| surfaces.iter().map(move |(b, bg)| (*f, *fg, *b, *bg)))
+            .collect()
+    }
+
     #[test]
     fn every_text_color_meets_4_5_on_every_surface() {
         let texts = [
@@ -583,12 +594,7 @@ mod tests {
             ("accent_bg", accent_bg()),
             ("warn_bg", warn_bg()),
         ];
-        let mut pairs = Vec::new();
-        for (f, fg) in texts {
-            for (b, bg) in surfaces {
-                pairs.push((f, fg, b, bg));
-            }
-        }
+        let mut pairs = cross(&texts, &surfaces);
         pairs.push(("on_accent", on_accent(), "accent", accent()));
         pairs.push(("on_accent", on_accent(), "accent_hover", accent_hover()));
         assert_readable(&pairs);
@@ -596,10 +602,6 @@ mod tests {
 
     fn hsla(c: Rgba) -> Hsla {
         Hsla::from(c)
-    }
-
-    fn rgba(c: Hsla) -> Rgba {
-        Rgba::from(c)
     }
 
     /// The theme token set a Grove Dark translation would carry, built from today's
@@ -668,40 +670,50 @@ mod tests {
             let dl = (derived.l - hsla(fixed).l).abs();
             assert!(dl <= 0.05, "{name} lightness off by {dl:.4}");
         }
-        let mut readable = Vec::new();
-        for (fg_name, fg, _) in [
-            ("text", p.text(), text()),
-            ("text_soft", p.text_soft(), text_soft()),
-            ("muted", p.muted(), muted()),
-            ("faint", p.faint(), faint()),
-            ("link", p.link(), link()),
-            ("accent", p.accent(), accent()),
-            ("warn_text", p.warn_text(), warn_text()),
-            ("worktree_text", p.worktree_text(), worktree_text()),
-        ] {
-            for (surface_name, surface, _) in [
-                ("bg", p.bg(), bg()),
-                ("panel", p.panel(), panel()),
-                ("sidebar", p.sidebar(), sidebar()),
-                ("field", p.field(), field()),
-                ("raised", p.raised(), raised()),
-                ("card", p.card(), card()),
-                ("selected", p.selected(), selected()),
-                ("border", p.border(), border()),
-                ("disabled", p.disabled(), disabled()),
-                ("worktree_row", p.worktree_row(), worktree_row()),
-                ("accent_bg", p.accent_bg(), accent_bg()),
-                ("warn_bg", p.warn_bg(), warn_bg()),
-            ] {
-                readable.push((fg_name, rgba(fg), surface_name, rgba(surface)));
-            }
-        }
-        readable.push(("on_accent", rgba(p.on_accent()), "accent", rgba(p.accent())));
+        let foregrounds = [
+            ("text", p.text()),
+            ("text_soft", p.text_soft()),
+            ("muted", p.muted()),
+            ("faint", p.faint()),
+            ("link", p.link()),
+            ("accent", p.accent()),
+            ("warn_text", p.warn_text()),
+            ("worktree_text", p.worktree_text()),
+        ];
+        let derived_surfaces = [
+            ("bg", p.bg()),
+            ("panel", p.panel()),
+            ("sidebar", p.sidebar()),
+            ("field", p.field()),
+            ("raised", p.raised()),
+            ("card", p.card()),
+            ("selected", p.selected()),
+            ("border", p.border()),
+            ("disabled", p.disabled()),
+            ("worktree_row", p.worktree_row()),
+            ("accent_bg", p.accent_bg()),
+            ("warn_bg", p.warn_bg()),
+        ];
+        let to_rgba = |h: Hsla| Rgba::from(h);
+        let mut readable: Vec<(&str, Rgba, &str, Rgba)> = foregrounds
+            .iter()
+            .flat_map(|(f, fg)| {
+                derived_surfaces
+                    .iter()
+                    .map(move |(b, bg)| (*f, to_rgba(*fg), *b, to_rgba(*bg)))
+            })
+            .collect();
         readable.push((
             "on_accent",
-            rgba(p.on_accent()),
+            Rgba::from(p.on_accent()),
+            "accent",
+            Rgba::from(p.accent()),
+        ));
+        readable.push((
+            "on_accent",
+            Rgba::from(p.on_accent()),
             "accent_hover",
-            rgba(p.accent_hover()),
+            Rgba::from(p.accent_hover()),
         ));
         assert_readable(&readable);
     }

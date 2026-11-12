@@ -57,10 +57,10 @@ The palette lives in gpui-kits's `ThemeConfig` (JSON), which also ships highligh
 - **Grove tokens are a mapping over theme tokens.** Where a theme provides the token directly, use it (background → `bg`, panel → `panel`, popover/card → `card`/`raised`, accent → `accent`, border → `border`, foreground → `text`, muted → `muted`, …). The bespoke dark-tuned tokens have fixed derivations from the theme's tokens:
   - `worktree_row` — background blended toward the accent (same relative step as today's `#151d27` is above `#121418`).
   - `commit_divider` — linear interpolation between `panel` and `card`, halfway.
-  - `connector`, `faint`, `text_soft` — lightness/darkness variants of `border` / `text` respectively.
+  - `connector` — one stronger step of `border`; `faint` — a slightly darker `muted`; `text_soft` — between `text` and `muted`.
   - `on_accent`, `on_accent_divider`, `accent_hover` — accent-derived (darkened/inverted) so accent buttons stay legible in light themes.
-  - `warn_bg` / `warn_text` — derived from the theme's danger tokens, falling back to an orange mix of accent when the theme doesn't define one.
-  These derivations are one function `grove_tokens(cx) -> GrovePalette`, unit-testable, so tuning happens in one place, not at call sites.
+  - `warn_bg` / `warn_text` — derived from the theme's warning tokens (Grove's warnings are cautionary notes, not destructive red), falling back to an orange mix of accent whenever that pair doesn't read at 4.5:1.
+  These derivations are one function, `theme::palette(cx) -> Palette`, whose methods carry the old helpers' names so the call-site migration is a mechanical rename; unit-testable, so tuning happens in one place, not at call sites.
 - **Grove Dark is a registered theme.** Today's palette is translated once into a `Grove Dark` `ThemeConfig` JSON (shipped alongside the built-ins), with `is_default` set for the dark mode, so the default code path and a user's pick take exactly the same route. The 4.5:1 contrast test in `theme.rs` then applies to resolved Grove tokens under Grove Dark — a true regression guard.
 - **One code path, light included.** There is no dark-only special case; light themes flow through the same mapping. Known risk: some derivations may look imperfect in odd palettes. Accepted; QA pass to tune, see Testing.
 - **Apply = `Theme::update` + registry swap.** To activate a Theme by name: set `Theme::dark_theme`/`light_theme` from `ThemeRegistry::themes()` and `Theme::change(mode, …)` (the registry observer's own pattern). Every window refreshes (gpui-kit's `Theme::update` calls `cx.refresh_windows()`).
@@ -103,7 +103,7 @@ The palette lives in gpui-kits's `ThemeConfig` (JSON), which also ships highligh
 - **Draft semantics** (settings_window.rs test style): picking applies the theme immediately (assert resolved theme name after pick); Cancel reverts to the entry theme; Save persists (`file.load()` round-trips the choice) and the choice survives a re-open. Pick → Cancel → reopen shows the old choice still stored.
 - **Follow System** test: simulate appearance change → theme re-resolves; with a named theme, appearance changes do nothing.
 - **Fallback** test: stored choice names a theme that isn't registered → resolves to Grove Dark at launch.
-- **Mapping unit tests** for `grove_tokens` derivations (blend/interpolation helpers) independent of gpui.
+- **Mapping unit tests** for the `palette` derivations (blend/interpolation helpers) independent of gpui.
 - Manual QA (`qa-shots/`): screenshot the main window, details pane, popover, switcher and settings under Grove Dark, one light theme and one unusual dark theme (e.g. Gruvbox), plus Follow System toggling to Light Mode; verify highlight colors in the details pane and every button/kind (primary/secondary/disabled), radios, switches, inputs, tooltips.
 
 ## Out of Scope
