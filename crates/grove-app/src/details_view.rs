@@ -724,7 +724,7 @@ impl DetailsView {
             .placeholder(placeholder)
             .accessibility_label(SWITCH_LABEL)
             .when(disabled, |s| s.disabled(true))
-            .empty(move |_, _| {
+            .empty(move |_, cx| {
                 // A failed read is its own reason, not an empty repo's "No branches".
                 let text = if read_failed {
                     "Couldn't list branches"
@@ -739,7 +739,7 @@ impl DetailsView {
                     .w_full()
                     .justify_center()
                     .py(px(10.))
-                    .text_color(theme::muted())
+                    .text_color(theme::palette(cx).muted())
                     .text_size(px(12.))
                     .child(text)
             })
@@ -928,6 +928,7 @@ impl DetailsView {
     /// running switch: the pane runs one git write at a time, so pull's fast-forward and
     /// a concurrent checkout never collide on the same worktree.
     fn sync_field(&self, value: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let pulling = self
             .pulling
             .as_ref()
@@ -942,7 +943,7 @@ impl DetailsView {
                 div()
                     .w(px(92.))
                     .flex_none()
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child(SYNC),
             )
             .child(
@@ -955,7 +956,7 @@ impl DetailsView {
                         div()
                             .min_w_0()
                             .truncate()
-                            .text_color(theme::text_soft())
+                            .text_color(palette.text_soft())
                             .child(value),
                     )
                     .child(
@@ -966,18 +967,18 @@ impl DetailsView {
                             .px(px(8.))
                             .rounded(px(6.))
                             .border_1()
-                            .border_color(theme::border_strong())
-                            .focus_visible(|s| s.border_color(theme::link()))
-                            .bg(theme::raised())
+                            .border_color(palette.border_strong())
+                            .focus_visible(|s| s.border_color(palette.link()))
+                            .bg(palette.raised())
                             .text_size(px(12.))
                             .when_else(
                                 enabled,
                                 |b| {
-                                    b.text_color(theme::text())
+                                    b.text_color(palette.text())
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(theme::border()))
+                                        .hover(|s| s.bg(palette.border()))
                                 },
-                                |b| b.text_color(theme::faint()),
+                                |b| b.text_color(palette.faint()),
                             )
                             .child(label)
                             .on_click(cx.listener(|this, _, _, cx| this.pull(cx))),
@@ -987,6 +988,7 @@ impl DetailsView {
 
     /// "Open in <default>" plus its ▾ menu of every detected app for `role`.
     fn open_split(&self, role: Role, openable: bool, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let key = role_key(role);
         let label = match launcher::target_name(role, cx) {
             Some(name) => format!("Open in {name}"),
@@ -994,9 +996,13 @@ impl DetailsView {
         };
         let primary = role == Role::Editor;
         let (bg, fg, hover) = match (primary, openable) {
-            (_, false) => (theme::raised(), theme::faint(), theme::raised()),
-            (true, true) => (theme::accent(), theme::on_accent(), theme::accent_hover()),
-            (false, true) => (theme::raised(), theme::text(), theme::border()),
+            (_, false) => (palette.raised(), palette.faint(), palette.raised()),
+            (true, true) => (
+                palette.accent(),
+                palette.on_accent(),
+                palette.accent_hover(),
+            ),
+            (false, true) => (palette.raised(), palette.text(), palette.border()),
         };
         let part = |id: SharedString| {
             Button::new(id)
@@ -1008,10 +1014,10 @@ impl DetailsView {
                 .border_1()
                 .when_else(
                     !primary || !openable,
-                    |b| b.border_color(theme::border_strong()),
+                    |b| b.border_color(palette.border_strong()),
                     |b| b.border_color(gpui_kit::transparent_black()),
                 )
-                .focus_visible(|s| s.border_color(theme::link()))
+                .focus_visible(|s| s.border_color(palette.link()))
                 .when(openable, |d| d.cursor_pointer().hover(|s| s.bg(hover)))
         };
         let menu_open = openable && self.menu == Some(role);
@@ -1046,9 +1052,9 @@ impl DetailsView {
             .rounded_r(px(8.))
             .border_l_1()
             .border_color(if primary && openable {
-                theme::on_accent_divider()
+                palette.on_accent_divider()
             } else {
-                theme::border_strong()
+                palette.border_strong()
             })
             .child(icon(icons::CHEVRON_DOWN, 13.).text_color(fg))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -1068,6 +1074,7 @@ impl DetailsView {
     }
 
     fn menu_list(&self, role: Role, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let key = role_key(role);
         let choices = launcher::choices(role, cx);
         let empty = choices.is_empty();
@@ -1091,15 +1098,15 @@ impl DetailsView {
                     .gap(px(8.))
                     .rounded(px(5.))
                     .cursor_pointer()
-                    .text_color(theme::text())
-                    .hover(|s| s.bg(theme::selected()))
-                    .focus(|s| s.bg(theme::selected()))
+                    .text_color(palette.text())
+                    .hover(|s| s.bg(palette.selected()))
+                    .focus(|s| s.bg(palette.selected()))
                     .child(choice.name.clone())
                     .when(is_default, |d| {
                         d.child(
                             div()
                                 .text_size(px(11.))
-                                .text_color(theme::faint())
+                                .text_color(palette.faint())
                                 .child("default"),
                         )
                     })
@@ -1130,8 +1137,8 @@ impl DetailsView {
                     .flex_col()
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(theme::border_strong())
-                    .bg(theme::raised())
+                    .border_color(palette.border_strong())
+                    .bg(palette.raised())
                     .shadow_lg()
                     .occlude()
                     .text_size(px(13.))
@@ -1140,7 +1147,7 @@ impl DetailsView {
                             .px(px(10.))
                             .py(px(4.))
                             .text_size(px(11.))
-                            .text_color(theme::faint())
+                            .text_color(palette.faint())
                             .child("OPEN THIS TIME WITH"),
                     )
                     .when(empty, |d| {
@@ -1148,7 +1155,7 @@ impl DetailsView {
                             div()
                                 .px(px(10.))
                                 .py(px(4.))
-                                .text_color(theme::muted())
+                                .text_color(palette.muted())
                                 .child(format!("No {key}s found")),
                         )
                     })
@@ -1166,16 +1173,18 @@ impl DetailsView {
     }
 }
 
-fn section(title: &'static str) -> gpui_kit::Div {
+fn section(title: &'static str, cx: &App) -> gpui_kit::Div {
+    let palette = theme::palette(cx);
     div().flex().flex_col().gap(px(6.)).child(
         div()
             .text_size(px(11.))
-            .text_color(theme::faint())
+            .text_color(palette.faint())
             .child(title),
     )
 }
 
-fn field(label: &'static str, value: impl Into<SharedString>) -> impl IntoElement {
+fn field(label: &'static str, value: impl Into<SharedString>, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     div()
         .flex()
         .gap(px(10.))
@@ -1184,13 +1193,13 @@ fn field(label: &'static str, value: impl Into<SharedString>) -> impl IntoElemen
             div()
                 .w(px(92.))
                 .flex_none()
-                .text_color(theme::muted())
+                .text_color(palette.muted())
                 .child(label),
         )
         .child(
             div()
                 .min_w_0()
-                .text_color(theme::text_soft())
+                .text_color(palette.text_soft())
                 .child(value.into()),
         )
 }
@@ -1199,25 +1208,28 @@ fn link_button(
     id: &'static str,
     label: &'static str,
     on_click: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+    cx: &App,
 ) -> impl IntoElement {
+    let palette = theme::palette(cx);
     Button::new(id)
         .flex_none()
         .h(px(26.))
         .px(px(10.))
         .rounded(px(6.))
         .border_1()
-        .border_color(theme::border_strong())
-        .focus_visible(|s| s.border_color(theme::link()))
-        .bg(theme::raised())
+        .border_color(palette.border_strong())
+        .focus_visible(|s| s.border_color(palette.link()))
+        .bg(palette.raised())
         .text_size(px(12.))
-        .text_color(theme::text())
+        .text_color(palette.text())
         .cursor_pointer()
-        .hover(|s| s.bg(theme::border()))
+        .hover(|s| s.bg(palette.border()))
         .child(label)
         .on_click(on_click)
 }
 
-fn file_row(i: usize, f: &ChangedFile) -> impl IntoElement {
+fn file_row(i: usize, f: &ChangedFile, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     let path = match &f.from {
         Some(from) => format!("{from} → {}", f.path),
         None => f.path.clone(),
@@ -1232,14 +1244,14 @@ fn file_row(i: usize, f: &ChangedFile) -> impl IntoElement {
             div()
                 .w(px(18.))
                 .flex_none()
-                .text_color(theme::accent())
+                .text_color(palette.accent())
                 .child(f.change.code()),
         )
         .child(
             div()
                 .min_w_0()
                 .truncate()
-                .text_color(theme::text_soft())
+                .text_color(palette.text_soft())
                 .child(path),
         )
         .test_support()
@@ -1273,7 +1285,8 @@ fn status_fields(wt: &Worktree) -> Vec<(&'static str, String)> {
     out
 }
 
-fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
+fn commit_row(i: usize, c: &Commit, now: i64, last: bool, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     let time = relative_time(c.time, now);
     // Headline, then metadata: the row reads as one unit for VoiceOver too.
     div()
@@ -1282,14 +1295,14 @@ fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
         .flex_col()
         .py(px(4.))
         .when(!last, |d| {
-            d.border_b_1().border_color(theme::commit_divider())
+            d.border_b_1().border_color(palette.commit_divider())
         })
         .text_size(px(12.))
         .child(
             div()
                 .min_w_0()
                 .truncate()
-                .text_color(theme::text_soft())
+                .text_color(palette.text_soft())
                 .child(c.subject.clone()),
         )
         .child(
@@ -1301,7 +1314,7 @@ fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
                 .child(
                     theme::mono(c.short_sha.clone())
                         .flex_none()
-                        .text_color(theme::link()),
+                        .text_color(palette.link()),
                 )
                 // The author is the flexible piece: at the pane's narrowest it
                 // ellipsizes while the fixed-width identifiers survive. An empty author
@@ -1311,7 +1324,7 @@ fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
                         .id(("commit-author", i))
                         .flex_1()
                         .min_w_0()
-                        .text_color(theme::muted())
+                        .text_color(palette.muted())
                         .when(!c.author.is_empty(), |d| {
                             d.truncate()
                                 .child(c.author.clone())
@@ -1323,7 +1336,7 @@ fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
                     div()
                         .id(("commit-time", i))
                         .flex_none()
-                        .text_color(theme::faint())
+                        .text_color(palette.faint())
                         .child(time.clone())
                         .aria_label(time.clone())
                         .test_support(),
@@ -1346,15 +1359,16 @@ fn commit_row(i: usize, c: &Commit, now: i64, last: bool) -> impl IntoElement {
 
 impl DetailsView {
     fn worktree_sections(&self, wt: &Worktree, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let palette = theme::palette(cx);
         let openable = wt.presence.is_openable();
         let mut out = Vec::new();
 
         out.push(
-            section("PATH")
+            section("PATH", cx)
                 .child(
                     theme::path_text(tilde(&wt.path))
                         .text_size(px(13.))
-                        .text_color(theme::worktree_text()),
+                        .text_color(palette.worktree_text()),
                 )
                 .child(
                     div()
@@ -1365,16 +1379,19 @@ impl DetailsView {
                             "details-copy-path",
                             "Copy path",
                             cx.listener(|this, _, _, cx| this.copy_path(cx)),
+                            cx,
                         ))
                         .child(link_button(
                             "details-copy-cd",
                             "Copy cd command",
                             cx.listener(|this, _, _, cx| this.copy_cd(cx)),
+                            cx,
                         ))
                         .child(link_button(
                             "details-reveal",
                             "Reveal in Finder",
                             cx.listener(|this, _, _, cx| this.reveal(cx)),
+                            cx,
                         )),
                 )
                 .into_any_element(),
@@ -1391,8 +1408,8 @@ impl DetailsView {
                     div()
                         .p(px(8.))
                         .rounded(px(6.))
-                        .bg(theme::warn_bg())
-                        .text_color(theme::warn_text())
+                        .bg(palette.warn_bg())
+                        .text_color(palette.warn_text())
                         .text_size(px(12.))
                         .child(format!("Can't open: {reason}"))
                 }))
@@ -1401,12 +1418,12 @@ impl DetailsView {
 
         let pull_offered = pull::offer(wt).is_some();
         out.push(
-            section("STATUS")
+            section("STATUS", cx)
                 .children(self.status_rows().into_iter().map(|(l, v)| {
                     if pull_offered && l == SYNC {
                         self.sync_field(v, cx).into_any_element()
                     } else {
-                        field(l, v).into_any_element()
+                        field(l, v, cx).into_any_element()
                     }
                 }))
                 .into_any_element(),
@@ -1418,8 +1435,8 @@ impl DetailsView {
         };
         if let Some(files) = files {
             out.push(
-                section("CHANGED FILES")
-                    .children(files.iter().enumerate().map(|(i, f)| file_row(i, f)))
+                section("CHANGED FILES", cx)
+                    .children(files.iter().enumerate().map(|(i, f)| file_row(i, f, cx)))
                     .into_any_element(),
             );
         }
@@ -1429,17 +1446,17 @@ impl DetailsView {
             let body = match &self.commits.result {
                 None => div()
                     .text_size(px(12.))
-                    .text_color(theme::faint())
+                    .text_color(palette.faint())
                     .child("Reading…")
                     .into_any_element(),
                 Some(Err(e)) => div()
                     .text_size(px(12.))
-                    .text_color(theme::warn_text())
+                    .text_color(palette.warn_text())
                     .child(e.to_string())
                     .into_any_element(),
                 Some(Ok(c)) if c.is_empty() => div()
                     .text_size(px(12.))
-                    .text_color(theme::faint())
+                    .text_color(palette.faint())
                     .child("No commits yet")
                     .into_any_element(),
                 Some(Ok(c)) => {
@@ -1452,12 +1469,12 @@ impl DetailsView {
                         .children(
                             c.iter()
                                 .enumerate()
-                                .map(|(i, c)| commit_row(i, c, now, i == count - 1)),
+                                .map(|(i, c)| commit_row(i, c, now, i == count - 1, cx)),
                         )
                         .into_any_element()
                 }
             };
-            out.push(section("RECENT COMMITS").child(body).into_any_element());
+            out.push(section("RECENT COMMITS", cx).child(body).into_any_element());
         }
 
         if let Some(offer) = removal::offer(wt) {
@@ -1478,18 +1495,18 @@ impl DetailsView {
                             .px(px(10.))
                             .rounded(px(6.))
                             .border_1()
-                            .border_color(theme::border_strong())
-                            .focus_visible(|s| s.border_color(theme::link()))
-                            .bg(theme::raised())
+                            .border_color(palette.border_strong())
+                            .focus_visible(|s| s.border_color(palette.link()))
+                            .bg(palette.raised())
                             .text_size(px(12.))
                             .when_else(
                                 enabled,
                                 |b| {
-                                    b.text_color(theme::warn_text())
+                                    b.text_color(palette.warn_text())
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(theme::border()))
+                                        .hover(|s| s.bg(palette.border()))
                                 },
-                                |b| b.text_color(theme::faint()),
+                                |b| b.text_color(palette.faint()),
                             )
                             .child(offer.label)
                             .on_click(cx.listener(move |_, _, _, cx| {
@@ -1501,7 +1518,7 @@ impl DetailsView {
                             .id("details-remove-reason")
                             .aria_label(reason.clone())
                             .text_size(px(12.))
-                            .text_color(theme::muted())
+                            .text_color(palette.muted())
                             .child(reason)
                             .test_support()
                     }))
@@ -1514,6 +1531,7 @@ impl DetailsView {
 
 impl Render for DetailsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         // The resizable panel owns the width; this view fills it.
         let base = div()
             .id("details")
@@ -1521,7 +1539,7 @@ impl Render for DetailsView {
             .min_w_0()
             .h_full()
             .overflow_y_scroll()
-            .bg(theme::panel())
+            .bg(palette.panel())
             .p(px(16.))
             .flex()
             .flex_col()
@@ -1531,7 +1549,7 @@ impl Render for DetailsView {
                 .child(
                     div()
                         .text_size(px(13.))
-                        .text_color(theme::muted())
+                        .text_color(palette.muted())
                         .child("Select a branch or worktree"),
                 )
                 .test_support();
@@ -1545,14 +1563,14 @@ impl Render for DetailsView {
                     .id("details-title")
                     .text_size(px(16.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(theme::text())
+                    .text_color(palette.text())
                     .test_support(),
             )
             .child(
                 div()
                     .id("details-kind")
                     .text_size(px(12.))
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child(details.kind.clone())
                     .test_support(),
             )
@@ -1564,7 +1582,7 @@ impl Render for DetailsView {
             None => vec![
                 div()
                     .text_size(px(13.))
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child("Select a branch or worktree to see its details.")
                     .into_any_element(),
             ],

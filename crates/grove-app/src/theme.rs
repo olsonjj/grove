@@ -3,8 +3,8 @@
 //!
 //! [`Palette`] (built by [`palette`]) is the cx-aware API: it reads Grove's tokens
 //! from the active gpui-kit theme and derives Grove's bespoke tints from that theme's
-//! tokens. The fixed-color helpers below are the legacy form; they still back every
-//! call site today until ticket 32 deletes them after the call sites move over.
+//! tokens. The fixed-color helpers below are the legacy form; the call sites migrate
+//! to the palette over tickets 29-31, and ticket 32 deletes them once they're gone.
 
 use gpui_kit::base::Button;
 use gpui_kit::component::theme::{Theme, ThemeMode};
@@ -21,6 +21,10 @@ pub fn init(cx: &mut App) {
 pub fn bg() -> Rgba {
     rgb(0x121418)
 }
+
+/// The [`palette::palette`] entry point, re-exported at this path so call sites read
+/// `theme::palette(cx)` while the `palette` module keeps its internals private.
+pub(crate) use palette::palette;
 pub fn panel() -> Rgba {
     rgb(0x16191e)
 }
@@ -71,9 +75,23 @@ pub fn accent_hover() -> Rgba {
     rgb(0xe2993a)
 }
 /// Divider between the halves of an accent split button.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn on_accent_divider() -> Rgba {
     rgb(0xb87a2c)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn accent_bg() -> Rgba {
     rgb(0x2e2414)
 }
@@ -88,28 +106,61 @@ pub fn warn_text() -> Rgba {
 }
 
 /// Worktree rows are tinted so a folder never reads as a branch name.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn worktree_row() -> Rgba {
     rgb(0x151d27)
 }
 /// Hairline between recent-commit rows in the details pane: half a step above the panel
 /// background, well below the card color, so it separates without reading as card chrome.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn commit_divider() -> Rgba {
     rgb(0x191d23)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn worktree_text() -> Rgba {
     rgb(0xbfdbff)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn connector() -> Rgba {
     rgb(0x4a5462)
 }
 
-/// Grove's cx-aware palette beside the fixed-color helpers above it, waiting for
-/// the call-site migration in tickets 29-31.
+/// Grove's cx-aware palette beside the fixed-color helpers above it; tickets 29-31
+/// migrate the call sites over.
 ///
-/// The module carries one lint expectation while no call site uses it yet.
+/// One lint expectation while that migration runs: trees and details already read the
+/// palette, so some fixed helpers and some palette tokens are unused until tickets 30-31
+/// move the remaining views over and ticket 32 deletes the fixed helpers.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "prefactor: call sites migrate in tickets 29-31")
+    expect(
+        dead_code,
+        reason = "mid-migration: tickets 30-31 move the last call sites over"
+    )
 )]
 pub(crate) mod palette {
     use gpui_kit::component::theme::{ActiveTheme, Colorize, ThemeColor};
