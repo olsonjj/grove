@@ -60,6 +60,11 @@ pub struct Settings {
     /// happens, so the pane starts at Grove's default; older settings files load as-is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details_pane_width: Option<i32>,
+    /// Theme to open with, as its registry name. `None` (absent in old files) = Grove
+    /// Dark. The spec's `ThemeChoice` (`FollowSystem`/`Name(String)`) lands with Follow
+    /// System (ticket 35); until then the file carries the bare name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
 }
 
 impl Default for Settings {
@@ -83,6 +88,7 @@ impl Default for Settings {
             tree_sort: SortMode::Recent,
             last_selected_repo: None,
             details_pane_width: None,
+            theme: None,
         }
     }
 }
@@ -108,6 +114,8 @@ pub struct Preferences {
     pub background_fetch: bool,
     /// Whether to launch at login.
     pub launch_at_login: bool,
+    /// Theme choice as its registry name; `None` = Grove Dark (see [`Settings::theme`]).
+    pub theme: Option<String>,
 }
 
 /// macOS's record of Grove's login item (`SMAppService`).
@@ -216,6 +224,7 @@ impl Settings {
             show_menu_bar_icon: self.show_menu_bar_icon,
             background_fetch: self.background_fetch,
             launch_at_login: self.launch_at_login,
+            theme: self.theme.clone(),
         }
     }
 
@@ -230,6 +239,7 @@ impl Settings {
             show_menu_bar_icon,
             background_fetch,
             launch_at_login,
+            theme,
         } = p;
         self.code_dir = code_dir;
         self.default_editor = default_editor;
@@ -239,6 +249,7 @@ impl Settings {
         self.show_menu_bar_icon = show_menu_bar_icon;
         self.background_fetch = background_fetch;
         self.launch_at_login = launch_at_login;
+        self.theme = theme;
     }
 
     /// Returns collapsed branch prefixes for `repo`.
@@ -495,6 +506,39 @@ mod tests {
         let file = SettingsFile::new(tmp.path().join("settings.json"));
         file.save(settings).unwrap();
         file.load().unwrap()
+    }
+
+    #[test]
+    fn theme_choice_round_trips() {
+        let settings = Settings {
+            theme: Some("Ayu Light".into()),
+            ..Default::default()
+        };
+        assert_eq!(round_trip(&settings), settings);
+        // And it persists through the Preferences copy the settings window saves with.
+        let mut saved = Settings {
+            theme: Some("Ayu Light".into()),
+            ..Default::default()
+        };
+        saved.set_preferences(saved.preferences());
+        assert_eq!(saved.theme, Some("Ayu Light".into()));
+    }
+
+    #[test]
+    fn settings_without_a_theme_choice_load_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        // A pre-existing settings.json predating the theme choice; it must load unchanged
+        // and keep round-tripping without the field appearing in its JSON.
+        std::fs::write(file.path(), br#"{"code_dir": "/c"}"#).unwrap();
+        let loaded = file.load().unwrap();
+        assert_eq!(loaded.theme, None);
+        file.save(&loaded).unwrap();
+        assert!(
+            !std::fs::read_to_string(file.path())
+                .unwrap()
+                .contains("theme")
+        );
     }
 
     #[test]

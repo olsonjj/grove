@@ -65,6 +65,24 @@ fn boot() -> Boot {
         });
     }
 
+    // Debug-only QA hook (theme screenshots): `GROVE_QA_REPO=<path>` opens Grove on the
+    // repo at `path`, skipping setup and ignoring the settings' code folder, so visual
+    // passes capture deterministic screenshots into `qa-shots/` per theme. A bad path
+    // still starts Grove (an empty main window makes that visible).
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("GROVE_QA_REPO") {
+        let snapshot = scan(&PathBuf::from(dir));
+        return Boot::Ready(
+            Library {
+                settings_file,
+                settings,
+                store: SnapshotStore::from_snapshot(snapshot),
+                saves: Default::default(),
+            },
+            false,
+        );
+    }
+
     // Dev/testing: behave as if this folder was just picked in setup.
     if let Some(dir) = std::env::var_os("GROVE_CODE_DIR") {
         let dir = PathBuf::from(dir);

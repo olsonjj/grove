@@ -12,17 +12,82 @@ use std::rc::Rc;
 
 use gpui_kit::base::Button;
 use gpui_kit::component::highlighter::HighlightTheme;
-use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
+use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeRegistry, try_parse_color};
 use gpui_kit::{
-    App, ClickEvent, Div, ElementId, FontWeight, InteractiveElement, ParentElement, Rgba,
+    App, ClickEvent, Div, ElementId, FontWeight, Hsla, InteractiveElement, ParentElement, Rgba,
     SharedString, Styled, Window, div, px, rgb,
 };
+use grove_core::{Settings, SettingsFile};
 
-/// Grove Dark, translated from the prototype's fixed palette into a gpui-kit
-/// theme file. Tokens Grove doesn't map stay on gpui-kit's dark defaults via
-/// the theme-color fallbacks, and the registry keeps the built-in "Default
-/// Dark" for every token this file does not set.
-const GROVE_DARK: &str = include_str!("grove-dark.json");
+/// The themes registered at startup (see [`init`]): Grove's own translation first,
+/// then every gpui-kit built-in, embedded so there is no file watcher and no
+/// on-disk resources. Pairs are (file name, embedded JSON) — the registry names
+/// live inside the JSON, and several files carry variant sets, so the bundle ends
+/// up with more names than files. The vendored files are unchanged copies from
+/// gpui-kit (Apache-2.0): see `resources/themes/PROVENANCE.md`.
+const BUNDLED: &[(&str, &str)] = &[
+    (
+        "grove-dark",
+        include_str!("../resources/themes/grove-dark.json"),
+    ),
+    (
+        "adventure",
+        include_str!("../resources/themes/adventure.json"),
+    ),
+    ("alduin", include_str!("../resources/themes/alduin.json")),
+    (
+        "asciinema",
+        include_str!("../resources/themes/asciinema.json"),
+    ),
+    ("aurora", include_str!("../resources/themes/aurora.json")),
+    ("ayu", include_str!("../resources/themes/ayu.json")),
+    (
+        "catppuccin",
+        include_str!("../resources/themes/catppuccin.json"),
+    ),
+    (
+        "everforest",
+        include_str!("../resources/themes/everforest.json"),
+    ),
+    (
+        "fahrenheit",
+        include_str!("../resources/themes/fahrenheit.json"),
+    ),
+    ("flexoki", include_str!("../resources/themes/flexoki.json")),
+    ("gruvbox", include_str!("../resources/themes/gruvbox.json")),
+    ("harper", include_str!("../resources/themes/harper.json")),
+    ("hybrid", include_str!("../resources/themes/hybrid.json")),
+    (
+        "jellybeans",
+        include_str!("../resources/themes/jellybeans.json"),
+    ),
+    ("kibble", include_str!("../resources/themes/kibble.json")),
+    (
+        "macos-classic",
+        include_str!("../resources/themes/macos-classic.json"),
+    ),
+    (
+        "mellifluous",
+        include_str!("../resources/themes/mellifluous.json"),
+    ),
+    ("molokai", include_str!("../resources/themes/molokai.json")),
+    (
+        "solarized",
+        include_str!("../resources/themes/solarized.json"),
+    ),
+    (
+        "spaceduck",
+        include_str!("../resources/themes/spaceduck.json"),
+    ),
+    (
+        "tokyonight",
+        include_str!("../resources/themes/tokyonight.json"),
+    ),
+    (
+        "twilight",
+        include_str!("../resources/themes/twilight.json"),
+    ),
+];
 
 /// The registry name of Grove's own theme (see [`init`]).
 const GROVE_DARK_NAME: &str = "Grove Dark";
@@ -34,22 +99,18 @@ const GROVE_DARK_NAME: &str = "Grove Dark";
 /// registry must also not yet hold a theme named "Grove Dark" — gpui-kit
 /// ships none, and a pre-registered theme of that name would be silently
 /// skipped by [`ThemeRegistry::load_themes_from_str`], installing foreign
-/// colors under Grove's name. Ticket 33's bundled-theme registration must
-/// keep that guarantee.
+/// colors under Grove's name. The bundled-theme registration keeps that guarantee:
+/// none of [`BUNDLED`]'s files carries a name the registry already holds.
 ///
-/// Runs in three steps: the registry learns "Grove Dark" by name, so name-based
-/// theme lookups resolve to Grove from here on; [`Theme::apply_config`] installs
+/// Runs in three steps: the registry learns every bundled theme by name (see
+/// [`register_bundled_themes`]), so name-based theme lookups resolve to Grove from here on; [`Theme::apply_config`] installs
 /// it as the active dark theme, because the registry exposes no way to override
 /// its built-in dark default and [`Theme::dark_theme`] is what
 /// [`Theme::change`] re-applies; then the kept `Theme::change` startup call
 /// loads that dark theme through its normal path, so `cx.theme()` — and every
 /// `palette(cx)` call site with it — resolves to Grove's values again.
 pub fn init(cx: &mut App) {
-    ThemeRegistry::global_mut(cx)
-        .load_themes_from_str(GROVE_DARK)
-        // The file is embedded, so this is a build-time bug (caught by the
-        // runtime parity test), not a runtime failure to recover from.
-        .expect("the embedded grove-dark.json parses as a gpui-kit theme set");
+    register_bundled_themes(cx);
     let grove_dark = ThemeRegistry::global(cx)
         .themes()
         .get(GROVE_DARK_NAME)
@@ -74,6 +135,90 @@ pub fn init(cx: &mut App) {
     // change (ticket 33's launch apply) takes that path, the restatement
     // must happen after it too.
     Theme::update(cx, |theme| theme.selection = selected().into());
+}
+
+/// Registers every theme in [`BUNDLED`] into the [`ThemeRegistry`]. Must run after
+/// [`gpui_kit::init`]: that call seeds the registry this fills, and none of the files
+/// may collide with a name it already holds — [`ThemeRegistry::load_themes_from_str`]
+/// silently skips those. The files are embedded, so a parse failure is a build-time
+/// bug (caught by the bundled-themes tests), not a runtime failure to recover from.
+fn register_bundled_themes(cx: &mut App) {
+    let registry = ThemeRegistry::global_mut(cx);
+    for (file, json) in BUNDLED {
+        registry.load_themes_from_str(json).unwrap_or_else(|e| {
+            panic!("the embedded {file}.json parses as a gpui-kit theme set: {e}")
+        });
+    }
+}
+
+/// At launch, applies what the settings file persisted. Absent `theme`, unreadable
+/// settings, and unknown names all keep Grove Dark, which [`init`] already applied.
+/// Reads only: an unknown name logs and keeps the stale choice in the file until the
+/// user saves a different one.
+///
+/// Runs right after [`init`], which installs Grove Dark as the default; loading the
+/// settings file here (instead of `setup::boot`'s off-main-thread load) keeps the
+/// theme decision on the single launch path GPUI opens windows under.
+pub(crate) fn apply_saved_choice(cx: &mut App) {
+    let settings_file = SettingsFile::default_location();
+    let settings = settings_file.load().unwrap_or_else(|e| {
+        eprintln!(
+            "[grove] theme choice: settings {}: {e}",
+            settings_file.path().display()
+        );
+        Settings::default()
+    });
+    apply_choice(cx, settings.theme.as_deref());
+}
+
+/// Applies a stored choice: `None` keeps Grove Dark; a registered name is applied
+/// app-wide; an unknown stored name logs and keeps Grove Dark (spec story 15),
+/// touching nothing on disk.
+pub(crate) fn apply_choice(cx: &mut App, choice: Option<&str>) {
+    let Some(name) = choice else { return };
+    let Some(config) = ThemeRegistry::global(cx).themes().get(name).cloned() else {
+        eprintln!("[grove] stored theme {name:?} is not registered; keeping Grove Dark");
+        return;
+    };
+    apply_theme(&config, cx);
+}
+
+/// Applies a registered theme as the active one — the same route Grove Dark takes in
+/// [`init`]: [`Theme::apply_config`] installs the file and switches to its mode in one
+/// [`Theme::update`], with the mode-matched default highlight when the file ships none
+/// (mirroring `init`'s Grove Dark injection); then, when the file carries its own
+/// selection fill, a second update restates it opaque, because `apply_config` clamps
+/// the selection token to 30% alpha (its overlay semantics) and the clamp re-runs
+/// whenever the semantic snapshot recomputes from `colors.selection` — see the comment
+/// in [`init`]. A theme without a selection color keeps gpui-kit's translucent
+/// overlay: the clamp is the intended look, and there is no designed fill to restate.
+pub(crate) fn apply_theme(config: &Rc<ThemeConfig>, cx: &mut App) {
+    let mut config = ThemeConfig::clone(config);
+    if config.highlight.is_none() {
+        let default = if config.mode.is_dark() {
+            HighlightTheme::default_dark()
+        } else {
+            HighlightTheme::default_light()
+        };
+        config.highlight = Some(default.style.clone());
+    }
+    let config = Rc::new(config);
+    Theme::update(cx, |theme| theme.apply_config(&config));
+    if let Some(selection) = selection_restatement(&config) {
+        Theme::update(cx, |theme| theme.selection = selection);
+    }
+}
+
+/// The opaque selection fill the applied theme's own file carries, unstated by name
+/// because the 30%-alpha clamp hides it. Grove Dark's file carries the fill as
+/// [`selected`]'s value; foreign themes' files carry theirs. `None` when the file has
+/// no selection color — nothing opaque to restate, and the clamp stands.
+fn selection_restatement(config: &ThemeConfig) -> Option<Hsla> {
+    config
+        .colors
+        .selection
+        .as_deref()
+        .and_then(|value| try_parse_color(value).ok())
 }
 
 /// The [`palette::palette`] entry point, re-exported at this path so call sites read
@@ -514,9 +659,11 @@ pub fn button(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use gpui_kit::Hsla;
     use gpui_kit::TestAppContext;
-    use gpui_kit::component::theme::{ActiveTheme, ThemeColor};
+    use gpui_kit::component::theme::{ActiveTheme, ThemeColor, ThemeSet};
 
     use super::palette::{
         ACCENT_HOVER_DARKEN, MIN_CONTRAST, WARN_TINT, blended, contrast_ratio, on_accent_text,
@@ -1026,6 +1173,425 @@ mod tests {
                 color_bytes(today("warn_text")),
                 "theme warning_foreground token is not Grove Dark"
             );
+        });
+    }
+
+    /// Every bundled theme parses and registers under exactly its JSON name — the
+    /// picker lists registry names, so a name here must be reachable. The registry
+    /// may hold nothing beyond the bundle plus gpui-kit's two defaults, so a name
+    /// collision (which `load_themes_from_str` would silently skip) cannot hide.
+    #[gpui_kit::test]
+    fn every_bundled_theme_registers_under_its_own_name(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            let mut names = HashSet::new();
+            for (file, json) in BUNDLED {
+                let set: ThemeSet = serde_json::from_str(json)
+                    .unwrap_or_else(|e| panic!("{file} parses as a gpui-kit theme set: {e}"));
+                for theme in set.themes {
+                    names.insert(theme.name);
+                }
+            }
+            let registry = ThemeRegistry::global(cx);
+            for name in &names {
+                assert!(registry.themes().contains_key(name), "{name} is not registered");
+            }
+            assert!(names.contains(GROVE_DARK_NAME));
+            assert_eq!(
+                registry.themes().len(),
+                names.len() + 2,
+                "the registry holds exactly the bundle plus gpui-kit's Default Light and Default Dark"
+            );
+        });
+    }
+
+    /// Launch applies the persisted choice over Grove Dark and restates the opaque
+    /// selection the applied theme's fill was clamped to.
+    #[gpui_kit::test]
+    fn launch_applies_the_persisted_named_theme(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_choice(cx, Some("Kibble"));
+            assert_eq!(cx.theme().theme_name(), "Kibble");
+            assert!(cx.theme().is_dark());
+            // Kibble's file carries its selection fill: the apply-time clamp must not
+            // leave it translucent.
+            assert_eq!(cx.theme().selection.a, 1.0);
+            assert_eq!(
+                color_bytes(Rgba::from(cx.theme().selection)),
+                color_bytes(rgb(0x9ba787))
+            );
+        });
+    }
+
+    /// A theme file without a selection fill keeps gpui-kit's translucent overlay:
+    /// the clamp is the intended look, and only a designed fill gets restated.
+    #[gpui_kit::test]
+    fn a_theme_without_a_selection_fill_keeps_the_clamped_overlay(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_choice(cx, Some("Ayu Light"));
+            assert_eq!(cx.theme().theme_name(), "Ayu Light");
+            assert_eq!(cx.theme().selection.a, 0.3);
+        });
+    }
+
+    /// An unknown stored name resolves to Grove Dark at launch (spec story 15).
+    /// `apply_choice` never touches disk, and `apply_saved_choice` only reads the
+    /// settings file, so the stale name stays until the user saves a different one.
+    #[gpui_kit::test]
+    fn an_unknown_stored_theme_name_falls_back_to_grove_dark(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_choice(cx, Some("Removed Long Ago"));
+            assert_eq!(cx.theme().theme_name(), "Grove Dark");
+            assert!(cx.theme().is_dark());
+        });
+    }
+
+    /// The stored choice is optional (absent in old settings files): Grove Dark.
+    #[gpui_kit::test]
+    fn an_absent_stored_choice_keeps_grove_dark(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_choice(cx, None);
+            assert_eq!(cx.theme().theme_name(), "Grove Dark");
+        });
+    }
+
+    /// The derived Grove tokens under the active theme that miss 4.5:1, as the
+    /// contrast sweep's (text, surface, ratio) rows — the same cross product the
+    /// Grove Dark test asserts, showing only its failures.
+    fn sweep_failures(cx: &App) -> Vec<(&'static str, &'static str, f32)> {
+        /// What's actually on screen behind text: gpui-kit and the themes' own files
+        /// may leave tokens translucent (selection overlays, tinted borders), and
+        /// pixel luminance ignores alpha, so a translucent surface has to be
+        /// composited over the background before it is measured. Opaque surfaces
+        /// pass through, keeping Grove Dark's matrix exactly what it was.
+        fn composited(surface: Hsla, bg: Hsla) -> Hsla {
+            if surface.a >= 1.0 {
+                surface
+            } else {
+                bg.blend(surface)
+            }
+        }
+
+        let to_rgba = |h: Hsla| Rgba::from(h);
+        let p = palette(cx);
+        let bg = p.bg();
+        let on_screen = |surface: Hsla| to_rgba(composited(surface, bg));
+        let texts = [
+            ("text", on_screen(p.text())),
+            ("text_soft", on_screen(p.text_soft())),
+            ("muted", on_screen(p.muted())),
+            ("faint", on_screen(p.faint())),
+            ("link", on_screen(p.link())),
+            ("accent", on_screen(p.accent())),
+            ("warn_text", on_screen(p.warn_text())),
+            ("worktree_text", on_screen(p.worktree_text())),
+        ];
+        let surfaces = [
+            ("bg", on_screen(p.bg())),
+            ("panel", on_screen(p.panel())),
+            ("sidebar", on_screen(p.sidebar())),
+            ("field", on_screen(p.field())),
+            ("raised", on_screen(p.raised())),
+            ("card", on_screen(p.card())),
+            ("selected", on_screen(p.selected())),
+            ("border", on_screen(p.border())),
+            ("disabled", on_screen(p.disabled())),
+            ("worktree_row", on_screen(p.worktree_row())),
+            ("legend_chip", on_screen(p.legend_chip())),
+            ("accent_bg", on_screen(p.accent_bg())),
+            ("warn_bg", on_screen(p.warn_bg())),
+        ];
+        let mut rows: Vec<(&'static str, Rgba, &'static str, Rgba)> = texts
+            .iter()
+            .flat_map(|(text, fg)| {
+                surfaces
+                    .iter()
+                    .map(move |(surface, bg)| (*text, *fg, *surface, *bg))
+            })
+            .collect();
+        rows.push((
+            "on_accent",
+            to_rgba(p.on_accent()),
+            "accent",
+            to_rgba(p.accent()),
+        ));
+        rows.push((
+            "on_accent",
+            to_rgba(p.on_accent()),
+            "accent_hover",
+            to_rgba(p.accent_hover()),
+        ));
+        rows.into_iter()
+            .filter(|(_, fg, _, bg)| contrast(*fg, *bg) < 4.5)
+            .map(|(text, fg, surface, bg)| (text, surface, contrast(fg, bg)))
+            .collect()
+    }
+
+    /// Bundled themes whose derived Grove text tokens miss the 4.5:1 bar on derived
+    /// surfaces: per theme, the sorted text tokens that fail on at least one surface.
+    /// The sweep asserts the actual failures equal exactly this list, so both a new
+    /// failing (theme, token) pair and a stale pin are regressions.
+    ///
+    /// FIXME(contrast): gpui-kit's built-ins are widget-chrome palettes — their muted
+    /// and accent tokens are deliberately subtle or are surface tints, not text colors
+    /// — so Grove's derivations read several tokens below the bar under them. Tune
+    /// the `palette` derivations per theme family (or ship designed overrides), then
+    /// shrink this list; Grove Dark itself stays clean by construction.
+    const KNOWN_CONTRAST_EXCEPTIONS: &[(&str, &[&str])] = &[
+        ("Adventure", &["accent", "faint", "link", "muted"]),
+        (
+            "Adventure Time",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "worktree_text",
+            ],
+        ),
+        (
+            "Alduin",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "worktree_text",
+            ],
+        ),
+        (
+            "Asciinema",
+            &["accent", "faint", "link", "muted", "text_soft"],
+        ),
+        ("Aurora Light", &["accent", "faint", "muted", "text_soft"]),
+        (
+            "Ayu Dark",
+            &["accent", "faint", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Ayu Light",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "warn_text",
+                "worktree_text",
+            ],
+        ),
+        (
+            "Catppuccin Frappe",
+            &["accent", "faint", "link", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Catppuccin Latte",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "warn_text",
+                "worktree_text",
+            ],
+        ),
+        (
+            "Catppuccin Macchiato",
+            &["accent", "faint", "link", "warn_text"],
+        ),
+        (
+            "Catppuccin Mocha",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "warn_text",
+                "worktree_text",
+            ],
+        ),
+        (
+            "Everforest Dark",
+            &["accent", "faint", "link", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Everforest Light",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "warn_text",
+                "worktree_text",
+            ],
+        ),
+        ("Fahrenheit", &["accent", "faint", "link", "muted"]),
+        (
+            "Flexoki Dark",
+            &["accent", "faint", "link", "muted", "text_soft"],
+        ),
+        (
+            "Flexoki Light",
+            &["accent", "faint", "link", "muted", "warn_text"],
+        ),
+        (
+            "Gruvbox Dark",
+            &["accent", "faint", "link", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Gruvbox Light",
+            &["accent", "faint", "link", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Harper",
+            &["accent", "faint", "muted", "text_soft", "warn_text"],
+        ),
+        ("Hybrid Dark", &["accent", "faint", "link", "muted"]),
+        (
+            "Hybrid Light",
+            &["accent", "faint", "link", "muted", "warn_text"],
+        ),
+        (
+            "Jellybeans",
+            &["accent", "faint", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Kibble",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "warn_text",
+                "worktree_text",
+            ],
+        ),
+        (
+            "Mellifluous Dark",
+            &["accent", "faint", "link", "muted", "text_soft"],
+        ),
+        (
+            "Mellifluous Light",
+            &["accent", "faint", "link", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Molokai Dark",
+            &["accent", "faint", "link", "muted", "text_soft"],
+        ),
+        (
+            "Molokai Light",
+            &["accent", "faint", "link", "muted", "warn_text"],
+        ),
+        ("Solarized Dark", &["accent", "faint", "link", "muted"]),
+        (
+            "Solarized Light",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "text",
+                "text_soft",
+                "warn_text",
+                "worktree_text",
+            ],
+        ),
+        (
+            "Spaceduck",
+            &["accent", "faint", "link", "muted", "text_soft"],
+        ),
+        (
+            "Tokyo Moon",
+            &["accent", "faint", "link", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Tokyo Night",
+            &["accent", "faint", "link", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "Tokyo Storm",
+            &[
+                "accent",
+                "faint",
+                "link",
+                "muted",
+                "on_accent",
+                "text_soft",
+                "warn_text",
+            ],
+        ),
+        (
+            "Twilight",
+            &["accent", "faint", "muted", "text_soft", "warn_text"],
+        ),
+        (
+            "macOS Classic Dark",
+            &["accent", "faint", "link", "muted", "text_soft"],
+        ),
+        (
+            "macOS Classic Light",
+            &["accent", "faint", "link", "muted", "warn_text"],
+        ),
+    ];
+
+    /// Applies every bundled theme (as the launch apply does) and asserts the derived
+    /// Grove tokens keep text ≥ 4.5:1 on the derived surfaces, except the pinned known
+    /// exceptions (`KNOWN_CONTRAST_EXCEPTIONS`), which don't fail the sweep.
+    #[gpui_kit::test]
+    fn bundled_theme_contrast_sweep(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            for (file, json) in BUNDLED {
+                let set: ThemeSet = serde_json::from_str(json)
+                    .unwrap_or_else(|e| panic!("{file} parses as a gpui-kit theme set: {e}"));
+                for theme in set.themes {
+                    let config = ThemeRegistry::global(cx)
+                        .themes()
+                        .get(&theme.name)
+                        .cloned()
+                        .expect("every bundled theme registers (see the registration test)");
+                    apply_theme(&config, cx);
+                    let mut failed: Vec<&str> = sweep_failures(cx)
+                        .into_iter()
+                        .map(|(text, _, _)| text)
+                        .collect();
+                    failed.sort_unstable();
+                    failed.dedup();
+                    let pinned = KNOWN_CONTRAST_EXCEPTIONS
+                        .iter()
+                        .find(|(name, _)| *name == theme.name.as_ref())
+                        .map(|(_, tokens)| *tokens)
+                        .unwrap_or(&[]);
+                    assert_eq!(
+                        failed, pinned,
+                        "{}: derived-token contrast drifted from the pinned exceptions",
+                        theme.name
+                    );
+                }
+            }
         });
     }
 }
