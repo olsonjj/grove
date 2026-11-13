@@ -1092,6 +1092,7 @@ mod tests {
     use std::process::Command;
     use std::sync::{Arc, Mutex};
 
+    use gpui_kit::component::IndexPath;
     use gpui_kit::component::theme::ActiveTheme;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{ElementId, Point, TestAppContext};
@@ -1761,15 +1762,41 @@ mod tests {
         press(cx, w, "enter");
     }
 
+    /// The theme right after Grove Dark in the picker's display order — where one
+    /// arrow-down steps from the committed choice.
+    fn next_theme_after_grove_dark(cx: &mut TestAppContext) -> String {
+        cx.update(|cx| {
+            use gpui_kit::component::searchable_list::SearchableListItem as _;
+            let menu = ThemeMenu::new(theme_picker::sections(cx));
+            let mut names: Vec<SharedString> = Vec::new();
+            for section in 0..menu.sections_count(cx) {
+                for row in 0..menu.items_count(section) {
+                    names.push(
+                        menu.item(IndexPath::default().section(section).row(row))
+                            .unwrap()
+                            .title(),
+                    );
+                }
+            }
+            let grove = names.iter().position(|name| name == "Grove Dark").unwrap();
+            names[grove + 1].to_string()
+        })
+    }
+
     #[gpui_kit::test]
     fn picking_a_theme_applies_it_live_and_stays_a_draft(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         running(cx, &file);
         let (w, view) = open_settings_view(cx);
-        pick_theme(cx, w, "flexoki light");
-        assert_eq!(applied(cx), "Flexoki Light");
-        assert_eq!(draft_theme(cx, &view).as_deref(), Some("Flexoki Light"));
+        // Arrows step the keyboard cursor off the committed choice; ⏎ picks where
+        // it lands (spec story 5).
+        let next = next_theme_after_grove_dark(cx);
+        click(cx, w, "theme-picker");
+        press(cx, w, "down");
+        press(cx, w, "enter");
+        assert_eq!(applied(cx), next);
+        assert_eq!(draft_theme(cx, &view).as_deref(), Some(next.as_str()));
         // Unlike the other prefs, the pick leaves the stored choice alone.
         assert_eq!(settings(cx).theme, None);
         assert_eq!(file.load().unwrap().theme, None);

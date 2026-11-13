@@ -57,8 +57,7 @@ impl ThemeSection {
 /// arrives. `ThemeMenu` keeps an item-less section out of the list, so the group
 /// shows up the moment ticket 35 puts the row in.
 pub fn sections(cx: &App) -> Vec<ThemeSection> {
-    let mut system = ThemeSection::new("SYSTEM", Vec::new());
-    let _ = &mut system;
+    let system = ThemeSection::new("SYSTEM", Vec::new());
     let mut light = ThemeSection::new("LIGHT", Vec::new());
     let mut dark = ThemeSection::new("DARK", Vec::new());
     for config in ThemeRegistry::global(cx).sorted_themes() {
@@ -100,11 +99,13 @@ impl ThemeMenu {
         menu
     }
 
-    /// Rebuilds the matched view. Sections keep their item order; a section the
-    /// query neither fills nor names is hidden (the component's own group rule),
-    /// and a section with no items at all never shows — no dangling SYSTEM header
-    /// before ticket 35 fills the row, and a title match alone doesn't keep the
-    /// empty group either.
+    /// Rebuilds the matched view. Sections keep their item order. A section the
+    /// query filters to zero rows is hidden outright — the component's row cache
+    /// hides any zero-row section, title match or not (its `rows_cache` simply
+    /// emits no entries for empty counts), so keeping one here would only put
+    /// index paths behind what actually renders. The same rule keeps a SYSTEM
+    /// section with no items out of the list: the moment ticket 35 adds its row,
+    /// the filled group shows first, pinned by a test here.
     fn refresh(&mut self, query: &str) {
         let query = query.to_lowercase();
         self.matched = self
@@ -122,8 +123,7 @@ impl ThemeMenu {
                     .filter(|(_, item)| item.matches(&query))
                     .map(|(row, _)| row)
                     .collect();
-                (!rows.is_empty() || section.title.to_lowercase().contains(&query))
-                    .then_some(Matched { section: ix, rows })
+                (!rows.is_empty()).then_some(Matched { section: ix, rows })
             })
             .collect();
     }
@@ -301,11 +301,10 @@ mod tests {
 
     #[test]
     fn a_filled_system_group_shows_first() {
-        let mut sections = vec![
+        let menu = ThemeMenu::new(vec![
             ThemeSection::new("SYSTEM", vec![offer("Follow System", ThemeMode::Dark)]),
             ThemeSection::new("DARK", vec![offer("Grove Dark", ThemeMode::Dark)]),
-        ];
-        let menu = ThemeMenu::new(std::mem::take(&mut sections));
+        ]);
         assert_eq!(rows(&menu), ["Follow System", "Grove Dark"]);
         assert_eq!(
             menu.position(&SharedString::from("Follow System")),
