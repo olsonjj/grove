@@ -59,6 +59,8 @@ fn main() {
         // System, ticket 35 — this only honors the applied theme once at launch.
         if cx.theme().is_dark() {
             macos::use_dark_appearance();
+        } else {
+            macos::use_light_appearance();
         }
         shell::init(cx);
         setup::launch(cx);

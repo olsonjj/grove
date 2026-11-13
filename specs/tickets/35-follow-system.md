@@ -14,3 +14,5 @@
 - [ ] Tests: resolution per mode, live re-resolution on appearance change, no-op under a named theme, cancel-after-change
 - [ ] Visual check via the `qa-shots/` harness: same launch captured under dark and (forced) light appearance with Follow System chosen
 - [ ] `just check` green
+
+**Note from ticket 33 (review):** the persisted `theme` field is already live in settings files as a bare registry-name string (ticket 33 shipped it that way to avoid speculative shape), so the `ThemeChoice` reshape here must ship a serde migration (legacy bare string → `ThemeChoice::Name`) or old files stop loading. Also, `Theme::apply_config` replaces the `dark_theme`/`light_theme` slot with whatever it applies, so resolution must read the mode defaults from the `ThemeRegistry` (reinstalling Grove Dark for dark), not from the slot the last apply left behind.

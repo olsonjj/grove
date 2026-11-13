@@ -160,7 +160,15 @@ fn register_bundled_themes(cx: &mut App) {
 /// settings file here (instead of `setup::boot`'s off-main-thread load) keeps the
 /// theme decision on the single launch path GPUI opens windows under.
 pub(crate) fn apply_saved_choice(cx: &mut App) {
-    let settings_file = SettingsFile::default_location();
+    apply_choice_from(&SettingsFile::default_location(), cx);
+}
+
+/// Applies the choice persisted in `settings_file` (`$GROVE_SETTINGS_PATH` / default
+/// location for [`apply_saved_choice`]). Absent `theme`, unreadable settings, and
+/// unknown names all keep Grove Dark, which [`init`] already applied. Reads only: an
+/// unknown name logs and keeps the stale choice in the file until the user saves a
+/// different one.
+pub(crate) fn apply_choice_from(settings_file: &SettingsFile, cx: &mut App) {
     let settings = settings_file.load().unwrap_or_else(|e| {
         eprintln!(
             "[grove] theme choice: settings {}: {e}",
@@ -187,11 +195,13 @@ pub(crate) fn apply_choice(cx: &mut App, choice: Option<&str>) {
 /// [`init`]: [`Theme::apply_config`] installs the file and switches to its mode in one
 /// [`Theme::update`], with the mode-matched default highlight when the file ships none
 /// (mirroring `init`'s Grove Dark injection); then, when the file carries its own
-/// selection fill, a second update restates it opaque, because `apply_config` clamps
-/// the selection token to 30% alpha (its overlay semantics) and the clamp re-runs
-/// whenever the semantic snapshot recomputes from `colors.selection` — see the comment
-/// in [`init`]. A theme without a selection color keeps gpui-kit's translucent
-/// overlay: the clamp is the intended look, and there is no designed fill to restate.
+/// selection fill, a second update restates the fill the theme's file carries (opaque
+/// when the file ships a solid color, its own translucency when it doesn't — the
+/// file wins), because `apply_config` clamps the selection token to 30% alpha (its
+/// overlay semantics) and the clamp re-runs whenever the semantic snapshot recomputes
+/// from `colors.selection` — see the comment in [`init`]. A theme without a selection
+/// color keeps gpui-kit's translucent primary overlay: the clamp is the intended look,
+/// and there is no designed fill to restate.
 pub(crate) fn apply_theme(config: &Rc<ThemeConfig>, cx: &mut App) {
     let mut config = ThemeConfig::clone(config);
     if config.highlight.is_none() {
@@ -209,10 +219,11 @@ pub(crate) fn apply_theme(config: &Rc<ThemeConfig>, cx: &mut App) {
     }
 }
 
-/// The opaque selection fill the applied theme's own file carries, unstated by name
-/// because the 30%-alpha clamp hides it. Grove Dark's file carries the fill as
-/// [`selected`]'s value; foreign themes' files carry theirs. `None` when the file has
-/// no selection color — nothing opaque to restate, and the clamp stands.
+/// The selection fill the applied theme's own file carries, unstated by name because
+/// the 30%-alpha clamp hides it — opaque when the file ships a solid color (Grove
+/// Dark's file carries the fill as [`selected`]'s value), the file's own translucency
+/// when it ships one (Flexoki's `#D0A21577`). `None` when the file has no selection
+/// color — nothing of its own to restate, and the clamp stands.
 fn selection_restatement(config: &ThemeConfig) -> Option<Hsla> {
     config
         .colors
@@ -1206,6 +1217,33 @@ mod tests {
         });
     }
 
+    /// The embedded table and the vendored directory can't drift apart: every
+    /// `resources/themes/*.json` file is in [`BUNDLED`] and every [`BUNDLED`]
+    /// entry has its file, in both directions (PROVENANCE.md is not a theme).
+    #[test]
+    fn bundled_table_matches_the_vendored_files() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/themes");
+        let files: HashSet<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| name.ends_with(".json"))
+            .collect();
+        let table: HashSet<String> = BUNDLED
+            .iter()
+            .map(|(file, _)| format!("{file}.json"))
+            .collect();
+        let orphaned: Vec<&String> = table.difference(&files).collect();
+        assert!(
+            orphaned.is_empty(),
+            "BUNDLED entries without a file: {orphaned:?}"
+        );
+        let unregistered: Vec<&String> = files.difference(&table).collect();
+        assert!(
+            unregistered.is_empty(),
+            "vendored files missing from BUNDLED: {unregistered:?}"
+        );
+    }
+
     /// Launch applies the persisted choice over Grove Dark and restates the opaque
     /// selection the applied theme's fill was clamped to.
     #[gpui_kit::test]
@@ -1239,6 +1277,21 @@ mod tests {
         });
     }
 
+    /// The file's own fill wins even when translucent: Flexoki ships `#D0A21577`,
+    /// so its restated selection carries the file's ~0.47 alpha, not the clamp's
+    /// 0.3 and not Grove's 1.0.
+    #[gpui_kit::test]
+    fn a_translucent_selection_fill_survives_its_own_alpha(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_choice(cx, Some("Flexoki Dark"));
+            assert_eq!(cx.theme().theme_name(), "Flexoki Dark");
+            let file_alpha = (0x77 as f32) / 255.0;
+            assert!((cx.theme().selection.a - file_alpha).abs() < 1e-6);
+        });
+    }
+
     /// An unknown stored name resolves to Grove Dark at launch (spec story 15).
     /// `apply_choice` never touches disk, and `apply_saved_choice` only reads the
     /// settings file, so the stale name stays until the user saves a different one.
@@ -1251,6 +1304,50 @@ mod tests {
             assert_eq!(cx.theme().theme_name(), "Grove Dark");
             assert!(cx.theme().is_dark());
         });
+    }
+
+    /// The launch resolution through the file: a temp settings.json with a named
+    /// choice (as `GROVE_SETTINGS_PATH`/the default location would hold) re-skins
+    /// the launch, same as `apply_saved_choice` does at startup.
+    #[gpui_kit::test]
+    fn launch_reads_the_choice_from_the_settings_file(cx: &mut TestAppContext) {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_file = SettingsFile::new(tmp.path().join("settings.json"));
+        settings_file
+            .save(&Settings {
+                theme: Some("Kibble".into()),
+                ..Settings::default()
+            })
+            .unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_choice_from(&settings_file, cx);
+            assert_eq!(cx.theme().theme_name(), "Kibble");
+        });
+    }
+
+    /// The stale-choice guarantee, proven: after the launch resolution falls back to
+    /// Grove Dark, the settings file is byte-identical, so the stale name stays until
+    /// the user saves a different one (spec story 15).
+    #[gpui_kit::test]
+    fn an_unknown_name_leaves_the_settings_file_unchanged(cx: &mut TestAppContext) {
+        let tmp = tempfile::tempdir().unwrap();
+        let settings_file = SettingsFile::new(tmp.path().join("settings.json"));
+        settings_file
+            .save(&Settings {
+                theme: Some("Removed Long Ago".into()),
+                ..Settings::default()
+            })
+            .unwrap();
+        let before = std::fs::read(settings_file.path()).unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_choice_from(&settings_file, cx);
+            assert_eq!(cx.theme().theme_name(), "Grove Dark");
+        });
+        assert_eq!(std::fs::read(settings_file.path()).unwrap(), before);
     }
 
     /// The stored choice is optional (absent in old settings files): Grove Dark.
@@ -1564,6 +1661,14 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             init(cx);
+            // Pins name registered themes: an upstream rename would otherwise orphan
+            // a pin silently and the sweep would pass while its tokens vanish.
+            for (name, _) in KNOWN_CONTRAST_EXCEPTIONS {
+                assert!(
+                    ThemeRegistry::global(cx).themes().contains_key(*name),
+                    "pinned contrast exception {name:?} is not a registered theme"
+                );
+            }
             for (file, json) in BUNDLED {
                 let set: ThemeSet = serde_json::from_str(json)
                     .unwrap_or_else(|e| panic!("{file} parses as a gpui-kit theme set: {e}"));
