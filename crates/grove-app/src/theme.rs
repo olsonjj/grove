@@ -3,19 +3,61 @@
 //!
 //! [`Palette`] (built by [`palette`]) is the cx-aware API: it reads Grove's tokens
 //! from the active gpui-kit theme and derives Grove's bespoke tints from that theme's
-//! tokens. The fixed-color helpers below are the legacy form; the call sites migrate
-//! to the palette over tickets 29-31, and ticket 32 deletes them once they're gone.
+//! tokens. The theme registered by [`init`] — "Grove Dark", translated from the
+//! fixed helpers — makes that active theme carry Grove's values; the helpers are the
+//! legacy form, the call sites migrate to the palette over tickets 29-31, and ticket
+//! 32 deletes them once they're gone.
+
+use std::rc::Rc;
 
 use gpui_kit::base::Button;
-use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::component::highlighter::HighlightTheme;
+use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
 use gpui_kit::{
     App, ClickEvent, Div, ElementId, FontWeight, InteractiveElement, ParentElement, Rgba,
     SharedString, Styled, Window, div, px, rgb,
 };
 
-/// GPUI Kit's own widgets (tooltips, inputs, scrollbars) in their dark theme too.
+/// Grove Dark, translated from the fixed helpers above into a gpui-kit theme
+/// file. Tokens Grove doesn't map stay on gpui-kit's dark defaults via the
+/// theme-color fallbacks, and the registry keeps the built-in "Default Dark"
+/// for every token this file does not set.
+const GROVE_DARK: &str = include_str!("grove-dark.json");
+
+/// GPUI Kit's own widgets (tooltips, inputs, scrollbars) in Grove dark too.
+///
+/// Runs in three steps: the registry learns "Grove Dark" by name, so name-based
+/// theme lookups resolve to Grove from here on; [`Theme::apply_config`] installs
+/// it as the active dark theme, because the registry exposes no way to override
+/// its built-in dark default and [`Theme::dark_theme`] is what
+/// [`Theme::change`] re-applies; then the kept `Theme::change` startup call
+/// loads that dark theme through its normal path, so `cx.theme()` — and every
+/// `palette(cx)` call site with it — resolves to Grove's values again.
 pub fn init(cx: &mut App) {
+    ThemeRegistry::global_mut(cx)
+        .load_themes_from_str(GROVE_DARK)
+        .expect("the embedded grove-dark.json parses as a gpui-kit theme set");
+    let grove_dark = ThemeRegistry::global(cx)
+        .themes()
+        .get("Grove Dark")
+        .cloned()
+        .expect("Grove Dark was just loaded into the registry");
+    Theme::update(cx, |theme| {
+        let mut config = ThemeConfig::clone(&grove_dark);
+        // Grove's palette carries no editor or syntax colors; keep gpui-kit's
+        // "Default Dark" highlight so those stay exactly what gpui-kit's own
+        // dark default provided before this registration.
+        config.highlight = Some(HighlightTheme::default_dark().style.clone());
+        theme.apply_config(&Rc::new(config));
+    });
     Theme::change(ThemeMode::Dark, None, cx);
+    // The theme-file path cannot express Grove's opaque selection fill:
+    // `apply_config` clamps the selection token to 30% alpha (its overlay
+    // semantics) and the `Theme::change` above re-applies that clamp, so
+    // restate the token; `Theme::update`'s reconcile carries it onto the
+    // renderable token, keeping `palette(cx)`'s `selected` (and the widgets'
+    // selection) at today's opaque fill.
+    Theme::update(cx, |theme| theme.selection = selected().into());
 }
 
 /// The default background.
@@ -597,6 +639,18 @@ mod tests {
 
     use super::*;
 
+    /// The sRGB bytes of a color, rounded to the nearest byte per channel.
+    /// gpui carries theme colors as f32 Hsla, and some sRGB byte triples don't
+    /// convert back to Rgba bit-for-bit, so palette parity is asserted at byte
+    /// granularity (`u32::from(Rgba)` truncates and would flip the low bytes
+    /// instead).
+    fn color_bytes(c: Rgba) -> u32 {
+        ((c.r * 255.0).round() as u32) << 24
+            | ((c.g * 255.0).round() as u32) << 16
+            | ((c.b * 255.0).round() as u32) << 8
+            | ((c.a * 255.0).round() as u32)
+    }
+
     fn luminance(c: Rgba) -> f32 {
         let lin = |v: f32| {
             if v <= 0.04045 {
@@ -915,6 +969,48 @@ mod tests {
             assert_eq!(p.muted(), t.muted_foreground);
             assert_eq!(p.link(), t.link);
             assert_eq!(p.worktree_text(), t.sidebar_foreground);
+        });
+    }
+
+    /// Registering Grove Dark as the dark default keeps today's palette: after
+    /// the real init path (`gpui_kit::init` + `init`), every direct mapped
+    /// token equals its fixed helper exactly. The literal `bg` assertion fails
+    /// loudly if the registration ever regresses to gpui-kit's shadcn dark
+    /// default, whose background is `#090909`.
+    #[gpui_kit::test]
+    fn palette_tokens_equal_the_fixed_helpers_under_the_startup_init(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            // Grove Dark is the dark default `Theme::change` re-applies.
+            assert_eq!(cx.theme().dark_theme.name, "Grove Dark");
+            let p = palette(cx);
+            let pairs = [
+                ("background", p.bg(), bg()),
+                ("popover", p.panel(), panel()),
+                ("sidebar", p.sidebar(), sidebar()),
+                ("input", p.field(), field()),
+                ("list", p.raised(), raised()),
+                ("group_box", p.card(), card()),
+                ("muted", p.disabled(), disabled()),
+                ("selection", p.selected(), selected()),
+                ("border", p.border(), border()),
+                ("foreground", p.text(), text()),
+                ("muted_foreground", p.muted(), muted()),
+                ("link", p.link(), link()),
+                ("accent", p.accent(), accent()),
+                ("sidebar_foreground", p.worktree_text(), worktree_text()),
+            ];
+            for (token, themed, fixed) in pairs {
+                assert_eq!(
+                    color_bytes(Rgba::from(themed)),
+                    color_bytes(fixed),
+                    "{token} token is not Grove Dark"
+                );
+            }
+            // `#121418` survives gpui's Hsla round trip bit-for-bit, so the
+            // anchor holds at the raw color too, not just at byte granularity.
+            assert_eq!(Rgba::from(p.bg()), rgb(0x121418));
         });
     }
 }

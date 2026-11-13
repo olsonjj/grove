@@ -1,0 +1,26 @@
+{
+  "themes": [
+    {
+      "name": "Grove Dark",
+      "mode": "dark",
+      "colors": {
+        "background": "#121418",
+        "popover.background": "#16191e",
+        "sidebar.background": "#15181d",
+        "input.border": "#0f1114",
+        "list.background": "#1e222a",
+        "group_box.background": "#1b1f26",
+        "muted.background": "#2a2f38",
+        "selection.background": "#263140",
+        "border": "#262b33",
+        "foreground": "#e7e9ec",
+        "muted.foreground": "#a0a7b2",
+        "link": "#7db7ff",
+        "accent.background": "#f0a847",
+        "warning.background": "#2a2215",
+        "warning.foreground": "#f7c987",
+        "sidebar.foreground": "#bfdbff"
+      }
+    }
+  ]
+}
