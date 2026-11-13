@@ -40,27 +40,28 @@ pub struct Status {
 
 impl MainWindow {
     fn top_bar(&self, repo: Option<&RepoSnapshot>, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let fetching = cx.try_global::<shell::Fetcher>().is_some_and(|f| f.running);
         // Stays focusable while fetching (`fetch_all` no-ops), so focus isn't lost.
-        let fetch = top_button("fetch-all")
+        let fetch = top_button("fetch-all", cx)
             .text_size(px(13.))
             .on_click(|_, _, cx| shell::fetch_all(cx))
             .when_else(
                 fetching,
-                |d| d.text_color(theme::faint()).child("Fetching…"),
+                |d| d.text_color(palette.faint()).child("Fetching…"),
                 |d| {
-                    d.text_color(theme::text())
+                    d.text_color(palette.text())
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme::border()))
+                        .hover(|s| s.bg(palette.border()))
                         .child("Fetch all")
                 },
             );
-        let jump = top_button("jump-to")
+        let jump = top_button("jump-to", cx)
             .gap(px(6.))
             .text_size(px(13.))
-            .text_color(theme::text_soft())
+            .text_color(palette.text_soft())
             .cursor_pointer()
-            .hover(|s| s.bg(theme::border()))
+            .hover(|s| s.bg(palette.border()))
             .accessibility_label("Jump to…")
             .aria_keyshortcuts("Command+K")
             .on_click(|_, _, cx| shell::toggle_switcher(cx))
@@ -70,10 +71,10 @@ impl MainWindow {
                     .px(px(5.))
                     .rounded(px(4.))
                     .border_1()
-                    .border_color(theme::border_strong())
+                    .border_color(palette.border_strong())
                     .font_family(theme::MONO)
                     .text_size(px(11.))
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child("⌘K"),
             );
         div()
@@ -84,8 +85,8 @@ impl MainWindow {
             .items_center()
             .gap(px(10.))
             .border_b_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
+            .border_color(palette.border())
+            .bg(palette.panel())
             .child(
                 div()
                     .text_size(px(16.))
@@ -93,7 +94,7 @@ impl MainWindow {
                     .child("Grove"),
             )
             .when_some(repo, |d, repo| {
-                d.child(div().text_color(theme::faint()).child("/")).child(
+                d.child(div().text_color(palette.faint()).child("/")).child(
                     theme::mono(repo.display_name.clone())
                         .min_w_0()
                         .truncate()
@@ -103,19 +104,20 @@ impl MainWindow {
             .child(jump)
             .child(div().ml_auto().flex_none().child(fetch))
             .child(
-                top_button("open-settings")
+                top_button("open-settings", cx)
                     .accessibility_label("Open-with settings")
                     .size(px(32.))
                     .px_0()
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::border()))
-                    .child(icon(icons::SETTINGS, 16.).text_color(theme::text()))
+                    .hover(|s| s.bg(palette.border()))
+                    .child(icon(icons::SETTINGS, 16.).text_color(palette.text()))
                     .tooltip(|window, cx| Tooltip::new("Open-with settings").build(window, cx))
                     .on_click(|_, _, cx| shell::open_settings(cx)),
             )
             .into_any_element()
     }
     fn status_bar(&self, cx: &App) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let line = match &self.status {
             Some(s) => div()
                 .flex()
@@ -126,14 +128,19 @@ impl MainWindow {
                         .min_w_0()
                         .truncate()
                         .text_color(if s.error {
-                            theme::warn_text()
+                            palette.warn_text()
                         } else {
-                            theme::text_soft()
+                            palette.text_soft()
                         })
                         .child(s.text.clone()),
                 )
                 .when(s.settings, |d| {
-                    d.child(link("status-settings", "Settings…", shell::open_settings))
+                    d.child(link(
+                        "status-settings",
+                        "Settings…",
+                        shell::open_settings,
+                        cx,
+                    ))
                 }),
             None => div(),
         };
@@ -147,8 +154,8 @@ impl MainWindow {
             .justify_between()
             .gap(px(16.))
             .border_t_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
+            .border_color(palette.border())
+            .bg(palette.panel())
             .text_size(px(12.))
             .child(
                 div()
@@ -158,7 +165,7 @@ impl MainWindow {
                     .child(
                         div()
                             .flex_none()
-                            .text_color(theme::muted())
+                            .text_color(palette.muted())
                             .child(fetch_label(cx)),
                     )
                     .child(line),
@@ -166,7 +173,7 @@ impl MainWindow {
             .child(
                 div()
                     .flex_none()
-                    .text_color(theme::faint())
+                    .text_color(palette.faint())
                     .child(SHORTCUTS),
             )
     }
@@ -174,6 +181,7 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let library = shell::library(cx);
         let snapshot = library.store.snapshot().clone();
         let settings = &library.settings;
@@ -201,10 +209,14 @@ impl Render for MainWindow {
         let mut pinned_rows: Vec<AnyElement> = Vec::new();
         if !order.pinned.is_empty() {
             pinned_rows.push(
-                group_header("pinned-header", format!("PINNED · {}", order.pinned.len()))
-                    .px(px(8.))
-                    .pb(px(6.))
-                    .into_any_element(),
+                group_header(
+                    "pinned-header",
+                    format!("PINNED · {}", order.pinned.len()),
+                    cx,
+                )
+                .px(px(8.))
+                .pb(px(6.))
+                .into_any_element(),
             );
         }
         for (ix, repo) in order.pinned.iter().enumerate() {
@@ -218,7 +230,7 @@ impl Render for MainWindow {
                     .h(px(1.))
                     .mx(px(8.))
                     .my(px(6.))
-                    .bg(theme::border())
+                    .bg(palette.border())
                     .into_any_element(),
             );
         }
@@ -247,9 +259,9 @@ impl Render for MainWindow {
             .h_full()
             .flex()
             .flex_col()
-            .bg(theme::sidebar())
+            .bg(palette.sidebar())
             .border_r_1()
-            .border_color(theme::border())
+            .border_color(palette.border())
             .child(
                 div()
                     .flex_none()
@@ -271,6 +283,7 @@ impl Render for MainWindow {
                             .child(group_header(
                                 "repos-header",
                                 format!("REPOSITORIES · {shown}"),
+                                cx,
                             ))
                             .when(hidden_count > 0, |d| {
                                 d.child(self.hidden_chip(hidden_count, cx))
@@ -329,12 +342,12 @@ impl Render for MainWindow {
                     .gap(px(6.))
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(theme::border())
-                    .bg(theme::bg())
+                    .border_color(palette.border())
+                    .bg(palette.bg())
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(theme::faint())
+                            .text_color(palette.faint())
                             .child("CODE FOLDER"),
                     )
                     .child(
@@ -346,17 +359,17 @@ impl Render for MainWindow {
                             .child(
                                 theme::path_text(tilde(&snapshot.code_dir))
                                     .text_size(px(13.))
-                                    .text_color(theme::text()),
+                                    .text_color(palette.text()),
                             )
                             .child(
-                                link("change-code-folder", "Change…", shell::choose_code_dir)
+                                link("change-code-folder", "Change…", shell::choose_code_dir, cx)
                                     .text_size(px(12.)),
                             ),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(theme::faint())
+                            .text_color(palette.faint())
                             .child("Grove only looks inside this folder."),
                     ),
             );
@@ -364,7 +377,7 @@ impl Render for MainWindow {
         let content = if snapshot.repos.is_empty() {
             div()
                 .p(px(16.))
-                .text_color(theme::muted())
+                .text_color(palette.muted())
                 .child("No repos")
                 .into_any_element()
         } else {
@@ -409,8 +422,8 @@ impl Render for MainWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::bg())
-            .text_color(theme::text())
+            .bg(palette.bg())
+            .text_color(palette.text())
             .child(top_bar)
             .child(
                 div()

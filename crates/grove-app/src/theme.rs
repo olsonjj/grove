@@ -18,6 +18,14 @@ pub fn init(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
 }
 
+/// The default background.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn bg() -> Rgba {
     rgb(0x121418)
 }
@@ -28,6 +36,14 @@ pub(crate) use palette::palette;
 pub fn panel() -> Rgba {
     rgb(0x16191e)
 }
+/// The worktree sidebar.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn sidebar() -> Rgba {
     rgb(0x15181d)
 }
