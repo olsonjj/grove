@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Settings window, popover, switcher, setup/shell and remaining files use the cx-aware palette
-- [ ] Settings, popover and switcher test suites pass unchanged
-- [ ] No visual change
-- [ ] `just check` green; a repo-wide search finds no fixed-color helper call sites left outside the theme module
+- [x] Settings window, popover, switcher, setup/shell and remaining files use the cx-aware palette (120 fixed-color sites across settings_window/switcher/popover/setup; repo-wide grep clean of fixed-color call sites outside theme.rs)
+- [x] Settings, popover and switcher test suites pass unchanged
+- [x] No visual change (migration preserves values mechanically; Grove Dark registered by 30a keeps runtime colors Grove's)
+- [x] `just check` green; a repo-wide search finds no fixed-color helper call sites left outside the theme module (full `cargo test --all-features --locked`; only the pre-existing unrelated `grove-core::freshness` flake fails)
