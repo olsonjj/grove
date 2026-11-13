@@ -24,7 +24,18 @@ use gpui_kit::{
 /// for every token this file does not set.
 const GROVE_DARK: &str = include_str!("grove-dark.json");
 
+/// The registry name of Grove's own theme (see [`init`]).
+const GROVE_DARK_NAME: &str = "Grove Dark";
+
 /// GPUI Kit's own widgets (tooltips, inputs, scrollbars) in Grove dark too.
+///
+/// Must run after [`gpui_kit::init`]: that call seeds the registry (and its
+/// built-in dark default) which the steps below assume and override. The
+/// registry must also not yet hold a theme named "Grove Dark" — gpui-kit
+/// ships none, and a pre-registered theme of that name would be silently
+/// skipped by [`ThemeRegistry::load_themes_from_str`], installing foreign
+/// colors under Grove's name. Ticket 33's bundled-theme registration must
+/// keep that guarantee.
 ///
 /// Runs in three steps: the registry learns "Grove Dark" by name, so name-based
 /// theme lookups resolve to Grove from here on; [`Theme::apply_config`] installs
@@ -36,10 +47,12 @@ const GROVE_DARK: &str = include_str!("grove-dark.json");
 pub fn init(cx: &mut App) {
     ThemeRegistry::global_mut(cx)
         .load_themes_from_str(GROVE_DARK)
+        // The file is embedded, so this is a build-time bug (caught by the
+        // runtime parity test), not a runtime failure to recover from.
         .expect("the embedded grove-dark.json parses as a gpui-kit theme set");
     let grove_dark = ThemeRegistry::global(cx)
         .themes()
-        .get("Grove Dark")
+        .get(GROVE_DARK_NAME)
         .cloned()
         .expect("Grove Dark was just loaded into the registry");
     Theme::update(cx, |theme| {
@@ -56,7 +69,10 @@ pub fn init(cx: &mut App) {
     // semantics) and the `Theme::change` above re-applies that clamp, so
     // restate the token; `Theme::update`'s reconcile carries it onto the
     // renderable token, keeping `palette(cx)`'s `selected` (and the widgets'
-    // selection) at today's opaque fill.
+    // selection) at today's opaque fill. The clamp also runs whenever the
+    // semantic snapshot recomputes from `colors.selection` — if a later
+    // change (ticket 33's launch apply) takes that path, the restatement
+    // must happen after it too.
     Theme::update(cx, |theme| theme.selection = selected().into());
 }
 
@@ -1011,6 +1027,20 @@ mod tests {
             // `#121418` survives gpui's Hsla round trip bit-for-bit, so the
             // anchor holds at the raw color too, not just at byte granularity.
             assert_eq!(Rgba::from(p.bg()), rgb(0x121418));
+            // The warning pair: the theme's tokens (not the palette's derived
+            // `warn_bg`/`warn_text` — those blend with the background and are
+            // covered by the ≤0.05-lightness derive test).
+            let t = cx.theme();
+            assert_eq!(
+                color_bytes(Rgba::from(t.warning)),
+                color_bytes(warn_bg()),
+                "theme warning token is not Grove Dark"
+            );
+            assert_eq!(
+                color_bytes(Rgba::from(t.warning_foreground)),
+                color_bytes(warn_text()),
+                "theme warning_foreground token is not Grove Dark"
+            );
         });
     }
 }
