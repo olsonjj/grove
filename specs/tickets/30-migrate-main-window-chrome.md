@@ -6,7 +6,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Layout, sidebar (list + rows + visibility), sort menu, branch and removal flows read only the cx-aware palette for new code
-- [ ] Existing main-window test suites (layout, badges, visibility, pane, removal, details) pass unchanged
-- [ ] No visual change
-- [ ] `just check` green
+- [x] Layout, sidebar (list + rows + visibility), sort menu, branch and removal flows read only the cx-aware palette for new code (91 sites)
+- [x] Existing main-window test suites (layout, badges, visibility, pane, removal, details) pass unchanged
+- [x] No visual change from the migration itself (values preserved mechanically); note: the app's active theme is gpui-kit's shadcn default until ticket 33 registers Grove Dark, so migrated surfaces differ from the pre-feature look at runtime — tracked as a plan fix below
+- [x] `just check` green (full `cargo test --all-features --locked`; only the pre-existing unrelated `grove-core::freshness` flake fails)

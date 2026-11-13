@@ -13,13 +13,14 @@ use crate::theme;
 
 /// "PINNED · 2", "REPOSITORIES · 40".
 pub(crate) fn group_header(id: &'static str, text: String, cx: &App) -> impl Styled + IntoElement {
+    let palette = theme::palette(cx);
     div()
         .id(id)
         .test_support()
         .aria_label(text.clone())
         .flex_none()
         .text_size(px(11.))
-        .text_color(theme::palette(cx).faint())
+        .text_color(palette.faint())
         .child(text)
 }
 
