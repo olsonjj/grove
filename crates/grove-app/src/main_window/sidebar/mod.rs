@@ -204,7 +204,7 @@ impl MainWindow {
                     d.bg(palette.selected())
                         .text_color(palette.text())
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(theme::selection_bar())
+                        .child(theme::selection_bar(cx))
                 },
                 |d| {
                     d.text_color(palette.text_soft())

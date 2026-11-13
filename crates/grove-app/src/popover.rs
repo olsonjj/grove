@@ -17,6 +17,7 @@ use grove_core::{MenuRow, Presence, Role, menu};
 use crate::icons::{self, icon};
 use crate::launcher::{self, Notice};
 use crate::status_item::Anchor;
+use crate::theme::palette::Palette;
 use crate::windows::{close_on_deactivate, panel_options};
 use crate::{shell, theme};
 
@@ -297,15 +298,15 @@ fn icon_button(
         .on_click(on_click)
 }
 
-/// Footer text button.
+/// Footer text button. The colors come from one snapshot: `palette` supplies
+/// the hover fill and focus border, `color` the per-button tint.
 fn text_button(
     id: &'static str,
     label: &'static str,
     color: gpui_kit::Hsla,
+    palette: &Palette,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
-    cx: &App,
 ) -> Button {
-    let palette = theme::palette(cx);
     Button::new(id)
         .h(px(28.))
         .px(px(8.))
@@ -543,11 +544,11 @@ impl Popover {
                     "popover-open-grove",
                     "Open Grove",
                     palette.link(),
+                    &palette,
                     cx.listener(|this, _, _, cx| {
                         this.close(cx);
                         shell::show_main(cx);
                     }),
-                    cx,
                 )
                 .child(
                     div()
@@ -562,18 +563,18 @@ impl Popover {
                 "popover-settings",
                 "Settings…",
                 palette.muted(),
+                &palette,
                 cx.listener(|this, _, _, cx| {
                     this.close(cx);
                     shell::open_settings(cx);
                 }),
-                cx,
             ))
             .child(text_button(
                 "popover-quit",
                 "Quit",
                 palette.muted(),
+                &palette,
                 |_, _, cx| shell::quit(cx),
-                cx,
             ))
     }
 }

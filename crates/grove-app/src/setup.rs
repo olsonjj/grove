@@ -289,12 +289,7 @@ impl Setup {
             .rounded(px(10.))
             .bg(palette.field())
             .border_1()
-            .border_color(if has_repos {
-                gpui_kit::rgb(0x2c4560)
-                // The raw side pins the branch to `Rgba` until ticket 32 sweeps it.
-            } else {
-                gpui_kit::Rgba::from(palette.border_strong())
-            })
+            .border_color(palette.border_strong())
             .child(
                 theme::path_text(folder.clone().unwrap_or_else(|| "No folder chosen".into()))
                     .flex_1()
@@ -306,6 +301,7 @@ impl Setup {
                     }),
             )
             .child(button(
+                cx,
                 "choose",
                 if has_repos {
                     "Change…"
@@ -458,6 +454,7 @@ impl Setup {
                             .gap(px(8.))
                             .when(changing, |d| {
                                 d.child(button(
+                                    cx,
                                     "cancel",
                                     "Cancel",
                                     ButtonKind::Secondary,
@@ -467,6 +464,7 @@ impl Setup {
                                 ))
                             })
                             .child(button(
+                                cx,
                                 "continue",
                                 "Continue",
                                 ButtonKind::Primary,
@@ -543,12 +541,14 @@ impl Setup {
                     .justify_end()
                     .gap(px(8.))
                     .child(button(
+                        cx,
                         "quit",
                         "Quit",
                         ButtonKind::Secondary,
                         Some(|_: &ClickEvent, _: &mut Window, cx: &mut App| shell::quit(cx)),
                     ))
                     .child(button(
+                        cx,
                         "recheck",
                         if checking {
                             "Checking…"

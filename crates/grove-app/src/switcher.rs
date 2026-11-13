@@ -444,7 +444,7 @@ impl Switcher {
             .relative()
             .when_else(
                 selected,
-                |d| d.bg(palette.selected()).child(theme::selection_bar()),
+                |d| d.bg(palette.selected()).child(theme::selection_bar(cx)),
                 |d| d.hover(|s| s.bg(palette.raised())),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.on_row_click(ix, cx)))

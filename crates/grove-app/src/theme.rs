@@ -1,12 +1,12 @@
-//! Dark palette and shared widgets, from the design prototype. Every text color here
-//! meets 4.5:1 on every surface (see the tests).
+//! Grove's palette and shared widgets, from the design prototype. Every text
+//! color meets 4.5:1 on every surface (see the tests).
 //!
-//! [`Palette`] (built by [`palette`]) is the cx-aware API: it reads Grove's tokens
-//! from the active gpui-kit theme and derives Grove's bespoke tints from that theme's
-//! tokens. The theme registered by [`init`] — "Grove Dark", translated from the
-//! fixed helpers — makes that active theme carry Grove's values; the helpers are the
-//! legacy form, the call sites migrate to the palette over tickets 29-31, and ticket
-//! 32 deletes them once they're gone.
+//! [`Palette`] (built by [`palette`]) reads Grove's tokens from the active
+//! gpui-kit theme and derives Grove's bespoke tints from that theme's tokens.
+//! The theme registered by [`init`] — "Grove Dark", translated from the
+//! prototype's fixed palette — makes the active theme carry Grove's values, so
+//! every surface follows the active theme and Grove Dark renders exactly the
+//! colors the fixed helpers used to carry.
 
 use std::rc::Rc;
 
@@ -18,10 +18,10 @@ use gpui_kit::{
     SharedString, Styled, Window, div, px, rgb,
 };
 
-/// Grove Dark, translated from the fixed helpers above into a gpui-kit theme
-/// file. Tokens Grove doesn't map stay on gpui-kit's dark defaults via the
-/// theme-color fallbacks, and the registry keeps the built-in "Default Dark"
-/// for every token this file does not set.
+/// Grove Dark, translated from the prototype's fixed palette into a gpui-kit
+/// theme file. Tokens Grove doesn't map stay on gpui-kit's dark defaults via
+/// the theme-color fallbacks, and the registry keeps the built-in "Default
+/// Dark" for every token this file does not set.
 const GROVE_DARK: &str = include_str!("grove-dark.json");
 
 /// The registry name of Grove's own theme (see [`init`]).
@@ -76,215 +76,19 @@ pub fn init(cx: &mut App) {
     Theme::update(cx, |theme| theme.selection = selected().into());
 }
 
-/// The default background.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn bg() -> Rgba {
-    rgb(0x121418)
-}
-
 /// The [`palette::palette`] entry point, re-exported at this path so call sites read
 /// `theme::palette(cx)` while the `palette` module keeps its internals private.
 pub(crate) use palette::palette;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn panel() -> Rgba {
-    rgb(0x16191e)
-}
-/// The worktree sidebar.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn sidebar() -> Rgba {
-    rgb(0x15181d)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn field() -> Rgba {
-    rgb(0x0f1114)
-}
-pub fn raised() -> Rgba {
-    rgb(0x1e222a)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn card() -> Rgba {
-    rgb(0x1b1f26)
-}
-pub fn disabled() -> Rgba {
-    rgb(0x2a2f38)
-}
+
+/// The selection fill, exactly as the theme file carries it. gpui-kit's apply
+/// path clamps theme selection tokens to 30% alpha (its overlay semantics), so
+/// [`init`] restates this opaque value after every apply — see the comment
+/// there for when the clamp re-runs.
 pub fn selected() -> Rgba {
     rgb(0x263140)
 }
-/// Also badge and hover fill.
-pub fn border() -> Rgba {
-    rgb(0x262b33)
-}
-pub fn border_strong() -> Rgba {
-    rgb(0x34404f)
-}
-pub fn text() -> Rgba {
-    rgb(0xe7e9ec)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn text_soft() -> Rgba {
-    rgb(0xc9ced6)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn muted() -> Rgba {
-    rgb(0xa0a7b2)
-}
-pub fn faint() -> Rgba {
-    rgb(0x929aa7)
-}
-pub fn link() -> Rgba {
-    rgb(0x7db7ff)
-}
-pub fn accent() -> Rgba {
-    rgb(0xf0a847)
-}
-pub fn accent_hover() -> Rgba {
-    rgb(0xe2993a)
-}
-/// Divider between the halves of an accent split button.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn on_accent_divider() -> Rgba {
-    rgb(0xb87a2c)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn accent_bg() -> Rgba {
-    rgb(0x2e2414)
-}
-pub fn on_accent() -> Rgba {
-    rgb(0x1a1307)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn warn_bg() -> Rgba {
-    rgb(0x2a2215)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn warn_text() -> Rgba {
-    rgb(0xf7c987)
-}
 
-/// Worktree rows are tinted so a folder never reads as a branch name.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn worktree_row() -> Rgba {
-    rgb(0x151d27)
-}
-/// Hairline between recent-commit rows in the details pane: half a step above the panel
-/// background, well below the card color, so it separates without reading as card chrome.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn commit_divider() -> Rgba {
-    rgb(0x191d23)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn worktree_text() -> Rgba {
-    rgb(0xbfdbff)
-}
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
-    )
-)]
-pub fn connector() -> Rgba {
-    rgb(0x4a5462)
-}
-
-/// Grove's cx-aware palette beside the fixed-color helpers above it; tickets 29-31
-/// migrate the call sites over.
-///
-/// One lint expectation while that migration runs: trees and details already read the
-/// palette, so some fixed helpers and some palette tokens are unused until tickets 30-31
-/// move the remaining views over and ticket 32 deletes the fixed helpers.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "mid-migration: tickets 30-31 move the last call sites over"
-    )
-)]
+/// Grove's cx-aware palette under the active theme.
 pub(crate) mod palette {
     use gpui_kit::component::theme::{ActiveTheme, Colorize, ThemeColor};
     use gpui_kit::{App, Hsla, Rgba};
@@ -315,6 +119,7 @@ pub(crate) mod palette {
         on_accent: Hsla,
         warn_bg: Hsla,
         warn_text: Hsla,
+        legend_chip: Hsla,
         worktree_row: Hsla,
         commit_divider: Hsla,
         worktree_text: Hsla,
@@ -361,6 +166,13 @@ pub(crate) mod palette {
 
     /// How strongly warning surfaces blend their warning tint over the background.
     pub(crate) const WARN_TINT: f32 = 0.12;
+
+    /// How strongly the tree-view legend chip blends the link color over the
+    /// background. The chip is the swatch behind the worktree folder icon in
+    /// the tree-view legend (today's hand-tuned value was `#17222f`), and it
+    /// takes the same relative step as [`WORKTREE_ROW_TINT`]; the link hue is
+    /// shared with the icon so the swatch reads as its surface in any theme.
+    const LEGEND_CHIP_TINT: f32 = 0.08;
 
     /// In the accent fallback for the warning pair, the text weight mixed into the
     /// accent, so the fallback text follows its theme's text level.
@@ -409,6 +221,7 @@ pub(crate) mod palette {
             on_accent,
             warn_bg,
             warn_text,
+            legend_chip: blended(bg, t.link, LEGEND_CHIP_TINT),
             worktree_row: blended(bg, accent, WORKTREE_ROW_TINT),
             commit_divider: blended(panel, card, COMMIT_DIVIDER_MID),
             worktree_text: t.sidebar_foreground,
@@ -596,6 +409,11 @@ pub(crate) mod palette {
             self.warn_text
         }
 
+        /// Tree-view legend chip behind the worktree folder icon.
+        pub fn legend_chip(&self) -> Hsla {
+            self.legend_chip
+        }
+
         /// Worktree rows are tinted so a folder never reads as a branch name.
         pub fn worktree_row(&self) -> Hsla {
             self.worktree_row
@@ -619,7 +437,7 @@ pub const SANS: &str = ".SystemUIFont";
 
 /// Accent bar on a selected row's left edge, so selection isn't shown by fill alone. The
 /// row must be `relative()`.
-pub fn selection_bar() -> Div {
+pub fn selection_bar(cx: &App) -> Div {
     div()
         .absolute()
         .left(px(1.))
@@ -627,7 +445,7 @@ pub fn selection_bar() -> Div {
         .bottom(px(8.))
         .w(px(3.))
         .rounded(px(2.))
-        .bg(accent())
+        .bg(palette(cx).accent())
 }
 
 pub fn mono(text: impl Into<SharedString>) -> Div {
@@ -649,13 +467,16 @@ pub enum ButtonKind {
     Secondary,
 }
 
-/// Button; `on_click: None` renders it disabled.
+/// Button; `on_click: None` renders it disabled. Colors come from the active theme
+/// by way of [`palette`].
 pub fn button(
+    cx: &App,
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     kind: ButtonKind,
     on_click: Option<impl Fn(&ClickEvent, &mut Window, &mut App) + 'static>,
 ) -> Button {
+    let palette = palette(cx);
     let enabled = on_click.is_some();
     let base = Button::new(id)
         .disabled(!enabled)
@@ -665,25 +486,25 @@ pub fn button(
         .rounded(px(8.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .focus_visible(|s| s.border_color(link()))
+        .focus_visible(|s| s.border_color(palette.link()))
         .text_size(px(13.))
         .child(label.into());
     let styled = match (kind, enabled) {
         (ButtonKind::Primary, true) => base
-            .bg(accent())
-            .text_color(on_accent())
+            .bg(palette.accent())
+            .text_color(palette.on_accent())
             .font_weight(FontWeight::SEMIBOLD)
-            .hover(|s| s.bg(accent_hover()))
-            .focus_visible(|s| s.border_color(text())),
+            .hover(|s| s.bg(palette.accent_hover()))
+            .focus_visible(|s| s.border_color(palette.text())),
         (ButtonKind::Primary, false) => base
-            .bg(disabled())
-            .text_color(faint())
+            .bg(palette.disabled())
+            .text_color(palette.faint())
             .font_weight(FontWeight::SEMIBOLD),
         (ButtonKind::Secondary, _) => base
-            .bg(raised())
-            .border_color(border_strong())
-            .text_color(text())
-            .hover(|s| s.bg(border())),
+            .bg(palette.raised())
+            .border_color(palette.border_strong())
+            .text_color(palette.text())
+            .hover(|s| s.bg(palette.border())),
     };
     match on_click {
         Some(f) => styled.cursor_pointer().on_click(f),
@@ -703,6 +524,49 @@ mod tests {
     };
 
     use super::*;
+
+    /// Today's Grove hex values — the palette the deleted fixed helpers carried
+    /// and the source the Grove Dark theme file was translated from, plus the
+    /// tree-view legend chip literal. The derivation-tolerance tests run against
+    /// these, so the mappings stay true to the palette Grove shipped.
+    const TODAY: &[(&str, u32)] = &[
+        ("bg", 0x121418),
+        ("panel", 0x16191e),
+        ("sidebar", 0x15181d),
+        ("field", 0x0f1114),
+        ("raised", 0x1e222a),
+        ("card", 0x1b1f26),
+        ("disabled", 0x2a2f38),
+        ("selected", 0x263140),
+        ("border", 0x262b33),
+        ("border_strong", 0x34404f),
+        ("connector", 0x4a5462),
+        ("text", 0xe7e9ec),
+        ("text_soft", 0xc9ced6),
+        ("muted", 0xa0a7b2),
+        ("faint", 0x929aa7),
+        ("link", 0x7db7ff),
+        ("accent", 0xf0a847),
+        ("accent_hover", 0xe2993a),
+        ("on_accent_divider", 0xb87a2c),
+        ("accent_bg", 0x2e2414),
+        ("on_accent", 0x1a1307),
+        ("warn_bg", 0x2a2215),
+        ("warn_text", 0xf7c987),
+        ("legend_chip", 0x17222f),
+        ("worktree_row", 0x151d27),
+        ("commit_divider", 0x191d23),
+        ("worktree_text", 0xbfdbff),
+    ];
+
+    /// A Grove hex from [`TODAY`].
+    fn today(name: &str) -> Rgba {
+        rgb(TODAY
+            .iter()
+            .find(|(token, _)| *token == name)
+            .expect("known token")
+            .1)
+    }
 
     /// The sRGB bytes of a color, rounded to the nearest byte per channel.
     /// gpui carries theme colors as f32 Hsla, and some sRGB byte triples don't
@@ -754,62 +618,82 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn every_text_color_meets_4_5_on_every_surface() {
-        let texts = [
-            ("text", text()),
-            ("text_soft", text_soft()),
-            ("muted", muted()),
-            ("faint", faint()),
-            ("link", link()),
-            ("accent", accent()),
-            ("warn_text", warn_text()),
-            ("worktree_text", worktree_text()),
-        ];
-        let surfaces = [
-            ("bg", bg()),
-            ("panel", panel()),
-            ("sidebar", sidebar()),
-            ("field", field()),
-            ("raised", raised()),
-            ("card", card()),
-            ("selected", selected()),
-            ("border", border()),
-            ("disabled", disabled()),
-            ("worktree_row", worktree_row()),
-            ("accent_bg", accent_bg()),
-            ("warn_bg", warn_bg()),
-        ];
-        let mut pairs = cross(&texts, &surfaces);
-        pairs.push(("on_accent", on_accent(), "accent", accent()));
-        pairs.push(("on_accent", on_accent(), "accent_hover", accent_hover()));
-        assert_readable(&pairs);
+    /// Every text token over every surface under Grove Dark, computed from the
+    /// resolved tokens after the real init path — proving the palette plumbing
+    /// is true to today's colors, not just to a detached mapping.
+    #[gpui_kit::test]
+    fn every_text_color_meets_4_5_on_every_surface(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            let p = palette(cx);
+            let to_rgba = |h: Hsla| Rgba::from(h);
+            let texts = [
+                ("text", to_rgba(p.text())),
+                ("text_soft", to_rgba(p.text_soft())),
+                ("muted", to_rgba(p.muted())),
+                ("faint", to_rgba(p.faint())),
+                ("link", to_rgba(p.link())),
+                ("accent", to_rgba(p.accent())),
+                ("warn_text", to_rgba(p.warn_text())),
+                ("worktree_text", to_rgba(p.worktree_text())),
+            ];
+            let surfaces = [
+                ("bg", to_rgba(p.bg())),
+                ("panel", to_rgba(p.panel())),
+                ("sidebar", to_rgba(p.sidebar())),
+                ("field", to_rgba(p.field())),
+                ("raised", to_rgba(p.raised())),
+                ("card", to_rgba(p.card())),
+                ("selected", to_rgba(p.selected())),
+                ("border", to_rgba(p.border())),
+                ("disabled", to_rgba(p.disabled())),
+                ("worktree_row", to_rgba(p.worktree_row())),
+                ("legend_chip", to_rgba(p.legend_chip())),
+                ("accent_bg", to_rgba(p.accent_bg())),
+                ("warn_bg", to_rgba(p.warn_bg())),
+            ];
+            let mut pairs = cross(&texts, &surfaces);
+            pairs.push((
+                "on_accent",
+                to_rgba(p.on_accent()),
+                "accent",
+                to_rgba(p.accent()),
+            ));
+            pairs.push((
+                "on_accent",
+                to_rgba(p.on_accent()),
+                "accent_hover",
+                to_rgba(p.accent_hover()),
+            ));
+            assert_readable(&pairs);
+        });
     }
 
     fn hsla(c: Rgba) -> Hsla {
         Hsla::from(c)
     }
 
-    /// The theme token set a Grove Dark translation would carry, built from today's
-    /// fixed helpers, so the palette mapping can be checked without gpui.
+    /// The theme token set Grove's translation carries, built from [`TODAY`],
+    /// so the palette mapping can be checked without gpui.
     fn grove_theme_colors() -> ThemeColor {
         ThemeColor {
-            background: hsla(bg()),
-            popover: hsla(panel()),
-            sidebar: hsla(sidebar()),
-            input: hsla(field()),
-            list: hsla(raised()),
-            group_box: hsla(card()),
-            muted: hsla(disabled()),
-            selection: hsla(selected()),
-            border: hsla(border()),
-            foreground: hsla(text()),
-            muted_foreground: hsla(muted()),
-            link: hsla(link()),
-            accent: hsla(accent()),
-            warning: hsla(warn_bg()),
-            warning_foreground: hsla(warn_text()),
-            sidebar_foreground: hsla(worktree_text()),
+            background: hsla(today("bg")),
+            popover: hsla(today("panel")),
+            sidebar: hsla(today("sidebar")),
+            input: hsla(today("field")),
+            list: hsla(today("raised")),
+            group_box: hsla(today("card")),
+            muted: hsla(today("disabled")),
+            selection: hsla(today("selected")),
+            border: hsla(today("border")),
+            foreground: hsla(today("text")),
+            muted_foreground: hsla(today("muted")),
+            link: hsla(today("link")),
+            accent: hsla(today("accent")),
+            warning: hsla(today("warn_bg")),
+            warning_foreground: hsla(today("warn_text")),
+            sidebar_foreground: hsla(today("worktree_text")),
             ..ThemeColor::default()
         }
     }
@@ -821,36 +705,41 @@ mod tests {
     fn grove_tokens_derive_close_to_today_s_palette() {
         let p = palette_from(&grove_theme_colors());
         let pairs = [
-            ("bg", p.bg(), bg()),
-            ("panel", p.panel(), panel()),
-            ("sidebar", p.sidebar(), sidebar()),
-            ("field", p.field(), field()),
-            ("raised", p.raised(), raised()),
-            ("card", p.card(), card()),
-            ("disabled", p.disabled(), disabled()),
-            ("selected", p.selected(), selected()),
-            ("border", p.border(), border()),
-            ("border_strong", p.border_strong(), border_strong()),
-            ("connector", p.connector(), connector()),
-            ("text", p.text(), text()),
-            ("text_soft", p.text_soft(), text_soft()),
-            ("muted", p.muted(), muted()),
-            ("faint", p.faint(), faint()),
-            ("link", p.link(), link()),
-            ("accent", p.accent(), accent()),
-            ("accent_hover", p.accent_hover(), accent_hover()),
-            ("accent_bg", p.accent_bg(), accent_bg()),
-            ("on_accent", p.on_accent(), on_accent()),
+            ("bg", p.bg(), today("bg")),
+            ("panel", p.panel(), today("panel")),
+            ("sidebar", p.sidebar(), today("sidebar")),
+            ("field", p.field(), today("field")),
+            ("raised", p.raised(), today("raised")),
+            ("card", p.card(), today("card")),
+            ("disabled", p.disabled(), today("disabled")),
+            ("selected", p.selected(), today("selected")),
+            ("border", p.border(), today("border")),
+            ("border_strong", p.border_strong(), today("border_strong")),
+            ("connector", p.connector(), today("connector")),
+            ("text", p.text(), today("text")),
+            ("text_soft", p.text_soft(), today("text_soft")),
+            ("muted", p.muted(), today("muted")),
+            ("faint", p.faint(), today("faint")),
+            ("link", p.link(), today("link")),
+            ("accent", p.accent(), today("accent")),
+            ("accent_hover", p.accent_hover(), today("accent_hover")),
+            ("accent_bg", p.accent_bg(), today("accent_bg")),
+            ("on_accent", p.on_accent(), today("on_accent")),
             (
                 "on_accent_divider",
                 p.on_accent_divider(),
-                on_accent_divider(),
+                today("on_accent_divider"),
             ),
-            ("warn_bg", p.warn_bg(), warn_bg()),
-            ("warn_text", p.warn_text(), warn_text()),
-            ("worktree_row", p.worktree_row(), worktree_row()),
-            ("commit_divider", p.commit_divider(), commit_divider()),
-            ("worktree_text", p.worktree_text(), worktree_text()),
+            ("warn_bg", p.warn_bg(), today("warn_bg")),
+            ("warn_text", p.warn_text(), today("warn_text")),
+            ("legend_chip", p.legend_chip(), today("legend_chip")),
+            ("worktree_row", p.worktree_row(), today("worktree_row")),
+            (
+                "commit_divider",
+                p.commit_divider(),
+                today("commit_divider"),
+            ),
+            ("worktree_text", p.worktree_text(), today("worktree_text")),
         ];
         for (name, derived, fixed) in pairs {
             let dl = (derived.l - hsla(fixed).l).abs();
@@ -877,6 +766,7 @@ mod tests {
             ("border", p.border()),
             ("disabled", p.disabled()),
             ("worktree_row", p.worktree_row()),
+            ("legend_chip", p.legend_chip()),
             ("accent_bg", p.accent_bg()),
             ("warn_bg", p.warn_bg()),
         ];
@@ -938,6 +828,16 @@ mod tests {
         assert!(p.worktree_row().l < p.accent().l);
     }
 
+    /// The legend chip is the background blended one relative step toward the
+    /// link color, the same step the worktree row tint takes.
+    #[test]
+    fn legend_chip_takes_one_bg_to_link_blend_step() {
+        let p = palette_from(&grove_theme_colors());
+        let step = p.legend_chip().l - p.bg().l;
+        assert!(step > 0.0 && step < 0.1);
+        assert!(p.legend_chip().l < p.link().l);
+    }
+
     #[test]
     fn accent_hover_takes_one_small_darkening_step() {
         let p = palette_from(&grove_theme_colors());
@@ -950,7 +850,7 @@ mod tests {
     #[test]
     fn on_accent_is_readable_on_representative_accents() {
         let accents = [
-            accent(),
+            today("accent"),
             rgb(0xeab308),
             rgb(0x3b82f6),
             rgb(0x7db7ff),
@@ -968,10 +868,16 @@ mod tests {
 
     #[test]
     fn warn_pair_prefers_the_theme_s_tokens() {
-        let bg = hsla(bg());
+        let bg = hsla(today("bg"));
         let warning = hsla(rgb(0xeab308));
         let warning_fg = hsla(rgb(0xfdf3c7));
-        let (pair_bg, pair_fg) = warn_pair(bg, warning, warning_fg, hsla(accent()), hsla(text()));
+        let (pair_bg, pair_fg) = warn_pair(
+            bg,
+            warning,
+            warning_fg,
+            hsla(today("accent")),
+            hsla(today("text")),
+        );
         assert_eq!(pair_fg, warning_fg);
         assert_eq!(pair_bg, blended(bg, warning, WARN_TINT));
     }
@@ -983,8 +889,14 @@ mod tests {
         let warning_fg = hsla(rgb(0x858585));
         let first_bg = blended(bg, warning, WARN_TINT);
         assert!(contrast_ratio(warning_fg, first_bg) < MIN_CONTRAST);
-        let (pair_bg, pair_fg) = warn_pair(bg, warning, warning_fg, hsla(accent()), hsla(text()));
-        assert_eq!(pair_bg, blended(bg, hsla(accent()), WARN_TINT));
+        let (pair_bg, pair_fg) = warn_pair(
+            bg,
+            warning,
+            warning_fg,
+            hsla(today("accent")),
+            hsla(today("text")),
+        );
+        assert_eq!(pair_bg, blended(bg, hsla(today("accent")), WARN_TINT));
         assert!(contrast_ratio(pair_fg, pair_bg) >= MIN_CONTRAST);
     }
 
@@ -1003,9 +915,14 @@ mod tests {
                 .unwrap_or_else(|| t.input_background());
             assert_readable(&[
                 ("tooltip", c(t.popover_foreground), "tooltip", c(t.popover)),
-                ("input", c(t.foreground), "raised", raised()),
+                ("input", c(t.foreground), "raised", c(t.colors.list)),
                 ("input", c(t.foreground), "editor", c(editor)),
-                ("placeholder", c(t.muted_foreground), "raised", raised()),
+                (
+                    "placeholder",
+                    c(t.muted_foreground),
+                    "raised",
+                    c(t.colors.list),
+                ),
                 ("placeholder", c(t.muted_foreground), "editor", c(editor)),
             ]);
         });
@@ -1038,12 +955,12 @@ mod tests {
     }
 
     /// Registering Grove Dark as the dark default keeps today's palette: after
-    /// the real init path (`gpui_kit::init` + `init`), every direct mapped
-    /// token equals its fixed helper exactly. The literal `bg` assertion fails
-    /// loudly if the registration ever regresses to gpui-kit's shadcn dark
+    /// the real init path (`gpui_kit::init` + `init`), every direct mapped token
+    /// equals the Grove hex it was translated from. The literal `bg` assertion
+    /// fails loudly if the registration ever regresses to gpui-kit's shadcn dark
     /// default, whose background is `#090909`.
     #[gpui_kit::test]
-    fn palette_tokens_equal_the_fixed_helpers_under_the_startup_init(cx: &mut TestAppContext) {
+    fn palette_tokens_equal_grove_dark_under_the_startup_init(cx: &mut TestAppContext) {
         cx.update(|cx| {
             gpui_kit::init(cx);
             init(cx);
@@ -1051,20 +968,24 @@ mod tests {
             assert_eq!(cx.theme().dark_theme.name, "Grove Dark");
             let p = palette(cx);
             let pairs = [
-                ("background", p.bg(), bg()),
-                ("popover", p.panel(), panel()),
-                ("sidebar", p.sidebar(), sidebar()),
-                ("input", p.field(), field()),
-                ("list", p.raised(), raised()),
-                ("group_box", p.card(), card()),
-                ("muted", p.disabled(), disabled()),
-                ("selection", p.selected(), selected()),
-                ("border", p.border(), border()),
-                ("foreground", p.text(), text()),
-                ("muted_foreground", p.muted(), muted()),
-                ("link", p.link(), link()),
-                ("accent", p.accent(), accent()),
-                ("sidebar_foreground", p.worktree_text(), worktree_text()),
+                ("background", p.bg(), today("bg")),
+                ("popover", p.panel(), today("panel")),
+                ("sidebar", p.sidebar(), today("sidebar")),
+                ("input", p.field(), today("field")),
+                ("list", p.raised(), today("raised")),
+                ("group_box", p.card(), today("card")),
+                ("muted", p.disabled(), today("disabled")),
+                ("selection", p.selected(), today("selected")),
+                ("border", p.border(), today("border")),
+                ("foreground", p.text(), today("text")),
+                ("muted_foreground", p.muted(), today("muted")),
+                ("link", p.link(), today("link")),
+                ("accent", p.accent(), today("accent")),
+                (
+                    "sidebar_foreground",
+                    p.worktree_text(),
+                    today("worktree_text"),
+                ),
             ];
             for (token, themed, fixed) in pairs {
                 assert_eq!(
@@ -1082,12 +1003,12 @@ mod tests {
             let t = cx.theme();
             assert_eq!(
                 color_bytes(Rgba::from(t.warning)),
-                color_bytes(warn_bg()),
+                color_bytes(today("warn_bg")),
                 "theme warning token is not Grove Dark"
             );
             assert_eq!(
                 color_bytes(Rgba::from(t.warning_foreground)),
-                color_bytes(warn_text()),
+                color_bytes(today("warn_text")),
                 "theme warning_foreground token is not Grove Dark"
             );
         });

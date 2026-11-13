@@ -11,7 +11,7 @@ use gpui_kit::{
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
     Pixels, Point, Render, Role as A11yRole, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, anchored, deferred,
-    div, px, rgb,
+    div, px,
 };
 use grove_core::{
     Badge, LastOpened, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind,
@@ -564,7 +564,7 @@ impl TreeView {
             .when_some(bg, |d, bg| d.bg(bg))
             .when_else(
                 selected,
-                |d| d.child(theme::selection_bar()),
+                |d| d.child(theme::selection_bar(cx)),
                 |d| d.hover(|s| s.bg(palette.raised())),
             )
             .role(A11yRole::TreeItem)
@@ -831,7 +831,7 @@ fn legend(cx: &App) -> impl IntoElement {
         .items_center()
         .justify_center()
         .rounded(px(4.))
-        .bg(rgb(0x17222f))
+        .bg(palette.legend_chip())
         .child(icon(icons::FOLDER, 12.).text_color(palette.link()));
     div()
         .flex()

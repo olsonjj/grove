@@ -317,6 +317,7 @@ impl SettingsWindow {
                     ),
             )
             .child(button(
+                cx,
                 "settings-change-folder",
                 "Change…",
                 ButtonKind::Secondary,
@@ -458,6 +459,7 @@ impl SettingsWindow {
                 !editing,
                 |d| {
                     d.child(button(
+                        cx,
                         ("settings-command-edit", ix),
                         "Edit",
                         ButtonKind::Secondary,
@@ -466,6 +468,7 @@ impl SettingsWindow {
                         })),
                     ))
                     .child(button(
+                        cx,
                         ("settings-command-remove", ix),
                         "Remove",
                         ButtonKind::Secondary,
@@ -480,6 +483,7 @@ impl SettingsWindow {
         match &self.form {
             Some(form) => col.child(self.command_form(form, cx)),
             None => col.child(div().flex().child(button(
+                cx,
                 "settings-command-add",
                 "Add command…",
                 ButtonKind::Secondary,
@@ -562,6 +566,7 @@ impl SettingsWindow {
                     .justify_end()
                     .gap(px(8.))
                     .child(button(
+                        cx,
                         "settings-command-discard",
                         "Discard",
                         ButtonKind::Secondary,
@@ -572,6 +577,7 @@ impl SettingsWindow {
                         })),
                     ))
                     .child(button(
+                        cx,
                         "settings-command-done",
                         "Done",
                         ButtonKind::Primary,
@@ -799,6 +805,7 @@ impl SettingsWindow {
                     .flex()
                     .gap(px(10.))
                     .child(button(
+                        cx,
                         "settings-cancel",
                         "Cancel",
                         ButtonKind::Secondary,
@@ -807,6 +814,7 @@ impl SettingsWindow {
                         }),
                     ))
                     .child(button(
+                        cx,
                         "settings-save",
                         "Save",
                         ButtonKind::Primary,
