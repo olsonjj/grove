@@ -91,6 +91,13 @@ pub fn bg() -> Rgba {
 /// The [`palette::palette`] entry point, re-exported at this path so call sites read
 /// `theme::palette(cx)` while the `palette` module keeps its internals private.
 pub(crate) use palette::palette;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn panel() -> Rgba {
     rgb(0x16191e)
 }
@@ -105,12 +112,26 @@ pub fn panel() -> Rgba {
 pub fn sidebar() -> Rgba {
     rgb(0x15181d)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn field() -> Rgba {
     rgb(0x0f1114)
 }
 pub fn raised() -> Rgba {
     rgb(0x1e222a)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn card() -> Rgba {
     rgb(0x1b1f26)
 }
@@ -130,9 +151,23 @@ pub fn border_strong() -> Rgba {
 pub fn text() -> Rgba {
     rgb(0xe7e9ec)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn text_soft() -> Rgba {
     rgb(0xc9ced6)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn muted() -> Rgba {
     rgb(0xa0a7b2)
 }
@@ -172,9 +207,23 @@ pub fn accent_bg() -> Rgba {
 pub fn on_accent() -> Rgba {
     rgb(0x1a1307)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn warn_bg() -> Rgba {
     rgb(0x2a2215)
 }
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "call sites moved to the palette in tickets 29-31; the helper goes in ticket 32"
+    )
+)]
 pub fn warn_text() -> Rgba {
     rgb(0xf7c987)
 }

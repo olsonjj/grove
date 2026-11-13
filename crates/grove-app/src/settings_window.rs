@@ -277,6 +277,7 @@ impl SettingsWindow {
 
     fn code_folder(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (folder, repos) = self.shown_folder(cx);
+        let palette = theme::palette(cx);
         let folder = folder.map_or_else(|| "No folder chosen".into(), tilde);
         div()
             .flex()
@@ -286,9 +287,9 @@ impl SettingsWindow {
             .py(px(14.))
             .rounded(px(10.))
             .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::raised())
-            .child(icon(icons::FOLDER, 18.).text_color(theme::link()))
+            .border_color(palette.border_strong())
+            .bg(palette.raised())
+            .child(icon(icons::FOLDER, 18.).text_color(palette.link()))
             .child(
                 div()
                     .flex_1()
@@ -296,7 +297,7 @@ impl SettingsWindow {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(label("CODE FOLDER"))
+                    .child(label("CODE FOLDER", cx))
                     .child(
                         div()
                             .flex()
@@ -307,7 +308,7 @@ impl SettingsWindow {
                                 div()
                                     .flex_none()
                                     .text_size(px(12.))
-                                    .text_color(theme::muted())
+                                    .text_color(palette.muted())
                                     .child(format!(
                                         "· {repos} repo{} · Grove scans nothing outside it",
                                         if repos == 1 { "" } else { "s" }
@@ -329,6 +330,7 @@ impl SettingsWindow {
             Role::Editor => ("EDITOR", "settings-editor"),
             Role::Terminal => ("TERMINAL", "settings-terminal"),
         };
+        let palette = theme::palette(cx);
         let targets = cx
             .try_global::<crate::launcher::Launcher>()
             .and_then(|l| l.targets.clone());
@@ -338,9 +340,9 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label(title).mb(px(4.)));
+            .child(label(title, cx).mb(px(4.)));
         let Some(targets) = targets else {
-            return col.child(note("Looking for apps…")).into_any_element();
+            return col.child(note("Looking for apps…", cx)).into_any_element();
         };
         let settings = self.draft_settings();
         let chosen = grove_core::default_opener(role, &settings, &targets);
@@ -350,9 +352,10 @@ impl SettingsWindow {
             _ => None,
         };
         match &chosen {
-            Err(e @ NoTarget::NoneDetected(_)) => col = col.child(note(e.to_string())),
+            Err(e @ NoTarget::NoneDetected(_)) => col = col.child(note(e.to_string(), cx)),
             Err(e) => {
-                col = col.child(note(format!("{e}. Pick another.")).text_color(theme::warn_text()));
+                col = col
+                    .child(note(format!("{e}. Pick another."), cx).text_color(palette.warn_text()));
             }
             Ok(_) => {}
         }
@@ -371,8 +374,8 @@ impl SettingsWindow {
                 if on { ", selected" } else { "" }
             );
             col = col.child(
-                choice((id, ix), on, a11y)
-                    .child(radio(on))
+                choice((id, ix), on, a11y, cx)
+                    .child(radio(on, cx))
                     .child(
                         div()
                             .flex_1()
@@ -384,7 +387,7 @@ impl SettingsWindow {
                             .min_w_0()
                             .truncate()
                             .text_size(px(12.))
-                            .text_color(theme::muted()),
+                            .text_color(palette.muted()),
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         let id = Some(kind.id().to_string());
@@ -407,13 +410,14 @@ impl SettingsWindow {
 
     /// Custom commands, each selectable as the default editor, and the add / edit form.
     fn commands(&self, selected: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let editing = self.form.is_some();
         let mut col = div()
             .mt(px(6.))
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label("CUSTOM COMMANDS"));
+            .child(label("CUSTOM COMMANDS", cx));
         for (ix, cmd) in self.draft.custom_commands.iter().enumerate() {
             let on = selected == Some(cmd.id().as_str());
             let detail = if cmd.run_in_terminal {
@@ -427,10 +431,10 @@ impl SettingsWindow {
                 cmd.template,
                 if on { ", selected" } else { "" }
             );
-            let row = choice(("settings-command", ix), on, a11y)
+            let row = choice(("settings-command", ix), on, a11y, cx)
                 .flex_1()
                 .min_w_0()
-                .child(radio(on))
+                .child(radio(on, cx))
                 .child(
                     div()
                         .flex_1()
@@ -442,7 +446,7 @@ impl SettingsWindow {
                             theme::mono(format!("{} · {detail}", cmd.template))
                                 .truncate()
                                 .text_size(px(12.))
-                                .text_color(theme::muted()),
+                                .text_color(palette.muted()),
                         ),
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -488,12 +492,13 @@ impl SettingsWindow {
     }
 
     fn command_form(&self, form: &CommandForm, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let field = |id: &'static str, title: &'static str, state: &Entity<InputState>| {
             div()
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(label(title))
+                .child(label(title, cx))
                 .child(
                     div()
                         .id(id)
@@ -513,7 +518,7 @@ impl SettingsWindow {
             .p(px(12.))
             .rounded(px(8.))
             .border_1()
-            .border_color(theme::border_strong())
+            .border_color(palette.border_strong())
             .child(field("settings-command-label", "NAME", &form.label))
             .child(field(
                 "settings-command-template",
@@ -525,6 +530,7 @@ impl SettingsWindow {
                     "settings-command-terminal",
                     false,
                     format!("Run in terminal, {}", if on { "on" } else { "off" }),
+                    cx,
                 )
                 .child(
                     div()
@@ -536,9 +542,10 @@ impl SettingsWindow {
                         .child(div().text_size(px(14.)).child("Run in terminal"))
                         .child(note(
                             "On: a new tab in your terminal. Off: runs in the background.",
+                            cx,
                         )),
                 )
-                .child(switch(on))
+                .child(switch(on, cx))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     if let Some(form) = &mut this.form {
                         form.run_in_terminal = !form.run_in_terminal;
@@ -547,7 +554,7 @@ impl SettingsWindow {
                 })),
             )
             .when_some(form.problem, |d, problem| {
-                d.child(note(problem).text_color(theme::warn_text()))
+                d.child(note(problem, cx).text_color(palette.warn_text()))
             })
             .child(
                 div()
@@ -580,8 +587,9 @@ impl SettingsWindow {
     /// New tab or new window, for the default terminal where it supports both.
     fn opens_in_picker(&self, t: grove_core::Terminal, cx: &mut Context<Self>) -> AnyElement {
         if !t.supports_tabs() {
-            return note(format!("{} opens new windows only.", t.name())).into_any_element();
+            return note(format!("{} opens new windows only.", t.name()), cx).into_any_element();
         }
+        let palette = theme::palette(cx);
         let current = self.opens_in(TargetKind::Terminal(t));
         let option = |id: &'static str, text: &'static str, value: TerminalOpensIn| {
             let on = current == Some(value);
@@ -599,20 +607,20 @@ impl SettingsWindow {
                 .rounded(px(6.))
                 .border_1()
                 .border_color(gpui_kit::transparent_black())
-                .focus_visible(|s| s.border_color(theme::link()))
+                .focus_visible(|s| s.border_color(palette.link()))
                 .text_size(px(13.))
                 .cursor_pointer()
                 .when_else(
                     on,
                     |b| {
-                        b.bg(theme::selected())
-                            .border_color(theme::text_soft())
-                            .text_color(theme::text())
+                        b.bg(palette.selected())
+                            .border_color(palette.text_soft())
+                            .text_color(palette.text())
                             .font_weight(FontWeight::SEMIBOLD)
                     },
                     |b| {
-                        b.text_color(theme::muted())
-                            .hover(|s| s.bg(theme::border()))
+                        b.text_color(palette.muted())
+                            .hover(|s| s.bg(palette.border()))
                     },
                 )
                 .child(text)
@@ -626,16 +634,16 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label("OPENS IN"))
+            .child(label("OPENS IN", cx))
             .child(
                 div()
                     .flex()
                     .gap(px(4.))
                     .p(px(3.))
                     .rounded(px(8.))
-                    .bg(theme::field())
+                    .bg(palette.field())
                     .border_1()
-                    .border_color(theme::border())
+                    .border_color(palette.border())
                     .child(option(
                         "settings-opens-tab",
                         "New tab",
@@ -652,6 +660,7 @@ impl SettingsWindow {
                 |d| {
                     d.child(note(
                         "Terminal tabs also need Accessibility permission (Grove presses ⌘T).",
+                        cx,
                     ))
                 },
             )
@@ -671,7 +680,7 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label("GENERAL").mb(px(4.)))
+            .child(label("GENERAL", cx).mb(px(4.)))
             .child(self.toggle(
                 "settings-menu-bar-icon",
                 "Show menu bar icon",
@@ -712,10 +721,12 @@ impl SettingsWindow {
         hint: Option<String>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let palette = theme::palette(cx);
         choice(
             id,
             false,
             format!("{title}, {}", if on { "on" } else { "off" }),
+            cx,
         )
         .py(px(10.))
         .child(
@@ -729,19 +740,19 @@ impl SettingsWindow {
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::muted())
+                        .text_color(palette.muted())
                         .child(detail),
                 )
                 .when_some(hint, |d, hint| {
                     d.child(
                         div()
                             .text_size(px(12.))
-                            .text_color(theme::warn_text())
+                            .text_color(palette.warn_text())
                             .child(hint),
                     )
                 }),
         )
-        .child(switch(on))
+        .child(switch(on, cx))
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             let value = field(&mut this.draft);
             *value = !*value;
@@ -750,6 +761,7 @@ impl SettingsWindow {
     }
 
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let targets = cx
             .try_global::<crate::launcher::Launcher>()
             .and_then(|l| l.targets.clone())
@@ -773,13 +785,13 @@ impl SettingsWindow {
             .px(px(32.))
             .py(px(16.))
             .border_t_1()
-            .border_color(theme::border())
+            .border_color(palette.border())
             .child(
                 div()
                     .min_w_0()
                     .truncate()
                     .text_size(px(13.))
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child(summary),
             )
             .child(
@@ -806,14 +818,15 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::panel())
-            .text_color(theme::text())
+            .bg(palette.panel())
+            .text_color(palette.text())
             .child(
                 div()
                     .id("settings-body")
@@ -837,7 +850,7 @@ impl Render for SettingsWindow {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("Settings"),
                             )
-                            .child(div().text_size(px(14.)).text_color(theme::muted()).child(
+                            .child(div().text_size(px(14.)).text_color(palette.muted()).child(
                                 "Stored on this Mac only. Nothing changes until you \
                                          Save.",
                             )),
@@ -851,7 +864,7 @@ impl Render for SettingsWindow {
                             .child(self.choices(Role::Terminal, cx)),
                     )
                     .child(self.general(cx))
-                    .child(note(VERSION)),
+                    .child(note(VERSION, cx)),
             )
             .child(self.footer(cx))
     }
@@ -883,22 +896,23 @@ fn login_hint(
     (!lines.is_empty()).then(|| lines.join(" "))
 }
 
-fn label(text: &'static str) -> gpui_kit::Div {
+fn label(text: &'static str, cx: &App) -> gpui_kit::Div {
     div()
         .text_size(px(11.))
-        .text_color(theme::faint())
+        .text_color(theme::palette(cx).faint())
         .child(text)
 }
 
-fn note(text: impl Into<SharedString>) -> gpui_kit::Div {
+fn note(text: impl Into<SharedString>, cx: &App) -> gpui_kit::Div {
     div()
         .text_size(px(12.))
-        .text_color(theme::muted())
+        .text_color(theme::palette(cx).muted())
         .child(text.into())
 }
 
 /// A selectable row: radio choice or toggle.
-fn choice(id: impl Into<ElementId>, selected: bool, a11y: String) -> Button {
+fn choice(id: impl Into<ElementId>, selected: bool, a11y: String, cx: &App) -> Button {
+    let palette = theme::palette(cx);
     Button::new(id)
         .accessibility_label(a11y)
         .selected(selected)
@@ -910,30 +924,32 @@ fn choice(id: impl Into<ElementId>, selected: bool, a11y: String) -> Button {
         .rounded(px(8.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .focus_visible(|s| s.border_color(theme::link()))
+        .focus_visible(|s| s.border_color(palette.link()))
         .cursor_pointer()
         .when_else(
             selected,
-            |b| b.bg(theme::selected()),
-            |b| b.bg(theme::raised()).hover(|s| s.bg(theme::border())),
+            |b| b.bg(palette.selected()),
+            |b| b.bg(palette.raised()).hover(|s| s.bg(palette.border())),
         )
 }
 
-fn radio(on: bool) -> impl IntoElement {
+fn radio(on: bool, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     div()
         .flex_none()
         .size(px(14.))
         .rounded(px(7.))
         .border_1()
         .border_color(if on {
-            theme::accent()
+            palette.accent()
         } else {
-            theme::border_strong()
+            palette.border_strong()
         })
         .when(on, |d| d.border_4())
 }
 
-fn switch(on: bool) -> impl IntoElement {
+fn switch(on: bool, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     div()
         .flex_none()
         .w(px(34.))
@@ -943,10 +959,10 @@ fn switch(on: bool) -> impl IntoElement {
         .rounded(px(10.))
         .when_else(
             on,
-            |d| d.bg(theme::accent()).justify_end(),
-            |d| d.bg(theme::border_strong()),
+            |d| d.bg(palette.accent()).justify_end(),
+            |d| d.bg(palette.border_strong()),
         )
-        .child(div().size(px(16.)).rounded(px(8.)).bg(theme::text()))
+        .child(div().size(px(16.)).rounded(px(8.)).bg(palette.text()))
 }
 
 #[cfg(test)]

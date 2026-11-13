@@ -262,7 +262,9 @@ fn icon_button(
     label: SharedString,
     mode: Mode,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> Button {
+    let palette = theme::palette(cx);
     let blocked = match mode {
         Mode::Blocked(reason) => Some(reason),
         _ => None,
@@ -278,18 +280,18 @@ fn icon_button(
         .size(px(32.))
         .rounded(px(7.))
         .border_1()
-        .border_color(theme::border_strong())
-        .focus_visible(|s| s.border_color(theme::link()))
+        .border_color(palette.border_strong())
+        .focus_visible(|s| s.border_color(palette.link()))
         .when_some(blocked, |b, reason| b.aria_description(reason))
         .when_else(
             mode == Mode::Ready,
             |b| {
-                b.bg(theme::raised())
+                b.bg(palette.raised())
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme::border()))
-                    .child(icon(path, 14.).text_color(theme::text()))
+                    .hover(|s| s.bg(palette.border()))
+                    .child(icon(path, 14.).text_color(palette.text()))
             },
-            |b| b.child(icon(path, 14.).text_color(theme::faint())),
+            |b| b.child(icon(path, 14.).text_color(palette.faint())),
         )
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_click(on_click)
@@ -299,9 +301,11 @@ fn icon_button(
 fn text_button(
     id: &'static str,
     label: &'static str,
-    color: gpui_kit::Rgba,
+    color: gpui_kit::Hsla,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    cx: &App,
 ) -> Button {
+    let palette = theme::palette(cx);
     Button::new(id)
         .h(px(28.))
         .px(px(8.))
@@ -309,17 +313,18 @@ fn text_button(
         .rounded(px(6.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .focus_visible(|s| s.border_color(theme::link()))
+        .focus_visible(|s| s.border_color(palette.link()))
         .text_size(px(13.))
         .text_color(color)
         .cursor_pointer()
-        .hover(|s| s.bg(theme::raised()))
+        .hover(|s| s.bg(palette.raised()))
         .child(label)
         .on_click(on_click)
 }
 
 impl Popover {
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let fetching = cx.try_global::<shell::Fetcher>().is_some_and(|f| f.running);
         let fetch_label = if fetching { "Fetching…" } else { "Fetch all" };
         div()
@@ -342,7 +347,7 @@ impl Popover {
                 d.child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::muted())
+                        .text_color(palette.muted())
                         .child("Fetching…"),
                 )
             })
@@ -352,6 +357,7 @@ impl Popover {
                 "Search".into(),
                 Mode::Ready,
                 cx.listener(|this, _, _, cx| this.search(cx)),
+                cx,
             ))
             .child(icon_button(
                 "popover-fetch",
@@ -359,10 +365,12 @@ impl Popover {
                 fetch_label.into(),
                 if fetching { Mode::Busy } else { Mode::Ready },
                 cx.listener(|this, _, _, cx| this.fetch(cx)),
+                cx,
             ))
     }
 
     fn row(&self, ix: usize, row: &MenuRow, apps: &Apps, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let mode = row.presence.reason().map_or(Mode::Ready, Mode::Blocked);
         let button = |id: &'static str, path, app: &str, role: Role| {
             let label = format!("Open {} in {app}", row.name).into();
@@ -373,6 +381,7 @@ impl Popover {
                 label,
                 mode,
                 cx.listener(move |this, _, _, cx| this.open(&wt, presence, role, cx)),
+                cx,
             )
         };
         let mut a11y = format!("{}, {}", row.name, row.state.text);
@@ -381,7 +390,7 @@ impl Popover {
         }
         let state = StyledText::new(row.state.text.clone()).with_highlights(
             row.state.changed.clone().map(|r| {
-                let color = Some(theme::accent().into());
+                let color = Some(palette.accent());
                 (
                     r,
                     HighlightStyle {
@@ -402,7 +411,7 @@ impl Popover {
             .pr(px(6.))
             .py(px(6.))
             .rounded(px(8.))
-            .when(row.last_opened, |d| d.bg(theme::selected()))
+            .when(row.last_opened, |d| d.bg(palette.selected()))
             .child(
                 div()
                     .flex_1()
@@ -421,9 +430,9 @@ impl Popover {
                                     .truncate()
                                     .text_size(px(13.))
                                     .text_color(if row.presence == Presence::Unavailable {
-                                        theme::faint()
+                                        palette.faint()
                                     } else {
-                                        theme::text()
+                                        palette.text()
                                     }),
                             )
                             .when(row.last_opened, |d| {
@@ -432,7 +441,7 @@ impl Popover {
                                         .id(("popover-last-opened", ix))
                                         .flex_none()
                                         .text_size(px(11.))
-                                        .text_color(theme::faint())
+                                        .text_color(palette.faint())
                                         .child("last opened")
                                         .test_support(),
                                 )
@@ -443,7 +452,7 @@ impl Popover {
                             .min_w_0()
                             .truncate()
                             .text_size(px(12.))
-                            .text_color(theme::muted())
+                            .text_color(palette.muted())
                             .child(state),
                     ),
             )
@@ -464,6 +473,7 @@ impl Popover {
     }
 
     fn list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let library = shell::library(cx);
         let groups = menu(library.store.snapshot(), &library.settings);
         let app = |role, fallback: &str| {
@@ -482,7 +492,7 @@ impl Popover {
                     .pt(px(12.))
                     .pb(px(4.))
                     .text_size(px(11.))
-                    .text_color(theme::faint())
+                    .text_color(palette.faint())
                     .child(group.repo.to_uppercase())
                     .into_any_element(),
             );
@@ -497,7 +507,7 @@ impl Popover {
                     .px(px(8.))
                     .py(px(24.))
                     .text_size(px(13.))
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child("No worktrees yet.")
                     .into_any_element(),
             );
@@ -517,6 +527,7 @@ impl Popover {
     }
 
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         div()
             .flex_none()
             .flex()
@@ -525,23 +536,24 @@ impl Popover {
             .px(px(8.))
             .py(px(6.))
             .border_t_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
+            .border_color(palette.border())
+            .bg(palette.panel())
             .child(
                 text_button(
                     "popover-open-grove",
                     "Open Grove",
-                    theme::link(),
+                    palette.link(),
                     cx.listener(|this, _, _, cx| {
                         this.close(cx);
                         shell::show_main(cx);
                     }),
+                    cx,
                 )
                 .child(
                     div()
                         .font_family(theme::MONO)
                         .text_size(px(11.))
-                        .text_color(theme::faint())
+                        .text_color(palette.faint())
                         .child("⌥⌘G"),
                 ),
             )
@@ -549,23 +561,26 @@ impl Popover {
             .child(text_button(
                 "popover-settings",
                 "Settings…",
-                theme::muted(),
+                palette.muted(),
                 cx.listener(|this, _, _, cx| {
                     this.close(cx);
                     shell::open_settings(cx);
                 }),
+                cx,
             ))
             .child(text_button(
                 "popover-quit",
                 "Quit",
-                theme::muted(),
+                palette.muted(),
                 |_, _, cx| shell::quit(cx),
+                cx,
             ))
     }
 }
 
 impl Render for Popover {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let status = self.status.clone().map(|n| {
             div()
                 .id("popover-status")
@@ -573,12 +588,12 @@ impl Render for Popover {
                 .px(px(16.))
                 .py(px(10.))
                 .border_t_1()
-                .border_color(theme::border())
+                .border_color(palette.border())
                 .text_size(px(12.))
                 .when_else(
                     n.warn,
-                    |d| d.bg(theme::warn_bg()).text_color(theme::warn_text()),
-                    |d| d.bg(theme::panel()).text_color(theme::text_soft()),
+                    |d| d.bg(palette.warn_bg()).text_color(palette.warn_text()),
+                    |d| d.bg(palette.panel()).text_color(palette.text_soft()),
                 )
                 .child(n.text)
         });
@@ -591,9 +606,9 @@ impl Render for Popover {
             .overflow_hidden()
             .rounded(px(12.))
             .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::raised())
-            .text_color(theme::text())
+            .border_color(palette.border_strong())
+            .bg(palette.raised())
+            .text_color(palette.text())
             .font_family(theme::SANS)
             .child(self.header(cx))
             .child(self.list(cx))
