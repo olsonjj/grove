@@ -89,8 +89,10 @@ const BUNDLED: &[(&str, &str)] = &[
     ),
 ];
 
-/// The registry name of Grove's own theme (see [`init`]).
-const GROVE_DARK_NAME: &str = "Grove Dark";
+/// The registry name of Grove's own theme (see [`init`]). `pub(crate)` so the
+/// settings window reads a stored choice absent as the default (see
+/// [`apply_entry_choice`]).
+pub(crate) const GROVE_DARK_NAME: &str = "Grove Dark";
 
 /// GPUI Kit's own widgets (tooltips, inputs, scrollbars) in Grove dark too.
 ///
@@ -189,6 +191,16 @@ pub(crate) fn apply_choice(cx: &mut App, choice: Option<&str>) {
         return;
     };
     apply_theme(&config, cx);
+}
+
+/// Applies an entry choice as stored — the choice a settings window captured at
+/// open and re-applies when its window closes. Unlike [`apply_choice`], an absent
+/// choice is Grove Dark (the default [`init`]'s apply left standing at launch),
+/// not a no-op, so Cancel puts back what the window opened with; an unknown
+/// stored name still resolves to Grove Dark, the resolution the launch apply
+/// gave it (spec story 15).
+pub(crate) fn apply_entry_choice(choice: Option<&str>, cx: &mut App) {
+    apply_choice(cx, Some(choice.unwrap_or(GROVE_DARK_NAME)));
 }
 
 /// Applies a registered theme as the active one — the same route Grove Dark takes in

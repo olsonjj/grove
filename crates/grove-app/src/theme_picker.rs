@@ -1,0 +1,379 @@
+//! The THEME dropdown's data: the registry's themes grouped SYSTEM/LIGHT/DARK,
+//! searched case-insensitively, with Grove-drawn rows for the VoiceOver labels
+//! (spec story 14) and Grove-styled section headers the component's generic
+//! rendering doesn't carry.
+
+use gpui_kit::component::IndexPath;
+use gpui_kit::component::searchable_list::{SearchableListDelegate, SearchableListItem};
+use gpui_kit::component::theme::{ThemeMode, ThemeRegistry};
+use gpui_kit::{
+    AnyElement, App, InteractiveElement, IntoElement, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, Task, TestSupportExt, Window, div, px,
+};
+
+use crate::{icons, theme};
+
+/// One theme row in the picker: the registry name — what the setting stores —
+/// plus the mode the LIGHT/DARK grouping hangs off.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ThemeOffer {
+    name: SharedString,
+    mode: ThemeMode,
+}
+
+impl SearchableListItem for ThemeOffer {
+    type Value = SharedString;
+
+    fn title(&self) -> SharedString {
+        self.name.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.name
+    }
+}
+
+/// One dropdown section: a header title and its themes, in display order.
+#[derive(Debug, Clone)]
+pub struct ThemeSection {
+    title: &'static str,
+    items: Vec<ThemeOffer>,
+}
+
+impl ThemeSection {
+    fn new(title: &'static str, items: Vec<ThemeOffer>) -> Self {
+        Self { title, items }
+    }
+}
+
+/// The dropdown's sections: SYSTEM first, then LIGHT and DARK populated from the
+/// registry in `sorted_themes()` order (defaults first, light before dark,
+/// case-insensitive by name), which the groups preserve.
+///
+/// SYSTEM stays the first group but ships empty: its Follow System entry and its
+/// persistence kind land in ticket 35. Persists a bare "Follow System" name today
+/// and the launch resolution (`theme::apply_choice` on this ticket's string field)
+/// would fall back to Grove Dark at launch — wrong until ticket 35's `ThemeChoice`
+/// arrives. `ThemeMenu` keeps an item-less section out of the list, so the group
+/// shows up the moment ticket 35 puts the row in.
+pub fn sections(cx: &App) -> Vec<ThemeSection> {
+    let mut system = ThemeSection::new("SYSTEM", Vec::new());
+    let _ = &mut system;
+    let mut light = ThemeSection::new("LIGHT", Vec::new());
+    let mut dark = ThemeSection::new("DARK", Vec::new());
+    for config in ThemeRegistry::global(cx).sorted_themes() {
+        let offer = ThemeOffer {
+            name: config.name.clone(),
+            mode: config.mode,
+        };
+        if config.mode.is_dark() {
+            dark.items.push(offer);
+        } else {
+            light.items.push(offer);
+        }
+    }
+    vec![system, light, dark]
+}
+
+/// The rows of one kept section: the section's index and its matched rows.
+#[derive(Debug, Clone)]
+struct Matched {
+    section: usize,
+    rows: Vec<usize>,
+}
+
+/// The picker's delegate over [`sections`]: the full list plus the matched view
+/// the search query rebuilds, in the component's searchable-list protocol.
+#[derive(Debug, Clone)]
+pub struct ThemeMenu {
+    sections: Vec<ThemeSection>,
+    matched: Vec<Matched>,
+}
+
+impl ThemeMenu {
+    pub fn new(sections: Vec<ThemeSection>) -> Self {
+        let mut menu = Self {
+            sections,
+            matched: Vec::new(),
+        };
+        menu.refresh("");
+        menu
+    }
+
+    /// Rebuilds the matched view. Sections keep their item order; a section the
+    /// query neither fills nor names is hidden (the component's own group rule),
+    /// and a section with no items at all never shows — no dangling SYSTEM header
+    /// before ticket 35 fills the row, and a title match alone doesn't keep the
+    /// empty group either.
+    fn refresh(&mut self, query: &str) {
+        let query = query.to_lowercase();
+        self.matched = self
+            .sections
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, section)| {
+                if section.items.is_empty() {
+                    return None;
+                }
+                let rows: Vec<usize> = section
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| item.matches(&query))
+                    .map(|(row, _)| row)
+                    .collect();
+                (!rows.is_empty() || section.title.to_lowercase().contains(&query))
+                    .then_some(Matched { section: ix, rows })
+            })
+            .collect();
+    }
+
+    /// The row index counted across every kept section, so row test ids stay
+    /// unique per render (the component's own row ids repeat per section).
+    fn flat_row(&self, ix: IndexPath) -> usize {
+        self.matched[..ix.section]
+            .iter()
+            .map(|m| m.rows.len())
+            .sum::<usize>()
+            + ix.row
+    }
+}
+
+impl SearchableListDelegate for ThemeMenu {
+    type Item = ThemeOffer;
+
+    fn sections_count(&self, _: &App) -> usize {
+        self.matched.len()
+    }
+
+    fn items_count(&self, section: usize) -> usize {
+        self.matched.get(section).map_or(0, |m| m.rows.len())
+    }
+
+    fn item(&self, ix: IndexPath) -> Option<&ThemeOffer> {
+        let matched = self.matched.get(ix.section)?;
+        let row = matched.rows.get(ix.row)?;
+        self.sections.get(matched.section)?.items.get(*row)
+    }
+
+    fn position<V>(&self, value: &V) -> Option<IndexPath>
+    where
+        Self::Item: SearchableListItem<Value = V>,
+        V: PartialEq,
+    {
+        for (section, matched) in self.matched.iter().enumerate() {
+            for (row, item_row) in matched.rows.iter().enumerate() {
+                if self.sections[matched.section].items[*item_row].value() == value {
+                    return Some(IndexPath::default().section(section).row(row));
+                }
+            }
+        }
+        None
+    }
+
+    fn perform_search(&mut self, query: &str, _: &mut Window, _: &mut App) -> Task<()> {
+        self.refresh(query);
+        Task::ready(())
+    }
+
+    fn render_item(
+        &self,
+        ix: IndexPath,
+        item: &ThemeOffer,
+        checked: bool,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let palette = theme::palette(cx);
+        // The row stands on its own for VoiceOver (spec story 14): name, mode, and
+        // "selected" when it's the committed choice — the settings choices' pattern.
+        let word = if item.mode.is_dark() { "dark" } else { "light" };
+        let label = format!(
+            "{}, {word}{}",
+            item.name,
+            if checked { ", selected" } else { "" }
+        );
+        let flat = self.flat_row(ix);
+        Some(
+            div()
+                .id(("theme-row", flat))
+                .test_support()
+                .aria_label(label)
+                .flex()
+                .w_full()
+                .min_w_0()
+                .items_center()
+                .justify_between()
+                .gap(px(8.))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.))
+                        .child(item.name.clone()),
+                )
+                .children(checked.then(|| {
+                    div()
+                        .id(("theme-check", flat))
+                        .flex_none()
+                        .child(icons::icon(icons::CHECK, 12.).text_color(palette.text()))
+                }))
+                .into_any_element(),
+        )
+    }
+
+    fn render_section_header(
+        &self,
+        section: usize,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let matched = self.matched.get(section)?;
+        let title = self.sections.get(matched.section)?.title;
+        let palette = theme::palette(cx);
+        Some(
+            div()
+                .id(("theme-section", section))
+                .test_support()
+                .aria_label(title)
+                // The section headers in the settings body: the label() pattern.
+                .text_size(px(11.))
+                .text_color(palette.faint())
+                .child(title)
+                .into_any_element(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn offer(name: &str, mode: ThemeMode) -> ThemeOffer {
+        ThemeOffer {
+            name: name.into(),
+            mode,
+        }
+    }
+
+    /// SYSTEM first (empty), then a light and a dark section.
+    fn menu() -> ThemeMenu {
+        ThemeMenu::new(vec![
+            ThemeSection::new("SYSTEM", Vec::new()),
+            ThemeSection::new(
+                "LIGHT",
+                vec![
+                    offer("Ayu Light", ThemeMode::Light),
+                    offer("Zune Light", ThemeMode::Light),
+                ],
+            ),
+            ThemeSection::new(
+                "DARK",
+                vec![
+                    offer("Default Dark", ThemeMode::Dark),
+                    offer("Grove Dark", ThemeMode::Dark),
+                ],
+            ),
+        ])
+    }
+
+    /// Names in the matched view, row by row, section by section.
+    fn rows(menu: &ThemeMenu) -> Vec<String> {
+        (0..menu.matched.len())
+            .flat_map(|section| {
+                (0..menu.items_count(section)).map(move |row| {
+                    menu.item(IndexPath::default().section(section).row(row))
+                        .expect("matched row")
+                        .name
+                        .to_string()
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_empty_system_group_stays_out_of_the_list() {
+        assert_eq!(
+            rows(&menu()),
+            ["Ayu Light", "Zune Light", "Default Dark", "Grove Dark"]
+        );
+    }
+
+    #[test]
+    fn a_filled_system_group_shows_first() {
+        let mut sections = vec![
+            ThemeSection::new("SYSTEM", vec![offer("Follow System", ThemeMode::Dark)]),
+            ThemeSection::new("DARK", vec![offer("Grove Dark", ThemeMode::Dark)]),
+        ];
+        let menu = ThemeMenu::new(std::mem::take(&mut sections));
+        assert_eq!(rows(&menu), ["Follow System", "Grove Dark"]);
+        assert_eq!(
+            menu.position(&SharedString::from("Follow System")),
+            Some(IndexPath::default())
+        );
+    }
+
+    #[test]
+    fn the_query_filters_names_case_insensitively() {
+        let mut menu = menu();
+        menu.refresh("gro");
+        assert_eq!(rows(&menu), ["Grove Dark"]);
+        assert_eq!(
+            menu.position(&SharedString::from("Grove Dark")),
+            Some(IndexPath::default())
+        );
+        menu.refresh("AYU");
+        assert_eq!(rows(&menu), ["Ayu Light"]);
+    }
+
+    #[test]
+    fn positions_answer_for_the_matched_view() {
+        let mut menu = menu();
+        menu.refresh("light");
+        assert_eq!(
+            menu.position(&SharedString::from("Zune Light")),
+            Some(IndexPath::default().section(0).row(1))
+        );
+        // A name the view filtered out has no position, like a hidden row.
+        assert_eq!(menu.position(&SharedString::from("Grove Dark")), None);
+    }
+}
+
+/// The registry grouping under the real init path: SYSTEM omitted while empty,
+/// LIGHT before DARK, and each group's rows exactly in `sorted_themes()` order.
+#[gpui_kit::test]
+fn registry_sections_keep_sorted_themes_order(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(cx);
+        let menu = ThemeMenu::new(sections(cx));
+        assert_eq!(
+            menu.sections_count(cx),
+            2,
+            "SYSTEM stays hidden until ticket 35"
+        );
+        assert!(menu.items_count(0) > 0 && menu.items_count(1) > 0);
+        let names = |section: usize| {
+            (0..menu.items_count(section))
+                .map(|row| {
+                    menu.item(IndexPath::default().section(section).row(row))
+                        .unwrap()
+                        .name
+                        .clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        let registry = ThemeRegistry::global(cx);
+        let expect = |dark: bool| {
+            registry
+                .sorted_themes()
+                .iter()
+                .filter(|config| config.mode.is_dark() == dark)
+                .map(|config| config.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(0), expect(false), "LIGHT keeps sorted_themes order");
+        assert_eq!(names(1), expect(true), "DARK keeps sorted_themes order");
+        assert!(names(1).iter().any(|name| name == "Grove Dark"));
+    });
+}
