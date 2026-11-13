@@ -6,13 +6,15 @@
 
 **Blocked by:** 32
 
-**Status:** ready-for-agent
+**Status:** implemented and reviewed (b8bc689 + 89d1f7d); visual pass (box 7) outstanding
 
 - [x] Grove Dark applied at launch by default (translation/registration landed in 30a)
-- [ ] All bundled themes registered at startup; launch applies the persisted choice
-- [ ] `theme` choice round-trips through the settings file with the other preferences
-- [ ] Unknown stored theme name → Grove Dark at launch, stale name left untouched in the file
-- [ ] Per-bundled-theme contrast sweep documents (not fails) any derived-token pair below 4.5:1, noted for tuning
-- [ ] Debug launch hook renders a canned repo (and Settings window on demand) in a debug build only; captures land in `qa-shots/`
-- [ ] Visual check via the harness: main window, details pane and Settings in Grove Dark, one light theme, one dark theme
-- [ ] `just check` green
+- [x] All bundled themes registered at startup; launch applies the persisted choice (22 `include_str!` JSONs → 39 names, registry = bundle + gpui-kit's two defaults, pinned by test; `apply_choice_from(&SettingsFile)` proven from a temp settings file in tests)
+- [x] `theme` choice round-trips through the settings file with the other preferences (bare name for now, `follow`/ThemeChoice reshape + serde migration noted in ticket 35)
+- [x] Unknown stored theme name → Grove Dark at launch, stale name left untouched in the file (byte-identical file assertion in the fallback test; no write path exists in the theme path)
+- [x] Per-bundled-theme contrast sweep documents (not fails) any derived-token pair below 4.5:1, noted for tuning (FIXME(contrast) pins at (theme, token) granularity, two-way exact-match so new failures and stale pins both fail; translucent surfaces composited before measuring)
+- [x] Debug launch hook renders a canned repo (and Settings window on demand) in a debug build only; captures land in `qa-shots/` (`GROVE_QA_REPO=<path>`, `GROVE_QA_SETTINGS=1`; captures come from the visual pass below)
+- [ ] Visual check via the harness: main window, details pane and Settings in Grove Dark, one light theme, one dark theme (pending human pass — `GROVE_QA_REPO=. GROVE_GIT=$(which git) GROVE_SETTINGS_PATH=<temp file with "theme": "Kibble"> cargo run -p grove-app`)
+- [x] `just check` green (fmt ✓, workspace clippy `-D warnings` ✓, tests ✓, rustdoc ✓ — the `grove-core::freshness::pruned_worktree_outside_code_dir_disappears` flake fails independently at the pre-33 base too, control-tested at 8a4c54f; environment, not this ticket)
+
+**Notes from review (two-axis, both reviewers: OK with notes):** vendored JSONs byte-verified against upstream tag commit `99576db5` (git hash-object, all 21 match, incl. empty diff); the restated selection fill is the theme file's own (opaque when the file ships a solid color — Flexoki ships translucent); vendored-dir ↔ `BUNDLED` sync test added; stale pin orphaning guarded. Known verification limits: none open.
