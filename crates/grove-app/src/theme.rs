@@ -84,7 +84,7 @@ pub(crate) use palette::palette;
 /// path clamps theme selection tokens to 30% alpha (its overlay semantics), so
 /// [`init`] restates this opaque value after every apply — see the comment
 /// there for when the clamp re-runs.
-pub fn selected() -> Rgba {
+pub(crate) fn selected() -> Rgba {
     rgb(0x263140)
 }
 
@@ -997,6 +997,21 @@ mod tests {
             // `#121418` survives gpui's Hsla round trip bit-for-bit, so the
             // anchor holds at the raw color too, not just at byte granularity.
             assert_eq!(Rgba::from(p.bg()), rgb(0x121418));
+            // `selected()` is the restatement SOURCE for `theme.selection`
+            // (init's opaque-fill fix), so the pair assertion above is
+            // tautological w.r.t. `grove-dark.json` for this one token — the
+            // registry config is parsed straight from that file, so assert it
+            // directly and keep the JSON the guarded single source of truth.
+            let grove_dark = ThemeRegistry::global(cx)
+                .themes()
+                .get("Grove Dark")
+                .expect("Grove Dark was registered by init")
+                .clone();
+            assert_eq!(
+                grove_dark.colors.selection.as_deref(),
+                Some("#263140"),
+                "grove-dark.json's selection drifted from today's palette"
+            );
             // The warning pair: the theme's tokens (not the palette's derived
             // `warn_bg`/`warn_text` — those blend with the background and are
             // covered by the ≤0.05-lightness derive test).

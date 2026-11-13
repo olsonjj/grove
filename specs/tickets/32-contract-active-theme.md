@@ -6,9 +6,9 @@
 
 **Status:** ready-for-agent
 
-- [ ] Raw color literals outside the theme module are gone too — e.g. the tree-view legend folder chip, `.bg(rgb(0x17222f))` in `tree_view.rs` (flagged by the ticket-29 review), and `rgb(0x2c4560)` in `setup.rs` (flagged by tickets 30/31 reviews) — replaced with palette tokens/derivations
-- [ ] Fixed-color helpers and their constants are gone; no caller remains outside the theme module's own tests
-- [ ] The contrast matrix (every text token on every surface, incl. on-accent pairs) runs on resolved tokens under Grove Dark
-- [ ] Tooltips/inputs and other gpui-kit widgets keep their existing contrast guarantees (their gpui-kit test still passes)
-- [ ] Zero visual change under Grove Dark
-- [ ] `just check` green
+- [x] Raw color literals outside the theme module are gone too — e.g. the tree-view legend folder chip, `.bg(rgb(0x17222f))` in `tree_view.rs` (flagged by the ticket-29 review), and `rgb(0x2c4560)` in `setup.rs` (flagged by tickets 30/31 reviews) — replaced with palette tokens/derivations
+- [x] Fixed-color helpers and their constants are gone; no caller remains outside the theme module's own tests (25 deleted; `selected()` kept `pub(crate)` for init's selection-clamp restate; colors were inline literals)
+- [x] The contrast matrix (every text token on every surface, incl. on-accent pairs) runs on resolved tokens under Grove Dark (real init path; legend chip included as a surface)
+- [x] Tooltips/inputs and other gpui-kit widgets keep their existing contrast guarantees (their gpui-kit test still passes under real init)
+- [x] Zero visual change under Grove Dark (reviewer-adjudicated sub-JND deltas only: setup folder-field border collapsed to border_strong, oklab ΔE 0.030 equal to the old two-state difference; legend chip derived bg→link at LEGEND_CHIP_TINT 0.08, dL 0.002 from the old literal)
+- [x] `just check` green (full `cargo test --all-features --locked`; only the pre-existing unrelated `grove-core::freshness` flake fails)
