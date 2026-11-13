@@ -8,7 +8,7 @@
 
 **Status:** ready-for-agent
 
-- [ ] Grove Dark applied at launch by default (translation/registration landed in 30a)
+- [x] Grove Dark applied at launch by default (translation/registration landed in 30a)
 - [ ] All bundled themes registered at startup; launch applies the persisted choice
 - [ ] `theme` choice round-trips through the settings file with the other preferences
 - [ ] Unknown stored theme name → Grove Dark at launch, stale name left untouched in the file
