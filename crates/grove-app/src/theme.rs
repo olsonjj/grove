@@ -198,22 +198,26 @@ pub(crate) fn apply_choice_from(settings_file: &SettingsFile, cx: &mut App) {
 /// picker's live apply, and the settings window. `None` keeps what [`init`] applied
 /// (Grove Dark at launch); Follow System resolves from the system's current
 /// appearance (see [`apply_follow_system`]); a registered name is applied app-wide
-/// and forces native chrome to the theme's mode; an unknown stored name logs and
-/// keeps what's applied (Grove Dark at launch, spec story 15), touching nothing on
-/// disk.
+/// and forces native chrome to the theme's mode; an unregistered name applies
+/// Grove Dark — the resolution the launch fallback had already installed for the
+/// same stored choice (so the launch path's second apply is idempotent, one code
+/// path serves both; spec story 15) — touching nothing on disk.
 pub(crate) fn apply_choice(cx: &mut App, choice: Option<&ThemeChoice>) {
     let Some(choice) = choice else { return };
     let ThemeChoice::Name(name) = choice else {
         apply_follow_system(cx);
         return;
     };
-    let Some(config) = ThemeRegistry::global(cx)
-        .themes()
-        .get(name.as_str())
-        .cloned()
-    else {
-        eprintln!("[grove] stored theme {name:?} is not registered; keeping Grove Dark");
-        return;
+    let config = match ThemeRegistry::global(cx).themes().get(name.as_str()) {
+        Some(config) => config.clone(),
+        None => {
+            eprintln!("[grove] stored theme {name:?} is not registered; applying Grove Dark");
+            ThemeRegistry::global(cx)
+                .themes()
+                .get(GROVE_DARK_NAME)
+                .cloned()
+                .expect("Grove Dark was registered by init")
+        }
     };
     apply_theme(&config, cx);
     sync_native_appearance(config.mode);
@@ -225,8 +229,9 @@ pub(crate) fn apply_choice(cx: &mut App, choice: Option<&ThemeChoice>) {
 /// resolution the system had at entry (the Mac may have changed since, and Cancel
 /// must return to Follow System, not a stale name). An absent choice is Grove Dark
 /// (the launch default), not a no-op, so Cancel puts back what the window opened
-/// with; an unknown stored name logs and keeps whatever is applied — Grove Dark at
-/// launch, the resolution the launch apply stood up (spec story 15).
+/// with; an unknown stored name applies Grove Dark — the resolution the launch
+/// fallback had already installed for that entry (spec story 15) — so Cancel never
+/// strands the picked theme of a since-removed stored choice.
 pub(crate) fn apply_entry_choice(choice: Option<ThemeChoice>, cx: &mut App) {
     apply_choice(
         cx,
@@ -1348,6 +1353,14 @@ mod tests {
                 names.len() + 2,
                 "the registry holds exactly the bundle plus gpui-kit's Default Light and Default Dark"
             );
+            // No registered theme is named the Follow System sentinel or the picker
+            // row's value: the serde shape (settings.rs's FOLLOW_SYSTEM_SER doc) and
+            // the picker's row value claim no registry name reads as the other kind.
+            for name in names {
+                let name: &str = name.as_ref();
+                assert_ne!(name, "follow_system");
+                assert_ne!(name, "Follow System");
+            }
         });
     }
 

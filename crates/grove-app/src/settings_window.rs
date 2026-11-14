@@ -664,6 +664,9 @@ impl SettingsWindow {
         self.draft.theme = Some(choice.clone());
         // The resolved theme re-skins every visible window now — a Follow System
         // pick resolves from the system's current appearance (see theme::apply_choice).
+        // The pick is NOT exempt from live tracking: with Follow System still persisted,
+        // a macOS appearance change re-applies Follow System's resolution over this
+        // unsaved preview (and a Save then persists the draft as usual).
         theme::apply_choice(cx, Some(&choice));
         cx.notify();
     }
@@ -2089,5 +2092,32 @@ mod tests {
             label(cx, w, "theme-picker"),
             "Theme, Follow System, opens theme list"
         );
+    }
+
+    /// An unknown stored name resolves to Grove Dark at launch (spec story 15), and
+    /// Cancel reverts to that entry resolution too (story 16): a pick applied over
+    /// it is undone, and the stale name stays in the untouched file until the user
+    /// saves a different choice.
+    #[gpui_kit::test]
+    fn canceling_with_an_unknown_stored_name_reverts_to_grove_dark(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(Name("Removed Long Ago".into())),
+                ..Default::default()
+            },
+        );
+        running(cx, &file);
+        assert_eq!(applied(cx), "Grove Dark", "launch fallback");
+        let w = open_settings(cx);
+        pick_theme(cx, w, "kibble");
+        assert_eq!(applied(cx), "Kibble");
+        let before = std::fs::read(file.path()).unwrap();
+        click(cx, w, "settings-cancel");
+        assert!(!is_open(cx, w));
+        assert_eq!(applied(cx), "Grove Dark", "the entry resolution is back");
+        assert_eq!(settings(cx).theme, Some(Name("Removed Long Ago".into())));
+        assert_eq!(std::fs::read(file.path()).unwrap(), before);
     }
 }

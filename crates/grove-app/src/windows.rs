@@ -40,7 +40,10 @@ pub fn close_on_deactivate<V: 'static>(window: &mut Window, cx: &mut Context<V>)
 
 /// The appearance-changed subscriptions of every window Grove opened, keeping the
 /// per-window registration alive for the window's life (spec: Follow System tracks
-/// macOS live, per visible window). Windows are few; held until Grove quits.
+/// macOS live, per visible window). A window-scoped subscription dies with its
+/// window anyway; the Vec only accumulates tiny entries — popovers and switchers
+/// open many short-lived windows — held until Grove quits, deliberately: there is
+/// no removal hook worth the churn.
 #[derive(Default)]
 struct AppearanceWatch(Vec<Subscription>);
 
