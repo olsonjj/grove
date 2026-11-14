@@ -1128,7 +1128,7 @@ mod tests {
             shell::start_bare(cx);
             // Launch applies the persisted choice once (main.rs); the seeded file
             // stands in for the settings file here.
-            theme::apply_choice_from(&file, cx);
+            theme::apply_choice_from(file, cx);
         });
     }
 
