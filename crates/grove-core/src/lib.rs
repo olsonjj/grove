@@ -19,6 +19,7 @@ mod settings;
 mod snapshot;
 mod targets;
 mod tree;
+mod update;
 mod watch;
 
 pub use badge::Badge;
@@ -53,4 +54,5 @@ pub use targets::{
 pub use tree::{
     DisplayPath, NavEffect, NavKey, Row, RowId, RowKind, Tree, home_dir, navigate, tilde,
 };
+pub use update::{RELEASES_ENDPOINT, UpdateDecision, UpdateFetchError, check_for_update};
 pub use watch::{Changes, WatchError, Watcher};

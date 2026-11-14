@@ -3092,6 +3092,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "notify",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",
