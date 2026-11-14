@@ -20,7 +20,7 @@ use tray_icon::TrayIcon;
 
 use crate::{
     PlatformEvent, about, hotkeys, login_item, macos, main_window, popover, settings_window, setup,
-    status_item, switcher, windows,
+    status_item, switcher, update, windows,
 };
 
 /// A status-item click that arrives right after the popover closed on deactivation is the
@@ -40,6 +40,7 @@ gpui_kit::actions!(
     [
         About,
         OpenSettings,
+        CheckForUpdates,
         Quit,
         Hide,
         HideOthers,
@@ -243,6 +244,7 @@ pub fn init(cx: &mut App) {
     .detach();
     cx.on_action(|_: &About, cx| about::open(cx));
     cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
+    cx.on_action(|_: &CheckForUpdates, cx| update::check(cx));
     cx.on_action(|_: &Quit, cx| quit(cx));
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -276,10 +278,10 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("cmd-,", OpenSettings, None),
     ]);
     cx.set_menus([
-        // Ticket 38 slots "Check for Updates…" after the first separator.
         Menu::new("Grove").items([
             MenuItem::action("About Grove", About),
             MenuItem::separator(),
+            MenuItem::action("Check for Updates…", CheckForUpdates),
             MenuItem::action("Settings…", OpenSettings),
             MenuItem::separator(),
             MenuItem::action("Hide Grove", Hide),

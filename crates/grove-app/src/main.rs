@@ -23,6 +23,7 @@ mod test_support;
 mod theme;
 mod theme_picker;
 mod tree_view;
+mod update;
 mod windows;
 
 use std::time::Instant;

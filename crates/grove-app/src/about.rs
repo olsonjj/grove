@@ -207,12 +207,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let file = settings_file(&tmp, Settings::default());
         running(cx, &file);
-        // Ticket 38 slots "Check for Updates…" between About Grove and Settings….
+        // The menu shape updater.md's "Menu" decision fixes; ticket 38 added the
+        // "Check for Updates…" slot between About Grove and Settings….
         assert_eq!(
             menu_items(cx),
             [
                 MenuShape::Action("About Grove".into()),
                 MenuShape::Separator,
+                MenuShape::Action("Check for Updates…".into()),
                 MenuShape::Action("Settings…".into()),
                 MenuShape::Separator,
                 MenuShape::Action("Hide Grove".into()),
