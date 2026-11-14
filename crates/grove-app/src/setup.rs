@@ -18,6 +18,7 @@ use grove_core::{
 use crate::main_window::tilde;
 use crate::shell::{self, Library};
 use crate::theme::{self, ButtonKind, button};
+use crate::windows;
 
 enum Boot {
     /// Whether the snapshot came from the cache.
@@ -664,7 +665,7 @@ pub fn change_code_dir(done: impl FnOnce(Snapshot, &mut App) + Send + 'static, c
     };
     let options = window_options("Choose Code Folder", cx);
     cx.activate(true);
-    match gpui_kit::open_window(options, cx, |window, cx| {
+    match windows::open_window(options, cx, |window, cx| {
         let setup = setup.view(window, cx);
         setup.update(cx, |setup, cx| setup.prompt(cx));
         setup
@@ -704,7 +705,7 @@ fn window_options(title: &'static str, cx: &App) -> WindowOptions {
 fn open(setup: Setup, cx: &mut App) {
     let options = window_options("Grove Setup", cx);
     cx.activate(true);
-    if let Err(e) = gpui_kit::open_window(options, cx, |window, cx| setup.view(window, cx)) {
+    if let Err(e) = windows::open_window(options, cx, |window, cx| setup.view(window, cx)) {
         eprintln!("[grove] setup window: {e:#}");
         shell::quit(cx);
     }

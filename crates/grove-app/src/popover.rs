@@ -19,7 +19,7 @@ use crate::launcher::{self, Notice};
 use crate::status_item::Anchor;
 use crate::theme::palette::Palette;
 use crate::windows::{close_on_deactivate, panel_options};
-use crate::{shell, theme};
+use crate::{shell, theme, windows};
 
 const SIZE: (f32, f32) = (380., 560.);
 /// Long enough to read the confirmation line before the popover closes.
@@ -59,7 +59,7 @@ fn open_with(
     options: WindowOptions,
     cx: &mut App,
 ) -> gpui_kit::Result<(AnyWindowHandle, Entity<Popover>)> {
-    gpui_kit::open_window(options, cx, |window, cx| {
+    windows::open_window(options, cx, |window, cx| {
         cx.new(|cx| {
             close_on_deactivate(window, cx);
             Popover::new(window, cx)

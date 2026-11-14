@@ -18,7 +18,7 @@ use gpui_kit::{
 };
 use grove_core::{
     CustomCommand, LoginItemStatus, NoTarget, Opener, Preferences, Role, Settings, Snapshot,
-    TargetKind, TerminalOpensIn, command_line,
+    TargetKind, TerminalOpensIn, ThemeChoice, command_line,
 };
 
 use crate::icons::{self, icon};
@@ -26,7 +26,7 @@ use crate::login_item::{self, LOGIN_ITEMS, LoginItems};
 use crate::main_window::tilde;
 use crate::theme::{self, ButtonKind, button};
 use crate::theme_picker::ThemeMenu;
-use crate::{setup, shell, theme_picker};
+use crate::{setup, shell, theme_picker, windows};
 
 const SIZE: (f32, f32) = (820., 760.);
 const VERSION: &str = concat!(
@@ -43,8 +43,9 @@ const VERSION: &str = concat!(
 struct Open {
     window: AnyWindowHandle,
     /// The persisted choice as stored when the window opened (not its resolution,
-    /// so a later Follow System entry isn't pinned by a cancel — spec story 16).
-    entry_theme: Option<String>,
+    /// so a later Follow System entry isn't pinned by a cancel — spec story 16): a
+    /// FollowSystem entry re-resolves from the system's appearance at cancel time.
+    entry_theme: Option<ThemeChoice>,
     /// Keeps the window-closed observer alive while the window is open (dropped
     /// with the global; the underscore keeps the never-read lint quiet).
     _closed: Subscription,
@@ -66,7 +67,7 @@ fn became_open(window: AnyWindowHandle, cx: &mut App) {
         // window saved; every other path keeps what it opened with.
         let entry = open.entry_theme.clone();
         cx.remove_global::<Open>();
-        theme::apply_entry_choice(entry.as_deref(), cx);
+        theme::apply_entry_choice(entry, cx);
     });
     cx.set_global(Open {
         window,
@@ -114,7 +115,7 @@ fn open_with(
     options: WindowOptions,
     cx: &mut App,
 ) -> gpui_kit::Result<(AnyWindowHandle, Entity<SettingsWindow>)> {
-    gpui_kit::open_window(options, cx, |window, cx| {
+    windows::open_window(options, cx, |window, cx| {
         cx.new(|cx| SettingsWindow::new(window, cx))
     })
 }
@@ -656,11 +657,14 @@ impl SettingsWindow {
     /// this one, whose own chrome follows), through the same route the launch
     /// choice takes.
     fn theme_picked(&mut self, ev: &SelectEvent<ThemeMenu>, cx: &mut Context<Self>) {
-        let SelectEvent::Confirm(Some(name)) = ev else {
+        let SelectEvent::Confirm(Some(value)) = ev else {
             return;
         };
-        self.draft.theme = Some(name.to_string());
-        theme::apply_choice(cx, Some(name));
+        let choice = theme_picker::choice_for(value);
+        self.draft.theme = Some(choice.clone());
+        // The resolved theme re-skins every visible window now — a Follow System
+        // pick resolves from the system's current appearance (see theme::apply_choice).
+        theme::apply_choice(cx, Some(&choice));
         cx.notify();
     }
 
@@ -1025,10 +1029,15 @@ fn note(text: impl Into<SharedString>, cx: &App) -> gpui_kit::Div {
         .child(text.into())
 }
 
-/// What the theme dropdown reads for a stored choice: the choice by name; Grove
-/// Dark when nothing is stored, the default the launch apply stood up.
-fn theme_display(choice: &Option<String>) -> SharedString {
-    choice.as_deref().unwrap_or(theme::GROVE_DARK_NAME).into()
+/// What the theme dropdown reads for a stored choice: the choice as stored — a
+/// theme by name, "Follow System" for the FollowSystem kind; Grove Dark when
+/// nothing is stored, the default the launch apply stood up.
+fn theme_display(choice: &Option<ThemeChoice>) -> SharedString {
+    match choice {
+        Some(ThemeChoice::Name(name)) => name.clone().into(),
+        Some(ThemeChoice::FollowSystem) => theme_picker::FOLLOW_SYSTEM.into(),
+        None => theme::GROVE_DARK_NAME.into(),
+    }
 }
 
 /// A selectable row: radio choice or toggle.
@@ -1092,11 +1101,14 @@ mod tests {
     use std::process::Command;
     use std::sync::{Arc, Mutex};
 
+    use gpui_kit::WindowAppearance;
     use gpui_kit::component::IndexPath;
     use gpui_kit::component::theme::ActiveTheme;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{ElementId, Point, TestAppContext};
-    use grove_core::{Outcome, Settings, SettingsFile, TerminalOpensIn, search};
+    use grove_core::{Outcome, Settings, SettingsFile, TerminalOpensIn, ThemeChoice, search};
+
+    use ThemeChoice::{FollowSystem, Name};
     use tempfile::TempDir;
 
     use super::*;
@@ -1116,8 +1128,7 @@ mod tests {
             shell::start_bare(cx);
             // Launch applies the persisted choice once (main.rs); the seeded file
             // stands in for the settings file here.
-            let choice = shell::library(cx).settings.theme.clone();
-            theme::apply_choice(cx, choice.as_deref());
+            theme::apply_choice_from(&file, cx);
         });
     }
 
@@ -1742,7 +1753,7 @@ mod tests {
         cx.update(|cx| cx.theme().theme_name().to_string())
     }
 
-    fn draft_theme(cx: &mut TestAppContext, view: &Entity<SettingsWindow>) -> Option<String> {
+    fn draft_theme(cx: &mut TestAppContext, view: &Entity<SettingsWindow>) -> Option<ThemeChoice> {
         view.read_with(cx, |v, _| v.draft.theme.clone())
     }
 
@@ -1796,7 +1807,7 @@ mod tests {
         press(cx, w, "down");
         press(cx, w, "enter");
         assert_eq!(applied(cx), next);
-        assert_eq!(draft_theme(cx, &view).as_deref(), Some(next.as_str()));
+        assert_eq!(draft_theme(cx, &view), Some(Name(next)));
         // Unlike the other prefs, the pick leaves the stored choice alone.
         assert_eq!(settings(cx).theme, None);
         assert_eq!(file.load().unwrap().theme, None);
@@ -1813,20 +1824,41 @@ mod tests {
             "Theme, Grove Dark, opens theme list"
         );
         click(cx, w, "theme-picker");
-        // The popup is a virtual list: on this window only the LIGHT rows fit its
-        // max height, so the first render shows the LIGHT header and its rows —
-        // light before dark (spec story 3) is asserted below across a query that
-        // lands in both groups.
+        // SYSTEM first with its single fixed row, then LIGHT (spec story 3, 35):
+        // on this tall window the fold shows both groups, Follow System atop.
+        assert_eq!(theme_sections(cx, w), ["SYSTEM", "LIGHT"]);
+        let rows = theme_rows(cx, w);
+        assert_eq!(
+            rows.first().map(String::as_str),
+            Some("Follow System, follows system appearance")
+        );
+        assert!(
+            rows[1..].iter().all(|row| row.ends_with(", light")),
+            "only light rows after Follow System: {rows:?}"
+        );
+        // A query landing in a single group shows that group alone: on the still
+        // open list, the search starts empty ("latte" only matches Catppuccin Latte).
+        typed(cx, w, "latte");
         assert_eq!(theme_sections(cx, w), ["LIGHT"]);
         let rows = theme_rows(cx, w);
         assert!(!rows.is_empty());
         assert!(
             rows.iter().all(|row| row.ends_with(", light")),
-            "only light rows below the fold: {rows:?}"
+            "only light rows in the query's group: {rows:?}"
         );
         // The committed choice is checked wherever it shows (spec story 4).
+        press(cx, w, "escape");
+        click(cx, w, "theme-picker");
         typed(cx, w, "grove");
         assert_eq!(theme_rows(cx, w), ["Grove Dark, dark, selected"]);
+        // Follow System is searchable with the themes (ticket 35).
+        press(cx, w, "escape");
+        click(cx, w, "theme-picker");
+        typed(cx, w, "sys");
+        assert_eq!(
+            theme_rows(cx, w),
+            ["Follow System, follows system appearance"]
+        );
         // The search narrows case-insensitively on the name (spec story 2), and a
         // query into both groups shows LIGHT's rows before DARK's.
         press(cx, w, "escape");
@@ -1853,7 +1885,7 @@ mod tests {
         let file = settings_file(
             &tmp,
             Settings {
-                theme: Some("Kibble".into()),
+                theme: Some(Name("Kibble".into())),
                 ..Settings::default()
             },
         );
@@ -1867,8 +1899,8 @@ mod tests {
         assert!(!is_open(cx, w));
         // The entry theme is back, and the file was never touched (story 16).
         assert_eq!(applied(cx), "Kibble");
-        assert_eq!(settings(cx).theme.as_deref(), Some("Kibble"));
-        assert_eq!(file.load().unwrap().theme.as_deref(), Some("Kibble"));
+        assert_eq!(settings(cx).theme, Some(Name("Kibble".into())));
+        assert_eq!(file.load().unwrap().theme, Some(Name("Kibble".into())));
         // Reopen: the dropdown still names the stored choice.
         let w = open_settings(cx);
         assert_eq!(
@@ -1888,8 +1920,8 @@ mod tests {
         assert!(!is_open(cx, w));
         assert_eq!(applied(cx), "Kibble", "Save keeps the picked theme live");
         let s = settings(cx);
-        assert_eq!(s.theme.as_deref(), Some("Kibble"));
-        assert_eq!(file.load().unwrap().theme.as_deref(), Some("Kibble"));
+        assert_eq!(s.theme, Some(Name("Kibble".into())));
+        assert_eq!(file.load().unwrap().theme, Some(Name("Kibble".into())));
         // Reopen shows the stored choice committed in the picker.
         let w = open_settings(cx);
         assert_eq!(
@@ -1933,7 +1965,7 @@ mod tests {
         let file = settings_file(
             &tmp,
             Settings {
-                theme: Some("Kibble".into()),
+                theme: Some(Name("Kibble".into())),
                 ..Settings::default()
             },
         );
@@ -1945,8 +1977,8 @@ mod tests {
         cx.run_until_parked();
         assert!(!is_open(cx, w));
         assert_eq!(applied(cx), "Kibble");
-        assert_eq!(settings(cx).theme.as_deref(), Some("Kibble"));
-        assert_eq!(file.load().unwrap().theme.as_deref(), Some("Kibble"));
+        assert_eq!(settings(cx).theme, Some(Name("Kibble".into())));
+        assert_eq!(file.load().unwrap().theme, Some(Name("Kibble".into())));
     }
 
     #[gpui_kit::test]
@@ -1968,5 +2000,94 @@ mod tests {
         });
         assert!(open, "the form survives the pick");
         assert_eq!(label, Some("Neovim".into()), "the field keeps its text");
+    }
+
+    #[gpui_kit::test]
+    fn picking_follow_system_resolves_and_persists(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let (w, view) = open_settings_view(cx);
+        pick_theme(cx, w, "system");
+        // The pick resolves from the system's appearance (the test platform reports
+        // light): Follow System's light resolution, same route a named pick takes
+        // (spec story 12).
+        assert_eq!(applied(cx), "Default Light");
+        assert_eq!(draft_theme(cx, &view), Some(FollowSystem));
+        // Unlike the other prefs, the pick leaves the stored choice alone.
+        assert_eq!(settings(cx).theme, None);
+
+        click(cx, w, "settings-save");
+        assert!(!is_open(cx, w));
+        assert_eq!(settings(cx).theme, Some(FollowSystem));
+        assert_eq!(file.load().unwrap().theme, Some(FollowSystem));
+        assert_eq!(
+            applied(cx),
+            "Default Light",
+            "Save keeps the resolution live"
+        );
+
+        // Reopen shows the stored choice committed in the picker (story 4).
+        let w = open_settings(cx);
+        assert_eq!(
+            label(cx, w, "theme-picker"),
+            "Theme, Follow System, opens theme list"
+        );
+        click(cx, w, "theme-picker");
+        typed(cx, w, "system");
+        assert_eq!(
+            theme_rows(cx, w),
+            ["Follow System, follows system appearance, selected"]
+        );
+    }
+
+    /// macOS's appearance changed while Settings is open: Grove rethemes live — the
+    /// simulated notification routes the same core the per-window callbacks run
+    /// (story 13) — and Cancel re-applies the entry choice AS STORED: Follow System
+    /// re-resolved from the appearance it reads now, not the resolution the change
+    /// left standing and not a theme name (story 16, this ticket's entry semantics).
+    #[gpui_kit::test]
+    fn cancel_after_an_appearance_change_re_applies_the_entry_choice(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(FollowSystem),
+                ..Default::default()
+            },
+        );
+        running(cx, &file);
+        let w = open_settings(cx);
+        cx.update(|cx| assert!(theme::follow_appearance_changed(WindowAppearance::Dark, cx)));
+        assert_eq!(applied(cx), "Grove Dark");
+        click(cx, w, "settings-cancel");
+        assert!(!is_open(cx, w));
+        // The test platform reports light, so Cancel re-resolves light — proving the
+        // re-resolve (a pinned resolution would keep Grove Dark).
+        assert_eq!(applied(cx), "Default Light");
+        assert_eq!(settings(cx).theme, Some(FollowSystem));
+        assert_eq!(file.load().unwrap().theme, Some(FollowSystem));
+    }
+
+    /// A settings file persisted under Follow System opens on its light resolution
+    /// here (the test platform reports light), and the picker opens committed on the
+    /// Follow System row.
+    #[gpui_kit::test]
+    fn launch_with_follow_system_resolves_and_the_picker_agrees(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(FollowSystem),
+                ..Default::default()
+            },
+        );
+        running(cx, &file);
+        assert_eq!(applied(cx), "Default Light");
+        let w = open_settings(cx);
+        assert_eq!(
+            label(cx, w, "theme-picker"),
+            "Theme, Follow System, opens theme list"
+        );
     }
 }

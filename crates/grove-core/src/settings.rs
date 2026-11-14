@@ -3,6 +3,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::de::Deserializer;
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
 use crate::snapshot::Snapshot;
@@ -60,11 +62,10 @@ pub struct Settings {
     /// happens, so the pane starts at Grove's default; older settings files load as-is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details_pane_width: Option<i32>,
-    /// Theme to open with, as its registry name. `None` (absent in old files) = Grove
-    /// Dark. The spec's `ThemeChoice` (`FollowSystem`/`Name(String)`) lands with Follow
-    /// System (ticket 35); until then the file carries the bare name.
+    /// Theme choice to open with (see [`ThemeChoice`]). `None` (absent in old
+    /// settings files) = the launch default, Grove Dark.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,
+    pub theme: Option<ThemeChoice>,
 }
 
 impl Default for Settings {
@@ -114,8 +115,47 @@ pub struct Preferences {
     pub background_fetch: bool,
     /// Whether to launch at login.
     pub launch_at_login: bool,
-    /// Theme choice as its registry name; `None` = Grove Dark (see [`Settings::theme`]).
-    pub theme: Option<String>,
+    /// Theme choice as stored (see [`Settings::theme`]).
+    pub theme: Option<ThemeChoice>,
+}
+
+/// What the theme setting stores: `Follow System`, or a Theme by its registry name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThemeChoice {
+    /// Track macOS's appearance. Resolves live to the mode's default theme: dark →
+    /// Grove Dark, light → Default Light.
+    FollowSystem,
+    /// A Theme, as its registry name.
+    Name(String),
+}
+
+/// The string a [`ThemeChoice::FollowSystem`] serializes to. A `Name` keeps the
+/// bare-registry-name shape the theme setting shipped with, so settings files from
+/// before Follow System load unchanged (the migration this type carries); the
+/// sentinel is a lowercase snake_case string, and no bundled theme is named one, so
+/// a stored choice can't be read as the other kind (custom theme files are out of
+/// the spec's scope).
+const FOLLOW_SYSTEM_SER: &str = "follow_system";
+
+impl Serialize for ThemeChoice {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ThemeChoice::FollowSystem => serializer.serialize_str(FOLLOW_SYSTEM_SER),
+            ThemeChoice::Name(name) => serializer.serialize_str(name),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ThemeChoice {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer).map(|stored| {
+            if stored == FOLLOW_SYSTEM_SER {
+                ThemeChoice::FollowSystem
+            } else {
+                ThemeChoice::Name(stored)
+            }
+        })
+    }
 }
 
 /// macOS's record of Grove's login item (`SMAppService`).
@@ -501,6 +541,8 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    use ThemeChoice::{FollowSystem, Name};
+
     fn round_trip(settings: &Settings) -> Settings {
         let tmp = tempfile::tempdir().unwrap();
         let file = SettingsFile::new(tmp.path().join("settings.json"));
@@ -508,28 +550,60 @@ mod tests {
         file.load().unwrap()
     }
 
+    /// Every kind round-trips — absent, a named theme, Follow System — and persists
+    /// through the Preferences copy the settings window saves with.
     #[test]
-    fn theme_choice_round_trips() {
+    fn theme_choices_round_trip() {
+        for theme in [None, Some(Name("Ayu Light".into())), Some(FollowSystem)] {
+            let mut settings = Settings {
+                theme: theme.clone(),
+                ..Default::default()
+            };
+            assert_eq!(round_trip(&settings), settings);
+            settings.set_preferences(settings.preferences());
+            assert_eq!(settings.theme, theme);
+        }
+    }
+
+    /// Follow System persists as its own kind: the sentinel survives the file and
+    /// loads back as FollowSystem, not as a (would-be-unknown) theme name.
+    #[test]
+    fn follow_system_round_trips_through_the_file() {
         let settings = Settings {
-            theme: Some("Ayu Light".into()),
+            theme: Some(FollowSystem),
             ..Default::default()
         };
         assert_eq!(round_trip(&settings), settings);
-        // And it persists through the Preferences copy the settings window saves with.
-        let mut saved = Settings {
-            theme: Some("Ayu Light".into()),
-            ..Default::default()
-        };
-        saved.set_preferences(saved.preferences());
-        assert_eq!(saved.theme, Some("Ayu Light".into()));
+        let tmp = tempfile::tempdir().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        file.save(&settings).unwrap();
+        assert!(
+            std::fs::read_to_string(file.path())
+                .unwrap()
+                .contains(FOLLOW_SYSTEM_SER)
+        );
+    }
+
+    /// A settings file from the bare-registry-name era (before Follow System) loads
+    /// the string as a named choice, so the launch resolution keeps working.
+    #[test]
+    fn a_legacy_bare_theme_name_loads_as_a_named_choice() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        std::fs::write(file.path(), br#"{"code_dir": "/c", "theme": "Ayu Light"}"#).unwrap();
+        let loaded = file.load().unwrap();
+        assert_eq!(loaded.theme, Some(Name("Ayu Light".into())));
+        // And it round-trips as the named choice from then on.
+        assert_eq!(round_trip(&loaded), loaded);
     }
 
     #[test]
     fn settings_without_a_theme_choice_load_to_none() {
         let tmp = tempfile::tempdir().unwrap();
         let file = SettingsFile::new(tmp.path().join("settings.json"));
-        // A pre-existing settings.json predating the theme choice; it must load unchanged
-        // and keep round-tripping without the field appearing in its JSON.
+        // A pre-existing settings.json predating the theme choice entirely; it must
+        // load unchanged and keep round-tripping without the field appearing in its
+        // JSON (a Follow System or named choice writes the field).
         std::fs::write(file.path(), br#"{"code_dir": "/c"}"#).unwrap();
         let loaded = file.load().unwrap();
         assert_eq!(loaded.theme, None);

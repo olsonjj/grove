@@ -14,10 +14,10 @@ use gpui_kit::base::Button;
 use gpui_kit::component::highlighter::HighlightTheme;
 use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeRegistry, try_parse_color};
 use gpui_kit::{
-    App, ClickEvent, Div, ElementId, FontWeight, Hsla, InteractiveElement, ParentElement, Rgba,
-    SharedString, Styled, Window, div, px, rgb,
+    App, ClickEvent, Div, ElementId, FontWeight, Global, Hsla, InteractiveElement, ParentElement,
+    Rgba, SharedString, Styled, Window, WindowAppearance, div, px, rgb,
 };
-use grove_core::{Settings, SettingsFile};
+use grove_core::{Settings, SettingsFile, ThemeChoice};
 
 /// The themes registered at startup (see [`init`]): Grove's own translation first,
 /// then every gpui-kit built-in, embedded so there is no file watcher and no
@@ -94,6 +94,12 @@ const BUNDLED: &[(&str, &str)] = &[
 /// [`apply_entry_choice`]).
 pub(crate) const GROVE_DARK_NAME: &str = "Grove Dark";
 
+/// The registry name of gpui-component's default light theme — Follow System's light
+/// resolution (spec "Follow System"). Resolution reads the registry by name, not the
+/// theme slot the last apply left behind (`Theme::apply_config` replaces the slots, so
+/// the slot cannot answer "what is dark/light's default"; the ticket-33 review note).
+const DEFAULT_LIGHT_NAME: &str = "Default Light";
+
 /// GPUI Kit's own widgets (tooltips, inputs, scrollbars) in Grove dark too.
 ///
 /// Must run after [`gpui_kit::init`]: that call seeds the registry (and its
@@ -153,10 +159,11 @@ fn register_bundled_themes(cx: &mut App) {
     }
 }
 
-/// At launch, applies what the settings file persisted. Absent `theme`, unreadable
-/// settings, and unknown names all keep Grove Dark, which [`init`] already applied.
-/// Reads only: an unknown name logs and keeps the stale choice in the file until the
-/// user saves a different one.
+/// At launch, applies what the settings file persisted. Absent `theme` (no choice
+/// made and old files) applies Grove Dark by name, which also forces Grove's dark
+/// native chrome (see [`apply_choice_from`]); unreadable settings and unknown names
+/// keep Grove Dark, which [`init`] already applied. Reads only: an unknown name logs
+/// and keeps the stale choice in the file until the user saves a different one.
 ///
 /// Runs right after [`init`], which installs Grove Dark as the default; loading the
 /// settings file here (instead of `setup::boot`'s off-main-thread load) keeps the
@@ -166,9 +173,11 @@ pub(crate) fn apply_saved_choice(cx: &mut App) {
 }
 
 /// Applies the choice persisted in `settings_file` (`$GROVE_SETTINGS_PATH` / default
-/// location for [`apply_saved_choice`]). Absent `theme`, unreadable settings, and
-/// unknown names all keep Grove Dark, which [`init`] already applied. Reads only: an
-/// unknown name logs and keeps the stale choice in the file until the user saves a
+/// location for [`apply_saved_choice`]). Absent `theme` applies Grove Dark
+/// explicitly: the launch default must also force native chrome dark, which
+/// [`apply_choice`]'s absent no-op (keep what [`init`] applied) cannot express.
+/// Unreadable settings and unknown names keep Grove Dark. Reads only: an unknown
+/// name logs and keeps the stale choice in the file until the user saves a
 /// different one.
 pub(crate) fn apply_choice_from(settings_file: &SettingsFile, cx: &mut App) {
     let settings = settings_file.load().unwrap_or_else(|e| {
@@ -178,29 +187,134 @@ pub(crate) fn apply_choice_from(settings_file: &SettingsFile, cx: &mut App) {
         );
         Settings::default()
     });
-    apply_choice(cx, settings.theme.as_deref());
+    let choice = settings
+        .theme
+        .clone()
+        .or_else(|| Some(ThemeChoice::Name(GROVE_DARK_NAME.to_string())));
+    apply_choice(cx, choice.as_ref());
 }
 
-/// Applies a stored choice: `None` keeps Grove Dark; a registered name is applied
-/// app-wide; an unknown stored name logs and keeps Grove Dark (spec story 15),
-/// touching nothing on disk.
-pub(crate) fn apply_choice(cx: &mut App, choice: Option<&str>) {
-    let Some(name) = choice else { return };
-    let Some(config) = ThemeRegistry::global(cx).themes().get(name).cloned() else {
+/// Applies a stored choice — the one code path for the launch resolution, the
+/// picker's live apply, and the settings window. `None` keeps what [`init`] applied
+/// (Grove Dark at launch); Follow System resolves from the system's current
+/// appearance (see [`apply_follow_system`]); a registered name is applied app-wide
+/// and forces native chrome to the theme's mode; an unknown stored name logs and
+/// keeps what's applied (Grove Dark at launch, spec story 15), touching nothing on
+/// disk.
+pub(crate) fn apply_choice(cx: &mut App, choice: Option<&ThemeChoice>) {
+    let Some(choice) = choice else { return };
+    let ThemeChoice::Name(name) = choice else {
+        apply_follow_system(cx);
+        return;
+    };
+    let Some(config) = ThemeRegistry::global(cx)
+        .themes()
+        .get(name.as_str())
+        .cloned()
+    else {
         eprintln!("[grove] stored theme {name:?} is not registered; keeping Grove Dark");
         return;
     };
     apply_theme(&config, cx);
+    sync_native_appearance(config.mode);
 }
 
 /// Applies an entry choice as stored — the choice a settings window captured at
-/// open and re-applies when its window closes. Unlike [`apply_choice`], an absent
-/// choice is Grove Dark (the default [`init`]'s apply left standing at launch),
-/// not a no-op, so Cancel puts back what the window opened with; an unknown
-/// stored name still resolves to Grove Dark, the resolution the launch apply
-/// gave it (spec story 15).
-pub(crate) fn apply_entry_choice(choice: Option<&str>, cx: &mut App) {
-    apply_choice(cx, Some(choice.unwrap_or(GROVE_DARK_NAME)));
+/// open and re-applies when its window closes. Stored as stored: a FollowSystem
+/// entry re-resolves from the CURRENT system appearance, never pinned to the
+/// resolution the system had at entry (the Mac may have changed since, and Cancel
+/// must return to Follow System, not a stale name). An absent choice is Grove Dark
+/// (the launch default), not a no-op, so Cancel puts back what the window opened
+/// with; an unknown stored name logs and keeps whatever is applied — Grove Dark at
+/// launch, the resolution the launch apply stood up (spec story 15).
+pub(crate) fn apply_entry_choice(choice: Option<ThemeChoice>, cx: &mut App) {
+    apply_choice(
+        cx,
+        Some(&choice.unwrap_or_else(|| ThemeChoice::Name(GROVE_DARK_NAME.to_string()))),
+    );
+}
+
+/// Native chrome follows the resolved theme's mode: dark themes run dark titlebars
+/// and system panels (Grove's folder picker), light themes run light — replacing
+/// main.rs's one-time launch-only honoring. Under Follow System the override stays
+/// cleared ([`apply_follow_system`]): the system's own appearance is the resolved
+/// mode by definition.
+fn sync_native_appearance(mode: ThemeMode) {
+    if mode.is_dark() {
+        crate::macos::use_dark_appearance();
+    } else {
+        crate::macos::use_light_appearance();
+    }
+}
+
+/// Follow System: resolves from macOS's appearance and applies app-wide. Resumes
+/// native tracking FIRST — while an appearance override stands, macOS stops
+/// notifying windows (gpui's appearance-changed never fires), so following requires
+/// the override cleared; with it cleared the resolved mode IS the system's mode, so
+/// the native chrome follows the resolution without a forced appearance.
+pub(crate) fn apply_follow_system(cx: &mut App) {
+    crate::macos::use_system_appearance();
+    apply_follow_system_from(cx.window_appearance(), cx);
+}
+
+/// Applies Follow System's resolution for `appearance`: the mode's default theme —
+/// dark → Grove Dark, light → Default Light — through the same apply route a named
+/// choice takes (`apply_config`, so a mode switch re-skins live), and records the
+/// appearance so one macOS change applies once across every window (see
+/// [`follow_appearance_changed`]). Not the appearance-changed path: callers read the
+/// appearance from their own source (the system at launch and picks, a window at a
+/// notification).
+pub(crate) fn apply_follow_system_from(appearance: WindowAppearance, cx: &mut App) {
+    let mode = ThemeMode::from(appearance);
+    let name = if mode.is_dark() {
+        GROVE_DARK_NAME
+    } else {
+        DEFAULT_LIGHT_NAME
+    };
+    let Some(config) = ThemeRegistry::global(cx).themes().get(name).cloned() else {
+        eprintln!("[grove] Follow System resolution: {name:?} is not registered");
+        return;
+    };
+    apply_theme(&config, cx);
+    cx.default_global::<FollowApplied>().0 = Some(mode);
+}
+
+/// The appearance whose Follow System resolution is applied. Every window Grove
+/// opened receives the same appearance-changed notification for one macOS appearance
+/// change (spec: per-window registration); this marker makes the FIRST notification
+/// apply and the rest see the theme already applied and skip (at most once per
+/// change).
+#[derive(Debug, Default)]
+struct FollowApplied(Option<ThemeMode>);
+
+impl Global for FollowApplied {}
+
+/// One window's appearance-changed notification; every window Grove opened
+/// registers it at creation (see `windows::open_window`). Follow System re-resolves
+/// live from the notification's own appearance; a stored named choice is a no-op
+/// (spec story 13). All windows receive the same notification per change; only the
+/// first applies (see [`follow_appearance_changed`]).
+pub(crate) fn appearance_changed(window: &mut Window, cx: &mut App) {
+    follow_appearance_changed(window.appearance(), cx);
+}
+
+/// The appearance-change core, taking the appearance it re-resolves from, so the
+/// tests' simulated notification routes the same code a real per-window
+/// notification runs, and the notification's freshness is the caller's guarantee.
+/// Returns whether Follow System applied this change.
+pub(crate) fn follow_appearance_changed(appearance: WindowAppearance, cx: &mut App) -> bool {
+    let Some(library) = cx.try_global::<crate::shell::Library>() else {
+        return false;
+    };
+    if library.settings.theme != Some(ThemeChoice::FollowSystem) {
+        return false;
+    }
+    let mode = ThemeMode::from(appearance);
+    if cx.default_global::<FollowApplied>().0 == Some(mode) {
+        return false;
+    }
+    apply_follow_system_from(appearance, cx);
+    true
 }
 
 /// Applies a registered theme as the active one — the same route Grove Dark takes in
@@ -687,6 +801,8 @@ mod tests {
     use gpui_kit::Hsla;
     use gpui_kit::TestAppContext;
     use gpui_kit::component::theme::{ActiveTheme, ThemeColor, ThemeSet};
+    use gpui_kit::{EmptyView, WindowAppearance};
+    use tempfile::TempDir;
 
     use super::palette::{
         ACCENT_HOVER_DARKEN, MIN_CONTRAST, WARN_TINT, blended, contrast_ratio, on_accent_text,
@@ -694,6 +810,12 @@ mod tests {
     };
 
     use super::*;
+    use gpui_kit::AppContext;
+
+    use crate::shell;
+    use crate::test_support::set_library;
+    use crate::windows;
+    use ThemeChoice::{FollowSystem, Name};
 
     /// Today's Grove hex values — the palette the deleted fixed helpers carried
     /// and the source the Grove Dark theme file was translated from, plus the
@@ -1263,7 +1385,7 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             init(cx);
-            apply_choice(cx, Some("Kibble"));
+            apply_choice(cx, Some(&Name("Kibble".into())));
             assert_eq!(cx.theme().theme_name(), "Kibble");
             assert!(cx.theme().is_dark());
             // Kibble's file carries its selection fill: the apply-time clamp must not
@@ -1283,7 +1405,7 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             init(cx);
-            apply_choice(cx, Some("Ayu Light"));
+            apply_choice(cx, Some(&Name("Ayu Light".into())));
             assert_eq!(cx.theme().theme_name(), "Ayu Light");
             assert_eq!(cx.theme().selection.a, 0.3);
         });
@@ -1297,7 +1419,7 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             init(cx);
-            apply_choice(cx, Some("Flexoki Dark"));
+            apply_choice(cx, Some(&Name("Flexoki Dark".into())));
             assert_eq!(cx.theme().theme_name(), "Flexoki Dark");
             let file_alpha = (0x77 as f32) / 255.0;
             assert!((cx.theme().selection.a - file_alpha).abs() < 1e-6);
@@ -1312,7 +1434,7 @@ mod tests {
         cx.update(|cx| {
             gpui_kit::init(cx);
             init(cx);
-            apply_choice(cx, Some("Removed Long Ago"));
+            apply_choice(cx, Some(&Name("Removed Long Ago".into())));
             assert_eq!(cx.theme().theme_name(), "Grove Dark");
             assert!(cx.theme().is_dark());
         });
@@ -1327,7 +1449,7 @@ mod tests {
         let settings_file = SettingsFile::new(tmp.path().join("settings.json"));
         settings_file
             .save(&Settings {
-                theme: Some("Kibble".into()),
+                theme: Some(Name("Kibble".into())),
                 ..Settings::default()
             })
             .unwrap();
@@ -1348,7 +1470,7 @@ mod tests {
         let settings_file = SettingsFile::new(tmp.path().join("settings.json"));
         settings_file
             .save(&Settings {
-                theme: Some("Removed Long Ago".into()),
+                theme: Some(Name("Removed Long Ago".into())),
                 ..Settings::default()
             })
             .unwrap();
@@ -1371,6 +1493,113 @@ mod tests {
             apply_choice(cx, None);
             assert_eq!(cx.theme().theme_name(), "Grove Dark");
         });
+    }
+
+    /// Follow System resolves through the registry's mode defaults, dark → Grove Dark
+    /// (reinstalled via the apply route — the registry's built-in dark default cannot
+    /// be overwritten, the ticket-33 review note), light → Default Light.
+    #[gpui_kit::test]
+    fn follow_system_resolves_per_mode(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            apply_follow_system_from(WindowAppearance::Dark, cx);
+            assert_eq!(cx.theme().theme_name(), "Grove Dark");
+            assert!(cx.theme().is_dark());
+            apply_follow_system_from(WindowAppearance::Light, cx);
+            assert_eq!(cx.theme().theme_name(), "Default Light");
+            assert!(!cx.theme().is_dark());
+        });
+    }
+
+    /// Grove past launch on `settings` (`shell` running, the file seeded from). The
+    /// launch apply runs against the seeded file, as main.rs does against the real
+    /// one.
+    fn launch(cx: &mut TestAppContext, settings: Settings) {
+        let tmp = TempDir::new().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        file.save(&settings).unwrap();
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+            shell::init(cx);
+            set_library(&file, vec![], cx);
+            shell::start_bare(cx);
+        });
+        // The launch route reads the seeded file (as main.rs reads the real one).
+        cx.update(|cx| apply_choice_from(&file, cx));
+    }
+
+    fn follow_system() -> Settings {
+        Settings {
+            theme: Some(FollowSystem),
+            ..Default::default()
+        }
+    }
+
+    /// The appearance-changed core: at most one apply per macOS change — every
+    /// window Grove opened receives the same notification, and only the first for a
+    /// given appearance applies while the rest skip; the next change re-resolves
+    /// (spec story 13). The launch apply covers the appearance Grove already opened
+    /// on (the test platform reports light), so its notifications are no-ops too.
+    #[gpui_kit::test]
+    fn one_appearance_change_applies_once(cx: &mut TestAppContext) {
+        launch(cx, follow_system());
+        // Already resolved light at launch: a same-appearance notification skips.
+        assert!(!cx.update(|cx| follow_appearance_changed(WindowAppearance::Light, cx)));
+        cx.update(|cx| assert_eq!(cx.theme().theme_name(), "Default Light"));
+        // The Mac switches: live re-resolution, dark and back, each change applying
+        // once (its second notification skips) with the applied theme untouched.
+        assert!(cx.update(|cx| follow_appearance_changed(WindowAppearance::Dark, cx)));
+        cx.update(|cx| assert_eq!(cx.theme().theme_name(), "Grove Dark"));
+        assert!(!cx.update(|cx| follow_appearance_changed(WindowAppearance::Dark, cx)));
+        assert!(cx.update(|cx| follow_appearance_changed(WindowAppearance::Light, cx)));
+        cx.update(|cx| assert_eq!(cx.theme().theme_name(), "Default Light"));
+    }
+
+    /// A stored named theme makes every appearance-changed notification a no-op
+    /// (spec story 13): Grove keeps the picked theme.
+    #[gpui_kit::test]
+    fn an_appearance_change_is_a_no_op_under_a_named_theme(cx: &mut TestAppContext) {
+        launch(
+            cx,
+            Settings {
+                theme: Some(Name("Kibble".into())),
+                ..Default::default()
+            },
+        );
+        cx.update(|cx| assert_eq!(cx.theme().theme_name(), "Kibble"));
+        assert!(!cx.update(|cx| follow_appearance_changed(WindowAppearance::Dark, cx)));
+        assert!(!cx.update(|cx| follow_appearance_changed(WindowAppearance::Light, cx)));
+        cx.update(|cx| assert_eq!(cx.theme().theme_name(), "Kibble"));
+    }
+
+    /// With Follow System active, each created window applies it live: the window's
+    /// own creation notification (every window fires one, gpui defers it on open)
+    /// reaches the registered per-window callback while no Follow System resolution
+    /// has applied since launch.
+    #[gpui_kit::test]
+    fn a_created_window_applies_follow_system(cx: &mut TestAppContext) {
+        launch(
+            cx,
+            Settings {
+                theme: Some(Name("Kibble".into())),
+                ..Default::default()
+            },
+        );
+        // The user committed Follow System: the stored choice changes as a Save
+        // would, with nothing applied at this instant.
+        cx.update(|cx| {
+            cx.global_mut::<shell::Library>().settings.theme = Some(FollowSystem);
+        });
+        cx.update(|cx| {
+            windows::open_window(Default::default(), cx, |_, cx| cx.new(|_| EmptyView)).unwrap();
+        });
+        // The creation notification carries the window's appearance (the test
+        // platform reports light): the resolution applied through the real
+        // per-window callback path.
+        cx.run_until_parked();
+        cx.update(|cx| assert_eq!(cx.theme().theme_name(), "Default Light"));
     }
 
     /// The derived Grove tokens under the active theme that miss 4.5:1, as the

@@ -1,11 +1,11 @@
 use std::time::Instant;
 
 use gpui_kit::{
-    App, AppContext, Bounds, Context, DisplayId, IntoElement, Render, Window, WindowBounds,
-    WindowKind, WindowOptions, div, point, px, size,
+    AnyWindowHandle, App, AppContext, Bounds, Context, DisplayId, Entity, Global, IntoElement,
+    Render, Subscription, Window, WindowBounds, WindowKind, WindowOptions, div, point, px, size,
 };
 
-use crate::shell;
+use crate::{shell, theme};
 
 /// `bounds` are relative to `display`, the primary one if `None`.
 pub fn panel_options(
@@ -38,6 +38,41 @@ pub fn close_on_deactivate<V: 'static>(window: &mut Window, cx: &mut Context<V>)
     .detach();
 }
 
+/// The appearance-changed subscriptions of every window Grove opened, keeping the
+/// per-window registration alive for the window's life (spec: Follow System tracks
+/// macOS live, per visible window). Windows are few; held until Grove quits.
+#[derive(Default)]
+struct AppearanceWatch(Vec<Subscription>);
+
+impl Global for AppearanceWatch {}
+
+/// Every window Grove opens: registers gpui's appearance-changed callback at
+/// creation — inside the window's build, so it stands before the creation
+/// notification gpui defers onto every window flushes — and otherwise exactly
+/// `gpui_kit::open_window` (see [`theme::appearance_changed`] for the callback,
+/// [`theme::follow_appearance_changed`] for what it applies).
+pub fn open_window<V: Render>(
+    options: WindowOptions,
+    cx: &mut App,
+    build: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
+) -> gpui_kit::Result<(AnyWindowHandle, Entity<V>)> {
+    let mut watch = None;
+    let opened = gpui_kit::open_window(options, cx, |window, cx| {
+        let view = build(window, cx);
+        watch = Some(window.observe_window_appearance(theme::appearance_changed));
+        view
+    });
+    match opened {
+        Ok(opened) => {
+            if let Some(subscription) = watch {
+                cx.default_global::<AppearanceWatch>().0.push(subscription);
+            }
+            Ok(opened)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Draws nothing; the warm-up window's view.
 struct Blank;
 
@@ -61,7 +96,7 @@ pub fn warm_up(cx: &mut App) {
         show: false,
         ..panel_options(bounds, None)
     };
-    if let Ok((handle, _)) = gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| Blank)) {
+    if let Ok((handle, _)) = open_window(options, cx, |_, cx| cx.new(|_| Blank)) {
         shell::close(handle, cx);
     }
     eprintln!("[grove] renderer warm-up {:.1} ms", ms(start));

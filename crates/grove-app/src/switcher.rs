@@ -117,7 +117,7 @@ fn open_with(
     options: WindowOptions,
     cx: &mut App,
 ) -> gpui_kit::Result<(AnyWindowHandle, Entity<Switcher>)> {
-    gpui_kit::open_window(options, cx, |window, cx| {
+    windows::open_window(options, cx, |window, cx| {
         cx.new(|cx| {
             close_on_deactivate(window, cx);
             Switcher::new(window, cx)

@@ -29,6 +29,19 @@ pub fn use_light_appearance() {
     NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());
 }
 
+/// Follow System: clears Grove's appearance override (a nil `NSApp.appearance`) so
+/// titlebars and system panels track macOS's setting again — and, with it, so gpui's
+/// per-window appearance-changed callbacks keep firing: while an appearance is
+/// forced, windows stop receiving them, so Follow System could never re-resolve
+/// live. The counterpart to the forced [`use_dark_appearance`]/[`use_light_appearance`]
+/// pair, which a named theme choice needs. No-op off the main thread.
+pub fn use_system_appearance() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm).setAppearance(None);
+}
+
 /// Undoes Hide Grove, which activating alone doesn't. No-op off the main thread.
 pub fn unhide() {
     if let Some(mtm) = MainThreadMarker::new() {

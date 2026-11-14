@@ -26,7 +26,6 @@ mod windows;
 
 use std::time::Instant;
 
-use gpui_kit::component::theme::ActiveTheme;
 use gpui_kit::{App, QuitMode};
 
 /// Events from platform callbacks (status item, hotkeys), forwarded into GPUI's foreground loop.
@@ -53,16 +52,11 @@ fn main() {
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);
         theme::init(cx);
+        // The launch apply also settles native chrome on the resolved theme's mode
+        // (dark themes force dark titlebars and panels, light force light; Follow
+        // System clears the override so both track macOS live).
         theme::apply_saved_choice(cx);
         details_view::init(cx);
-        // Dark appearance matches dark themes (dark titlebars and system panels); a
-        // light theme choice must open light. Live appearance tracking is Follow
-        // System, ticket 35 — this only honors the applied theme once at launch.
-        if cx.theme().is_dark() {
-            macos::use_dark_appearance();
-        } else {
-            macos::use_light_appearance();
-        }
         shell::init(cx);
         setup::launch(cx);
     });
