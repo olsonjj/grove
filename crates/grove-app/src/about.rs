@@ -123,6 +123,8 @@ impl Render for About {
                 Button::new("about-repo")
                     .text_size(px(13.))
                     .text_color(palette.link())
+                    // The repo's idiom for showing an element is interactive.
+                    .cursor_pointer()
                     .accessibility_label("Grove on GitHub, opens in your browser")
                     .child("Grove on GitHub")
                     .on_click(|_: &ClickEvent, _, cx| cx.open_url(REPO_URL)),
