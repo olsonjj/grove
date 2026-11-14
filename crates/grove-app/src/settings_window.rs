@@ -972,8 +972,9 @@ impl Render for SettingsWindow {
                                     .child("Settings"),
                             )
                             .child(div().text_size(px(14.)).text_color(palette.muted()).child(
-                                "Stored on this Mac only. Nothing changes until you \
-                                         Save.",
+                                "Stored on this Mac only. Themes preview live — Save keeps \
+                                         your choice, Cancel restores it. Other changes apply \
+                                         when you Save.",
                             )),
                     )
                     .child(self.code_folder(cx))
