@@ -4,15 +4,17 @@
 
 **Blocked by:** 34
 
-**Status:** ready-for-agent
+**Status:** implemented and reviewed (d65c827 + b3a93a4 + 4c34bb4); visual pass (box 7) outstanding
 
-- [ ] "Follow System" is a persisted choice, shown and checked in the SYSTEM group, with save/cancel semantics identical to a picked theme
-- [ ] Follow System resolves dark → Grove Dark, light → Default Light
-- [ ] macOS appearance change rethemes all visible windows live while Follow System is active — including while Settings is open
-- [ ] With a named theme chosen, appearance changes are a no-op
-- [ ] Cancel/Escape after an appearance change re-applies the entry choice, not the transient resolution
-- [ ] Tests: resolution per mode, live re-resolution on appearance change, no-op under a named theme, cancel-after-change
-- [ ] Visual check via the `qa-shots/` harness: same launch captured under dark and (forced) light appearance with Follow System chosen
-- [ ] `just check` green
+- [x] "Follow System" is a persisted choice, shown and checked in the SYSTEM group, with save/cancel semantics identical to a picked theme (ThemeChoice::FollowSystem persists as the `follow_system` sentinel — no bundled name collides, pinned by test; fixed first SYSTEM entry; ordinary save path)
+- [x] Follow System resolves dark → Grove Dark, light → Default Light (registry lookups, not the apply_config-replaced slot; Follow System additionally clears the NSApp appearance override so gpui's per-window appearance callbacks keep firing — upstream-documented that a forced override stops them)
+- [x] macOS appearance change rethemes all visible windows live while Follow System is active — including while Settings is open (per-window `observe_window_appearance` via the `windows::open_window` wrapper; once-per-change `FollowApplied` marker; first notification wins)
+- [x] With a named theme chosen, appearance changes are a no-op (gate reads the persisted choice as stored)
+- [x] Cancel/Escape after an appearance change re-applies the entry choice, not the transient resolution (FollowSystem re-resolves from the CURRENT system appearance; a stored unknown name re-applies Grove Dark — the launch fallback resolution — with the file left byte-identical)
+- [x] Tests: resolution per mode, live re-resolution on appearance change, no-op under a named theme, cancel-after-change (plus serde migration: legacy bare string → Name, pre-33 files → None → Grove Dark, absent stays absent in JSON)
+- [ ] Visual check via the `qa-shots/` harness: same launch captured under dark and (forced) light appearance with Follow System chosen (pending human pass — with Follow System stored the NSApp override is cleared, so toggling macOS Light/Dark between runs gives deterministic captures: `GROVE_QA_REPO=<path> GROVE_SETTINGS_PATH=<file with "theme": "follow_system"> GROVE_QA_SETTINGS=1 cargo run -p grove-app` in each appearance)
+- [x] `just check` green (fmt ✓, workspace clippy `-D warnings` ✓, rustdoc ✓, grove-app 250/250 ✓, grove-core suite ✓ incl. settings round-trips — the `freshness::pruned_worktree_outside_code_dir_disappears` flake fails independently of the theme work, control-tested at the pre-33 base on ticket 33)
+
+**Notes from review (two-axis, both reviewers OK):** the cleared-override deviation is verified against the gpui-pre 0.3.10 sources ("while an appearance is forced, windows stop tracking system light/dark changes"); cancel-as-stored verified never to pin a resolution; sentinel/marker ordering hazards checked safe. Known verification limits: none open beyond the human visual pass.
 
 **Note from ticket 33 (review):** the persisted `theme` field is already live in settings files as a bare registry-name string (ticket 33 shipped it that way to avoid speculative shape), so the `ThemeChoice` reshape here must ship a serde migration (legacy bare string → `ThemeChoice::Name`) or old files stop loading. Also, `Theme::apply_config` replaces the `dark_theme`/`light_theme` slot with whatever it applies, so resolution must read the mode defaults from the `ThemeRegistry` (reinstalling Grove Dark for dark), not from the slot the last apply left behind.
