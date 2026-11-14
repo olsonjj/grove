@@ -130,7 +130,18 @@ impl Global for Open {}
 
 /// The Grove-menu entry: starts the one check (or reruns it over a shown result) and
 /// shows the progress dialog meanwhile. While a check runs, another trigger is a no-op.
+/// Dispatch before setup finishes is a quiet no-op: nothing spawned, opened, or recorded
+/// (see [`see_update`] for the Library the check's report reads).
 pub fn check(cx: &mut App) {
+    // The whole check's report reads the Library `shell::start` installs (see
+    // [`see_update`]; spec: a half-configured Grove shows setup alone), so the Grove
+    // menu's entry dispatching before setup is a no-op — before the [`Running`] guard so
+    // a stray pre-start dispatch leaves no check state for the real launch to trip on.
+    // Retry can't reach here pre-start: its button lives on a result dialog only a check
+    // that already ran past `start` can have shown.
+    if !shell::is_running(cx) {
+        return;
+    }
     if cx.has_global::<Running>() {
         return;
     }
@@ -840,6 +851,44 @@ mod tests {
             [RELEASES_ENDPOINT.to_string()],
             "the override off checks as ever"
         );
+    }
+
+    /// Check for Updates… before `shell::start`: the Grove menu exists from launch
+    /// ([`shell::init`]), but the check's report reads the Library `start` installs, so
+    /// the dispatch stays a quiet no-op in the half-configured state only setup is open
+    /// in — no fetch opens no dialog, and no check state leaks out of the dispatch.
+    #[gpui_kit::test]
+    fn a_check_for_updates_dispatch_before_setup_finishes_stays_quiet(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            shell::init(cx);
+        });
+        let hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        menu_dispatch(cx, "Check for Updates…");
+        cx.run_until_parked();
+
+        assert!(
+            hits.lock().unwrap().is_empty(),
+            "the pre-start dispatch fetched nothing"
+        );
+        assert!(
+            cx.update(|cx| update::window(cx)).is_none(),
+            "the pre-start dispatch opened no dialog"
+        );
+        cx.update(|cx| {
+            assert!(
+                !cx.has_global::<Running>(),
+                "no in-flight check was left behind"
+            );
+            assert!(
+                cx.try_global::<Open>().is_none(),
+                "no result dialog was left behind"
+            );
+            assert!(
+                !cx.has_global::<AutoRan>(),
+                "the manual dispatch consumed no once-per-launch auto-check slot"
+            );
+        });
     }
 
     #[gpui_kit::test]
