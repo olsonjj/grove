@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AnyWindowHandle, App, AppContext, ElementId, TestAppContext};
+use gpui_kit::{AnyWindowHandle, App, AppContext, ElementId, OwnedMenuItem, TestAppContext};
 use grove_core::{
     Editor, LaunchError, LaunchPlan, OpenTarget, Outcome, Presence, RepoRef, RepoSnapshot,
     Settings, SettingsFile, Snapshot, SnapshotStore, TargetKind, Terminal, Upstream, Worktree,
@@ -87,6 +87,23 @@ pub fn settings_file(tmp: &TempDir, settings: Settings) -> SettingsFile {
     let file = SettingsFile::new(tmp.path().join("settings.json"));
     file.save(&settings).unwrap();
     file
+}
+
+/// The action behind `menu`'s `item`, for dispatching it the way its menu selection
+/// does (prior art: the app-menu tests' Grove-menu dispatch).
+pub fn menu_action(cx: &mut TestAppContext, menu: &str, item: &str) -> Box<dyn gpui_kit::Action> {
+    let menus = cx.update(|cx| cx.get_menus()).unwrap();
+    menus
+        .into_iter()
+        .find(|m| m.name == menu)
+        .unwrap()
+        .items
+        .into_iter()
+        .find_map(|i| match i {
+            OwnedMenuItem::Action { name, action, .. } if name == item => Some(action),
+            _ => None,
+        })
+        .unwrap()
 }
 
 /// Labels of `id`-indexed rendered elements (e.g. `("popover-row", ix)`), in order.

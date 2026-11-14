@@ -1,5 +1,7 @@
 target/
 .DS_Store
+# Subagent session/orchestration tooling, transient state — never part of Grove
+.pi/
 # Apple signing material — secrets, never commit
 certs/
 *.p12

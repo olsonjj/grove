@@ -19,8 +19,8 @@ use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
 
 use crate::{
-    PlatformEvent, hotkeys, login_item, macos, main_window, popover, settings_window, setup,
-    status_item, switcher, windows,
+    PlatformEvent, about, hotkeys, login_item, macos, main_window, popover, settings_window, setup,
+    status_item, switcher, update, windows,
 };
 
 /// A status-item click that arrives right after the popover closed on deactivation is the
@@ -37,7 +37,17 @@ const BACKGROUND_FETCH: Duration = Duration::from_secs(15 * 60);
 
 gpui_kit::actions!(
     grove,
-    [Quit, Hide, HideOthers, ShowAll, CloseWindow, Minimize]
+    [
+        About,
+        OpenSettings,
+        CheckForUpdates,
+        Quit,
+        Hide,
+        HideOthers,
+        ShowAll,
+        CloseWindow,
+        Minimize
+    ]
 );
 
 /// Settings and snapshot the windows render from. A global of its own so windows don't
@@ -205,6 +215,9 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
     })
     .detach();
     handle(PlatformEvent::ShowMain, cx);
+    // The once-per-launch update check, now that startup has settled (spec: auto-check
+    // timing); fully silent unless a newer, not-yet-dismissed release exists.
+    update::auto_check(cx);
     // Debug-only QA hook: with `GROVE_QA_REPO` set (see `setup::boot`), `GROVE_QA_SETTINGS=1`
     // additionally opens Settings, so theme screenshots can include it. Debug builds only.
     #[cfg(debug_assertions)]
@@ -221,8 +234,9 @@ pub fn init(cx: &mut App) {
     cx.on_window_closed(|cx, id| {
         if is_running(cx) {
             on_window_closed(cx, id);
-        } else {
-            // Setup closed before finishing: nothing else can bring Grove back.
+        } else if setup::first_run_closed(cx, id) {
+            // The setup window closed before finishing: nothing else can bring Grove
+            // back. Windows opened beside it (About) stay open without ending Grove.
             quit(cx);
         }
     })
@@ -232,6 +246,9 @@ pub fn init(cx: &mut App) {
         async {}
     })
     .detach();
+    cx.on_action(|_: &About, cx| about::open(cx));
+    cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
+    cx.on_action(|_: &CheckForUpdates, cx| update::check(cx));
     cx.on_action(|_: &Quit, cx| quit(cx));
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -262,9 +279,15 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-cmd-h", HideOthers, None),
         KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-m", Minimize, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
     ]);
     cx.set_menus([
         Menu::new("Grove").items([
+            MenuItem::action("About Grove", About),
+            MenuItem::separator(),
+            MenuItem::action("Check for Updates…", CheckForUpdates),
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
             MenuItem::action("Hide Grove", Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
@@ -894,13 +917,13 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use gpui_kit::TestAppContext;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{OwnedMenuItem, TestAppContext};
     use grove_core::{Outcome, Settings, SettingsFile};
     use tempfile::TempDir;
 
     use super::*;
-    use crate::test_support::{canned, fake_launcher, set_library, settings_file};
+    use crate::test_support::{canned, fake_launcher, menu_action, set_library, settings_file};
 
     /// Grove past setup with its main window open and an unsaved settings change.
     fn running(cx: &mut TestAppContext, file: &SettingsFile) -> AnyWindowHandle {
@@ -1000,22 +1023,6 @@ mod tests {
         assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-y")]);
     }
 
-    /// The action behind `menu`'s `item`.
-    fn menu_action(cx: &mut TestAppContext, menu: &str, item: &str) -> Box<dyn gpui_kit::Action> {
-        let menus = cx.update(|cx| cx.get_menus()).unwrap();
-        menus
-            .into_iter()
-            .find(|m| m.name == menu)
-            .unwrap()
-            .items
-            .into_iter()
-            .find_map(|i| match i {
-                OwnedMenuItem::Action { name, action, .. } if name == item => Some(action),
-                _ => None,
-            })
-            .unwrap()
-    }
-
     #[gpui_kit::test]
     fn menu_quit_writes_pending_settings_first(cx: &mut TestAppContext) {
         let tmp = TempDir::new().unwrap();
@@ -1040,6 +1047,24 @@ mod tests {
         assert!(!cx.update(|cx| cx.windows().contains(&main)));
         assert!(cx.update(|cx| is_running(cx)));
         assert_eq!(main_window(cx), None);
+    }
+
+    /// Settings… before `shell::start`: the Grove menu exists from launch ([`init`]),
+    /// but Settings reads the Library `start` installs, so the dispatch stays a no-op
+    /// in the half-configured state only setup is open in.
+    #[gpui_kit::test]
+    fn opening_settings_before_setup_finishes_opens_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+        });
+        let settings = menu_action(cx, "Grove", "Settings…");
+        cx.update(|cx| cx.dispatch_action(settings.as_ref()));
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| cx.windows().is_empty()),
+            "the half-configured app opens no Settings"
+        );
     }
 
     /// Like Esc: no reopen guard, so the shortcut right after opens it again.

@@ -21,6 +21,7 @@ use grove_core::{
     TargetKind, TerminalOpensIn, ThemeChoice, command_line,
 };
 
+use crate::about::VERSION;
 use crate::icons::{self, icon};
 use crate::login_item::{self, LOGIN_ITEMS, LoginItems};
 use crate::main_window::tilde;
@@ -29,13 +30,6 @@ use crate::theme_picker::ThemeMenu;
 use crate::{setup, shell, theme_picker, windows};
 
 const SIZE: (f32, f32) = (820., 760.);
-const VERSION: &str = concat!(
-    "Grove ",
-    env!("CARGO_PKG_VERSION"),
-    " (build ",
-    env!("GROVE_BUILD"),
-    ")"
-);
 
 /// The open settings window and the theme choice it opened with, so every close
 /// path re-applies that choice: they all funnel through window removal, and the
@@ -77,6 +71,11 @@ fn became_open(window: AnyWindowHandle, cx: &mut App) {
 }
 
 pub fn open(cx: &mut App) {
+    // Settings reads the Library `shell::start` installs (spec: a half-configured Grove
+    // shows setup alone), so the Grove menu's entry dispatching before setup is a no-op.
+    if !shell::is_running(cx) {
+        return;
+    }
     cx.activate(true);
     if let Some(w) = window(cx) {
         let _ = w.update(cx, |_, window, _| window.activate_window());
@@ -778,6 +777,16 @@ impl SettingsWindow {
                 cx,
             ))
             .child(self.toggle(
+                "settings-check-for-updates",
+                "Check for updates",
+                "Once at launch. Failed checks stay quiet, and a release you've seen isn't \
+                 repeated — Check for Updates… always tells the truth.",
+                self.draft.check_for_updates,
+                |p| &mut p.check_for_updates,
+                None,
+                cx,
+            ))
+            .child(self.toggle(
                 "settings-background-fetch",
                 "Background fetch",
                 "Fetch all every 15 minutes while Grove runs. Uses the network.",
@@ -1247,6 +1256,34 @@ mod tests {
             )
         });
         assert_eq!(names, (Some("Zed".into()), Some("Warp".into())));
+    }
+
+    /// The update-check toggle in the general section, default on, persisting through
+    /// the normal settings-save path and shown restored when the window reopens.
+    #[gpui_kit::test]
+    fn the_update_check_toggle_defaults_on_and_persists_through_save(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        assert!(settings(cx).check_for_updates, "the toggle defaults on");
+
+        let w = open_settings(cx);
+        click(cx, w, "settings-check-for-updates");
+        click(cx, w, "settings-save");
+        assert!(!is_open(cx, w));
+        assert!(!settings(cx).check_for_updates);
+        assert!(!file.load().unwrap().check_for_updates);
+
+        let w = open_settings(cx);
+        let label = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("settings-check-for-updates")
+                    .and_then(|v| v.label().map(str::to_string))
+            })
+            .unwrap();
+        assert_eq!(label.as_deref(), Some("Check for updates, off"));
     }
 
     #[gpui_kit::test]

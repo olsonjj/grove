@@ -8,7 +8,7 @@ use gpui_kit::{
     AnyWindowHandle, App, AppContext, Bounds, ClickEvent, Context, Entity, FocusHandle, FontWeight,
     Global, InteractiveElement, IntoElement, KeyDownEvent, ParentElement, PathPromptOptions,
     Render, StatefulInteractiveElement, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowKind, WindowOptions, div, px, size,
+    WindowId, WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::git::{self, GitError};
 use grove_core::{
@@ -702,12 +702,39 @@ fn window_options(title: &'static str, cx: &App) -> WindowOptions {
     }
 }
 
+/// The first-run setup window from [`open`]'s launch path, so `shell::init`'s
+/// window-closed routing can tell it from the windows the Grove menu opens beside it
+/// (About, for one): only the setup window itself closing is the end of pre-start
+/// Grove. Past `shell::start` the marker is stale but inert — the routing reads it
+/// while `shell::is_running` says otherwise only.
+struct FirstRun {
+    window: AnyWindowHandle,
+}
+
+impl Global for FirstRun {}
+
+/// Marks `window` the open first-run setup window.
+fn became_first_run(window: AnyWindowHandle, cx: &mut App) {
+    cx.set_global(FirstRun { window });
+}
+
+/// Whether the window that just closed was the first-run setup one: the pre-start quit
+/// (`shell::init`'s window-closed routing) fires for it alone, not for every window's
+/// close before `shell::start`.
+pub fn first_run_closed(cx: &App, window_id: WindowId) -> bool {
+    cx.try_global::<FirstRun>()
+        .is_some_and(|first_run| first_run.window.window_id() == window_id)
+}
+
 fn open(setup: Setup, cx: &mut App) {
     let options = window_options("Grove Setup", cx);
     cx.activate(true);
-    if let Err(e) = windows::open_window(options, cx, |window, cx| setup.view(window, cx)) {
-        eprintln!("[grove] setup window: {e:#}");
-        shell::quit(cx);
+    match windows::open_window(options, cx, |window, cx| setup.view(window, cx)) {
+        Ok((window, _)) => became_first_run(window, cx),
+        Err(e) => {
+            eprintln!("[grove] setup window: {e:#}");
+            shell::quit(cx);
+        }
     }
 }
 
@@ -720,7 +747,75 @@ mod tests {
     use grove_core::Snapshot;
 
     use super::*;
-    use crate::test_support::{canned, tab_to};
+    use crate::test_support::{canned, menu_action, tab_to};
+
+    /// Opens the first-run setup window through its launch path, with the app hooks
+    /// (menus, window-closed routing) around it, so dispatches and closes run as they
+    /// do during setup.
+    fn first_run_open(cx: &mut TestAppContext) -> AnyWindowHandle {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let settings_file = SettingsFile::new(tmp.path().join("settings.json"));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            theme::init(cx);
+            shell::init(cx);
+            open(
+                Setup {
+                    stage: Stage::Choose,
+                    mode: Mode::FirstRun {
+                        settings_file,
+                        settings: Settings::default(),
+                    },
+                    folder: None,
+                    scanned: None,
+                    focus: None,
+                },
+                cx,
+            );
+            cx.windows()[0]
+        })
+    }
+
+    /// Closing a window the Grove menu opens beside setup must not end Grove — the old
+    /// pre-start close routing quit on every window's close (shell::init reads
+    /// [`first_run_closed`] for the setup window alone).
+    #[gpui_kit::test]
+    fn closing_about_during_setup_leaves_setup_open(cx: &mut TestAppContext) {
+        let setup = first_run_open(cx);
+        let action = menu_action(cx, "Grove", "About Grove");
+        cx.update(|cx| cx.dispatch_action(action.as_ref()));
+        cx.run_until_parked();
+        let about = cx
+            .update(|cx| crate::about::window(cx))
+            .expect("About opened beside setup");
+        cx.update_window(about, |_, window, _| window.remove_window())
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| cx.windows().contains(&setup)),
+            "closing About does not end Grove while setup remains open"
+        );
+    }
+
+    /// The routing teeth: the setup window's close is the pre-start quit, a window
+    /// opened beside it isn't. (gpui's test platform's quit is a no-op, so the branch
+    /// is pinned at exactly the predicate the handler consults.)
+    #[gpui_kit::test]
+    fn only_the_setup_window_closing_routes_to_the_pre_start_quit(cx: &mut TestAppContext) {
+        let setup = first_run_open(cx);
+        let action = menu_action(cx, "Grove", "About Grove");
+        cx.update(|cx| cx.dispatch_action(action.as_ref()));
+        cx.run_until_parked();
+        let about = cx.update(|cx| crate::about::window(cx)).unwrap();
+        assert!(
+            cx.update(|cx| first_run_closed(cx, setup.window_id())),
+            "closing the setup window is the pre-start quit"
+        );
+        assert!(
+            !cx.update(|cx| first_run_closed(cx, about.window_id())),
+            "a window beside setup doesn't route to the quit"
+        );
+    }
 
     fn change(cx: &mut TestAppContext, done: ChangeDone) -> AnyWindowHandle {
         cx.update(|cx| {

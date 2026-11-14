@@ -8,13 +8,14 @@ build_file := "crates/grove-app/build-number"
 default:
     @just --list
 
-# Run debug build (pass a settings file to keep real settings untouched)
+# Run debug build (pass a settings file to keep real settings untouched). A dev run
+# never auto-checks for updates at launch; the manual menu entry still checks.
 run settings="":
-    {{ if settings == "" { "" } else { "GROVE_SETTINGS_PATH=" + settings } }} cargo run -p grove-app
+    GROVE_DEV=1 {{ if settings == "" { "" } else { "GROVE_SETTINGS_PATH=" + settings } }} cargo run -p grove-app
 
-# Run release build
+# Run release build (same dev-run behavior as `run`)
 run-release:
-    cargo run -p grove-app --release
+    GROVE_DEV=1 cargo run -p grove-app --release
 
 # Run all tests
 test:
