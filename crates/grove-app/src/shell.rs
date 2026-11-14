@@ -215,6 +215,9 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
     })
     .detach();
     handle(PlatformEvent::ShowMain, cx);
+    // The once-per-launch update check, now that startup has settled (spec: auto-check
+    // timing); fully silent unless a newer, not-yet-dismissed release exists.
+    update::auto_check(cx);
     // Debug-only QA hook: with `GROVE_QA_REPO` set (see `setup::boot`), `GROVE_QA_SETTINGS=1`
     // additionally opens Settings, so theme screenshots can include it. Debug builds only.
     #[cfg(debug_assertions)]

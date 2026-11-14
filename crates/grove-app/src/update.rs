@@ -14,9 +14,10 @@ use gpui_kit::{
     Subscription, TestSupportExt, TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions,
     div, px, size,
 };
-use grove_core::{UpdateDecision, UpdateFetchError, check_for_update};
+use grove_core::{UpdateDecision, UpdateFetchError, auto_check_alerts, check_for_update};
+use semver::Version;
 
-use crate::{about, theme, windows};
+use crate::{about, shell, theme, windows};
 
 /// The running version as one semver string the check compares against, e.g.
 /// `"0.1.0+17"`: the workspace version plus the build number, in one place. The dialog's
@@ -71,6 +72,22 @@ struct Running;
 
 impl Global for Running {}
 
+/// The auto-check already ran this launch — checked or not, it never runs again (spec:
+/// never more than one per launch).
+struct AutoRan;
+
+impl Global for AutoRan {}
+
+/// Which entry point started the check, deciding what its report shows.
+#[derive(Clone, Copy)]
+enum Kind {
+    /// The Grove-menu entry (and Retry): shows progress, then every outcome honestly.
+    Manual,
+    /// The once-per-launch check after startup settles: no progress, and silent unless
+    /// a newer, not-yet-dismissed release exists.
+    Auto,
+}
+
 /// The open dialog's window, its view, and the window-closed observer freeing the slot;
 /// [`window()`] also filters a closed window's stale handle against the windows that
 /// still exist (the About window's slot pattern).
@@ -99,14 +116,29 @@ pub fn check(cx: &mut App) {
             cx.notify();
         });
     } else {
-        open_dialog(cx);
+        open_dialog(None, cx);
     }
     if window(cx).is_none() {
         eprintln!("[grove] update: dialog unavailable");
         return;
     }
     cx.set_global(Running);
-    spawn_check(cx);
+    spawn_check(Kind::Manual, cx);
+}
+
+/// The one auto-check at the end of the launch (`shell::start`): once per launch, only
+/// when the settings toggle is on, sharing the engine, state and dialogs with the menu
+/// entry. Its report is fully silent unless a newer, not-yet-dismissed release shows.
+pub fn auto_check(cx: &mut App) {
+    if cx.has_global::<AutoRan>() {
+        return;
+    }
+    cx.set_global(AutoRan);
+    if cx.has_global::<Running>() || !shell::library(cx).settings.check_for_updates {
+        return;
+    }
+    cx.set_global(Running);
+    spawn_check(Kind::Auto, cx);
 }
 
 /// The open dialog's window, if it still exists.
@@ -116,8 +148,9 @@ pub fn window(cx: &App) -> Option<AnyWindowHandle> {
         .map(|open| open.window)
 }
 
-/// Opens the shared dialog at its progress stage.
-fn open_dialog(cx: &mut App) {
+/// Opens the shared dialog, at its progress stage unless it opens showing a finished
+/// outcome (the auto-check never shows a progress stage).
+fn open_dialog(stage: Option<UpdateDecision>, cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -135,7 +168,7 @@ fn open_dialog(cx: &mut App) {
         is_minimizable: false,
         ..Default::default()
     };
-    match windows::open_window(options, cx, |_, cx| cx.new(|_| Dialog { stage: None })) {
+    match windows::open_window(options, cx, |_, cx| cx.new(|_| Dialog { stage })) {
         // When the dialog closes by any path the slot frees, so the next check builds
         // a new dialog instead of reaching for the gone window.
         Ok((window, dialog)) => {
@@ -167,7 +200,7 @@ const GET_TIMEOUT: Duration = Duration::from_secs(30);
 /// thread) and reports the outcome back over the async channel Grove's background work
 /// already reports through. A slow, dropped, or failing fetch can never block the UI:
 /// only the finished decision crosses back.
-fn spawn_check(cx: &mut App) {
+fn spawn_check(kind: Kind, cx: &mut App) {
     let fetch = fetcher(cx);
     let (tx, rx) = async_channel::unbounded::<UpdateDecision>();
     cx.background_spawn(async move {
@@ -177,24 +210,53 @@ fn spawn_check(cx: &mut App) {
     .detach();
     cx.spawn(async move |cx| {
         while let Ok(decision) = rx.recv().await {
-            cx.update(|cx| report(decision, cx));
+            cx.update(|cx| report(decision, kind, cx));
         }
     })
     .detach();
 }
 
 /// Reports one finished check: the shared state frees, the dialog shows the outcome.
-/// A dialog closed while its check ran reports nothing — the user closed it; the next
-/// trigger runs a check of its own (manual checks always report the truth).
-fn report(decision: UpdateDecision, cx: &mut App) {
+/// A manual check keeps its behavior on every outcome and on a dialog closed while its
+/// check ran (the user closed it; the next trigger runs a check of its own). The
+/// auto-check opens the shared dialog only for a release newer than both the running
+/// version and the persisted seen one; otherwise it shows nothing and records nothing.
+/// A shown update-available counts as seen, from either entry point.
+fn report(decision: UpdateDecision, kind: Kind, cx: &mut App) {
     cx.remove_global::<Running>();
-    let Some(open) = cx.try_global::<Open>().map(|open| open.dialog.clone()) else {
-        return;
-    };
-    open.update(cx, |dialog, cx| {
-        dialog.stage = Some(decision);
-        cx.notify();
-    });
+    if let Kind::Auto = kind {
+        let seen = shell::library(cx).settings.dismissed_version.clone();
+        if !auto_check_alerts(&decision, seen.as_deref()) {
+            return;
+        }
+        // No progress stage: the auto-check opens the shared dialog straight at its
+        // result, the same dialog the menu entry shows.
+        open_dialog(Some(decision.clone()), cx);
+    } else {
+        let Some(open) = cx.try_global::<Open>().map(|open| open.dialog.clone()) else {
+            return;
+        };
+        open.update(cx, |dialog, cx| {
+            dialog.stage = Some(decision.clone());
+            cx.notify();
+        });
+    }
+    if let UpdateDecision::Available { version, .. } = &decision {
+        see_update(version, cx);
+    }
+}
+
+/// Records a shown update as seen: the newest version seen persists and the settings
+/// file follows through the normal save path. The dismissed version lives only in the
+/// auto-check's gating; manual checks ignore it and always report the truth.
+fn see_update(version: &Version, cx: &mut App) {
+    let seen = cx
+        .global_mut::<shell::Library>()
+        .settings
+        .set_dismissed_version(version);
+    if seen {
+        shell::save_settings(cx);
+    }
 }
 
 /// The dialog's stage: progress until the check reports, then its one outcome.
@@ -516,6 +578,161 @@ mod tests {
         assert_eq!(
             dialog_labels(cx).0.as_deref(),
             Some("Grove 0.2.0 is available."),
+        );
+    }
+
+    /// Grove past setup on `settings`, with the file and its backing temp dir — the
+    /// caller keeps them alive, so a seen-version record can reach the disk.
+    fn launched(cx: &mut TestAppContext, settings: Settings) -> (TempDir, SettingsFile) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, settings);
+        running(cx, &file);
+        (tmp, file)
+    }
+
+    #[gpui_kit::test]
+    fn the_auto_check_runs_once_per_launch_and_shows_a_newer_release(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(cx, Settings::default());
+        let hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        assert_eq!(
+            hits.lock().unwrap().clone(),
+            [RELEASES_ENDPOINT.to_string()],
+            "the one anonymous check ran"
+        );
+        assert_eq!(
+            dialog_labels(cx).0.as_deref(),
+            Some("Grove 0.2.0 is available."),
+            "a genuinely new release reaches the user"
+        );
+        // Never more than one per launch: the second call starts no check of its own.
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+        assert_eq!(hits.lock().unwrap().len(), 1);
+    }
+
+    #[gpui_kit::test]
+    fn the_toggle_off_means_the_auto_check_never_runs(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(
+            cx,
+            Settings {
+                check_for_updates: false,
+                ..Default::default()
+            },
+        );
+        let hits = inject(cx, vec![]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        assert!(hits.lock().unwrap().is_empty(), "no fetch at all");
+        assert!(cx.update(|cx| update::window(cx)).is_none());
+    }
+
+    #[gpui_kit::test]
+    fn the_auto_check_stays_silent_when_the_running_version_is_current(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(cx, Settings::default());
+        let hits = inject(cx, vec![Reply::Body(body_for("0.1.0"))]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        assert_eq!(hits.lock().unwrap().len(), 1, "the check ran, quietly");
+        assert!(cx.update(|cx| update::window(cx)).is_none());
+    }
+
+    #[gpui_kit::test]
+    fn the_auto_check_stays_silent_when_the_check_fails(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(cx, Settings::default());
+        let hits = inject(cx, vec![Reply::Failed("403")]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        assert_eq!(hits.lock().unwrap().len(), 1, "the check ran, quietly");
+        assert!(cx.update(|cx| update::window(cx)).is_none());
+    }
+
+    #[gpui_kit::test]
+    fn the_auto_check_stays_silent_for_version_already_seen(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(
+            cx,
+            Settings {
+                dismissed_version: Some("0.2.0".into()),
+                ..Default::default()
+            },
+        );
+        let hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        assert_eq!(hits.lock().unwrap().len(), 1, "the check ran, quietly");
+        assert!(cx.update(|cx| update::window(cx)).is_none());
+        assert_eq!(
+            cx.update(|cx| shell::library(cx).settings.dismissed_version.clone()),
+            Some("0.2.0".into()),
+            "silence records nothing new"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_auto_check_alerts_when_a_release_is_newer_than_the_seen_one(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(
+            cx,
+            Settings {
+                dismissed_version: Some("0.1.0".into()),
+                ..Default::default()
+            },
+        );
+        let _hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        // Straight at the result: the auto-check never shows a progress stage.
+        assert_eq!(
+            dialog_labels(cx).0.as_deref(),
+            Some("Grove 0.2.0 is available."),
+        );
+    }
+
+    /// A shown release persists through the settings file and, loaded back, gates the
+    /// auto-check that would otherwise alert for it.
+    #[gpui_kit::test]
+    fn an_auto_shown_release_is_recorded_as_seen_for_the_next_launch(cx: &mut TestAppContext) {
+        let (_tmp, file) = launched(cx, Settings::default());
+        let _hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        let saved = file.load().unwrap();
+        assert_eq!(saved.dismissed_version.as_deref(), Some("0.2.0"));
+        let release = UpdateDecision::Available {
+            version: semver::Version::parse("0.2.0").unwrap(),
+            page_url: "https://github.com/olsonjj/grove/releases/tag/v0.2.0".into(),
+        };
+        assert!(
+            !auto_check_alerts(&release, saved.dismissed_version.as_deref()),
+            "the persisted version gates the auto-check on the next launch"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_manual_check_reports_a_release_already_seen(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(
+            cx,
+            Settings {
+                dismissed_version: Some("0.2.0".into()),
+                ..Default::default()
+            },
+        );
+        let hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        menu_dispatch(cx, "Check for Updates…");
+        cx.run_until_parked();
+
+        assert_eq!(hits.lock().unwrap().len(), 1);
+        assert_eq!(
+            dialog_labels(cx).0.as_deref(),
+            Some("Grove 0.2.0 is available."),
+            "manual checks ignore the seen version and report the truth"
         );
     }
 }

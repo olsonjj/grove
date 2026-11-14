@@ -105,6 +105,19 @@ fn parse_tag(tag: &str) -> Option<semver::Version> {
     semver::Version::parse(tag.strip_prefix('v').unwrap_or(tag)).ok()
 }
 
+/// Whether the auto-check may show its one dialog for `decision`: only for an update
+/// strictly newer than the persisted `dismissed` version — up-to-date, failed, and an
+/// already-seen (or newer-than-available) release all stay silent. The dismissed
+/// version gates only the auto-check; a manual check always reports the truth.
+/// A dismissed value that no longer parses gates nothing; Grove writes it only from a
+/// parsed release, so it should never be unreadable.
+pub fn auto_check_alerts(decision: &UpdateDecision, dismissed: Option<&str>) -> bool {
+    let UpdateDecision::Available { version, .. } = decision else {
+        return false;
+    };
+    dismissed.is_none_or(|d| semver::Version::parse(d).is_ok_and(|seen| *version > seen))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +244,43 @@ mod tests {
     fn fetch_error_detail_survives_as_the_error_message() {
         let e = UpdateFetchError::new("connection refused");
         assert_eq!(e.to_string(), "connection refused");
+    }
+
+    /// Only a release newer than both the running version and the persisted seen
+    /// version alerts the auto-check — the gate the launch check runs its decision
+    /// through.
+    #[test]
+    fn the_auto_check_alerts_only_for_a_newer_undismissed_release() {
+        let available = |version: &str| UpdateDecision::Available {
+            version: semver::Version::parse(version).unwrap(),
+            page_url: "https://example.com/tag".into(),
+        };
+        assert!(auto_check_alerts(&available("0.2.0"), None));
+        assert!(auto_check_alerts(&available("0.2.0"), Some("0.1.9")));
+        assert!(
+            !auto_check_alerts(&available("0.2.0"), Some("0.2.0")),
+            "seen"
+        );
+        assert!(
+            !auto_check_alerts(&available("0.2.0"), Some("0.3.0")),
+            "newer seen"
+        );
+        for decision in [UpdateDecision::UpToDate, UpdateDecision::CheckFailed] {
+            assert!(!auto_check_alerts(&decision, None));
+        }
+    }
+
+    #[test]
+    fn the_auto_check_gates_the_engine_decision_against_the_dismissed_version() {
+        // Already seen: silent even though the release is newer than the running one.
+        assert!(!auto_check_alerts(
+            &check_for_update(RUNNING, serving(LATEST)),
+            Some("0.2.0")
+        ));
+        // A release the seen one predates still alerts.
+        assert!(auto_check_alerts(
+            &check_for_update(RUNNING, serving(LATEST)),
+            Some("0.1.0")
+        ));
     }
 }

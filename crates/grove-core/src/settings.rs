@@ -33,6 +33,8 @@ pub struct Settings {
     pub custom_commands: Vec<CustomCommand>,
     /// Whether Grove installs its menu bar icon.
     pub show_menu_bar_icon: bool,
+    /// Whether Grove checks for updates once at launch (the Settings general toggle).
+    pub check_for_updates: bool,
     /// Whether Grove periodically fetches repositories.
     pub background_fetch: bool,
     /// Whether the owning app bundle should launch at login.
@@ -66,6 +68,11 @@ pub struct Settings {
     /// settings files) = the launch default, Grove Dark.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeChoice>,
+    /// The newest version an update-available dialog has shown. `None` until one is
+    /// shown; the auto-check stays quiet for it and anything older, and no other
+    /// surface reads it (`specs/updater.md`, "Dismissed-version bookkeeping").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dismissed_version: Option<String>,
 }
 
 impl Default for Settings {
@@ -77,6 +84,7 @@ impl Default for Settings {
             terminal_opens_in: None,
             custom_commands: Vec::new(),
             show_menu_bar_icon: true,
+            check_for_updates: true,
             background_fetch: false,
             launch_at_login: true,
             login_item_path: None,
@@ -90,6 +98,7 @@ impl Default for Settings {
             last_selected_repo: None,
             details_pane_width: None,
             theme: None,
+            dismissed_version: None,
         }
     }
 }
@@ -117,6 +126,8 @@ pub struct Preferences {
     pub launch_at_login: bool,
     /// Theme choice as stored (see [`Settings::theme`]).
     pub theme: Option<ThemeChoice>,
+    /// Whether to check for updates once at launch.
+    pub check_for_updates: bool,
 }
 
 /// What the theme setting stores: `Follow System`, or a Theme by its registry name.
@@ -265,6 +276,7 @@ impl Settings {
             background_fetch: self.background_fetch,
             launch_at_login: self.launch_at_login,
             theme: self.theme.clone(),
+            check_for_updates: self.check_for_updates,
         }
     }
 
@@ -280,6 +292,7 @@ impl Settings {
             background_fetch,
             launch_at_login,
             theme,
+            check_for_updates,
         } = p;
         self.code_dir = code_dir;
         self.default_editor = default_editor;
@@ -290,6 +303,24 @@ impl Settings {
         self.background_fetch = background_fetch;
         self.launch_at_login = launch_at_login;
         self.theme = theme;
+        self.check_for_updates = check_for_updates;
+    }
+
+    /// After an update-available dialog showed `version`: records the newest shown
+    /// version, keeping any newer one already recorded. Returns whether anything
+    /// changed. The dismissed version persists through the normal settings-save path —
+    /// it isn't a [`Preferences`] field, so Settings Save leaves it as it is — and
+    /// the auto-check alone reads it.
+    pub fn set_dismissed_version(&mut self, version: &semver::Version) -> bool {
+        let seen = self
+            .dismissed_version
+            .as_deref()
+            .and_then(|s| semver::Version::parse(s).ok());
+        if seen.is_some_and(|seen| seen >= *version) {
+            return false;
+        }
+        self.dismissed_version = Some(version.to_string());
+        true
     }
 
     /// Returns collapsed branch prefixes for `repo`.
@@ -622,6 +653,55 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(round_trip(&settings), settings);
+    }
+
+    /// The update-check toggle defaults on, and the toggle plus the newest seen
+    /// version round-trip through the file and through the Preferences copy the
+    /// Settings window saves with: Save writes the toggle and leaves the dismissed
+    /// version as it is (only an update-available dialog records it).
+    #[test]
+    fn the_update_check_defaults_on_and_the_toggle_and_dismissed_version_round_trip() {
+        assert!(Settings::default().check_for_updates);
+        let settings = Settings {
+            check_for_updates: false,
+            dismissed_version: Some("0.2.0".into()),
+            ..Default::default()
+        };
+        assert_eq!(round_trip(&settings), settings);
+        let mut saved = settings.clone();
+        saved.set_preferences(saved.preferences());
+        assert_eq!(saved, settings);
+    }
+
+    /// A pre-existing settings.json predating the update-check fields loads unchanged
+    /// to the defaults; the optional dismissed version stays out of the JSON until a
+    /// release is shown, like the other `None` fields.
+    #[test]
+    fn settings_without_the_update_check_fields_load_to_the_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = SettingsFile::new(tmp.path().join("settings.json"));
+        std::fs::write(file.path(), br#"{"code_dir": "/c"}"#).unwrap();
+        let loaded = file.load().unwrap();
+        assert!(loaded.check_for_updates);
+        assert_eq!(loaded.dismissed_version, None);
+        assert_eq!(loaded.code_dir, Some(PathBuf::from("/c")));
+        file.save(&loaded).unwrap();
+        let json = std::fs::read_to_string(file.path()).unwrap();
+        assert!(!json.contains("dismissed_version"));
+    }
+
+    /// The newest version seen is what persists: an older shown version keeps the
+    /// newer one, an equal one changes nothing, absent means the first one wins.
+    #[test]
+    fn the_dismissed_version_keeps_the_newest_shown() {
+        let v = |s: &str| semver::Version::parse(s).unwrap();
+        let mut settings = Settings::default();
+        assert!(settings.set_dismissed_version(&v("0.2.0")));
+        assert_eq!(settings.dismissed_version.as_deref(), Some("0.2.0"));
+        assert!(!settings.set_dismissed_version(&v("0.1.9")), "older stays");
+        assert!(!settings.set_dismissed_version(&v("0.2.0")), "equal stays");
+        assert!(settings.set_dismissed_version(&v("0.3.0")));
+        assert_eq!(settings.dismissed_version.as_deref(), Some("0.3.0"));
     }
 
     #[test]

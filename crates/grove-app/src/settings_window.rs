@@ -772,6 +772,16 @@ impl SettingsWindow {
                 cx,
             ))
             .child(self.toggle(
+                "settings-check-for-updates",
+                "Check for updates",
+                "Once at launch. Failed checks stay quiet, and a release you've seen isn't \
+                 repeated — Check for Updates… always tells the truth.",
+                self.draft.check_for_updates,
+                |p| &mut p.check_for_updates,
+                None,
+                cx,
+            ))
+            .child(self.toggle(
                 "settings-background-fetch",
                 "Background fetch",
                 "Fetch all every 15 minutes while Grove runs. Uses the network.",
@@ -1241,6 +1251,34 @@ mod tests {
             )
         });
         assert_eq!(names, (Some("Zed".into()), Some("Warp".into())));
+    }
+
+    /// The update-check toggle in the general section, default on, persisting through
+    /// the normal settings-save path and shown restored when the window reopens.
+    #[gpui_kit::test]
+    fn the_update_check_toggle_defaults_on_and_persists_through_save(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        assert!(settings(cx).check_for_updates, "the toggle defaults on");
+
+        let w = open_settings(cx);
+        click(cx, w, "settings-check-for-updates");
+        click(cx, w, "settings-save");
+        assert!(!is_open(cx, w));
+        assert!(!settings(cx).check_for_updates);
+        assert!(!file.load().unwrap().check_for_updates);
+
+        let w = open_settings(cx);
+        let label = cx
+            .update_window(w, |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("settings-check-for-updates")
+                    .and_then(|v| v.label().map(str::to_string))
+            })
+            .unwrap();
+        assert_eq!(label.as_deref(), Some("Check for updates, off"));
     }
 
     #[gpui_kit::test]
