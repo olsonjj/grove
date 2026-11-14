@@ -20,6 +20,7 @@ mod switcher;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod theme_picker;
 mod tree_view;
 mod windows;
 
@@ -51,8 +52,11 @@ fn main() {
     app.run(|cx: &mut App| {
         gpui_kit::init(cx);
         theme::init(cx);
+        // The launch apply also settles native chrome on the resolved theme's mode
+        // (dark themes force dark titlebars and panels, light force light; Follow
+        // System clears the override so both track macOS live).
+        theme::apply_saved_choice(cx);
         details_view::init(cx);
-        macos::use_dark_appearance();
         shell::init(cx);
         setup::launch(cx);
     });

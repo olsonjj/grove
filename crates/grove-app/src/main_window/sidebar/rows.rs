@@ -12,19 +12,21 @@ use crate::shell;
 use crate::theme;
 
 /// "PINNED · 2", "REPOSITORIES · 40".
-pub(crate) fn group_header(id: &'static str, text: String) -> impl Styled + IntoElement {
+pub(crate) fn group_header(id: &'static str, text: String, cx: &App) -> impl Styled + IntoElement {
+    let palette = theme::palette(cx);
     div()
         .id(id)
         .test_support()
         .aria_label(text.clone())
         .flex_none()
         .text_size(px(11.))
-        .text_color(theme::faint())
+        .text_color(palette.faint())
         .child(text)
 }
 
 /// Shown on hover and selection, and always (filled) on pinned rows.
-pub(super) fn pin_button(ix: usize, repo: &str, pinned: bool) -> Button {
+pub(super) fn pin_button(ix: usize, repo: &str, pinned: bool, cx: &App) -> Button {
+    let palette = theme::palette(cx);
     let label = if pinned { "Unpin" } else { "Pin" };
     Button::new(("repo-pin", ix))
         .accessibility_label(format!("{label} {repo}"))
@@ -34,9 +36,9 @@ pub(super) fn pin_button(ix: usize, repo: &str, pinned: bool) -> Button {
         .rounded(px(6.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .focus_visible(|s| s.border_color(theme::link()))
+        .focus_visible(|s| s.border_color(palette.link()))
         .cursor_pointer()
-        .hover(|s| s.bg(theme::border()))
+        .hover(|s| s.bg(palette.border()))
         .child(
             icon(
                 if pinned {
@@ -47,37 +49,39 @@ pub(super) fn pin_button(ix: usize, repo: &str, pinned: bool) -> Button {
                 13.,
             )
             .text_color(if pinned {
-                theme::link()
+                palette.link()
             } else {
-                theme::muted()
+                palette.muted()
             }),
         )
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
 }
 
 /// Bordered top bar button.
-pub(crate) fn top_button(id: &'static str) -> Button {
+pub(crate) fn top_button(id: &'static str, cx: &App) -> Button {
+    let palette = theme::palette(cx);
     Button::new(id)
         .flex_none()
         .h(px(32.))
         .px(px(12.))
         .rounded(px(8.))
         .border_1()
-        .border_color(theme::border_strong())
-        .focus_visible(|s| s.border_color(theme::link()))
-        .bg(theme::raised())
+        .border_color(palette.border_strong())
+        .focus_visible(|s| s.border_color(palette.link()))
+        .bg(palette.raised())
 }
 
 /// Inline text link.
-pub(crate) fn link(id: &'static str, text: &'static str, action: fn(&mut App)) -> Button {
+pub(crate) fn link(id: &'static str, text: &'static str, action: fn(&mut App), cx: &App) -> Button {
+    let palette = theme::palette(cx);
     Button::new(id)
         .flex_none()
         .px(px(2.))
         .rounded(px(4.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .focus_visible(|s| s.border_color(theme::link()))
-        .text_color(theme::link())
+        .focus_visible(|s| s.border_color(palette.link()))
+        .text_color(palette.link())
         .cursor_pointer()
         .hover(|s| s.underline())
         .child(text)

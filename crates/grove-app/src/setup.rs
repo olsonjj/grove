@@ -18,6 +18,7 @@ use grove_core::{
 use crate::main_window::tilde;
 use crate::shell::{self, Library};
 use crate::theme::{self, ButtonKind, button};
+use crate::windows;
 
 enum Boot {
     /// Whether the snapshot came from the cache.
@@ -63,6 +64,24 @@ fn boot() -> Boot {
             stage: Stage::GitProblem(e),
             ..first_run(settings_file, settings)
         });
+    }
+
+    // Debug-only QA hook (theme screenshots): `GROVE_QA_REPO=<path>` opens Grove on the
+    // repo at `path`, skipping setup and ignoring the settings' code folder, so visual
+    // passes capture deterministic screenshots into `qa-shots/` per theme. A bad path
+    // still starts Grove (an empty main window makes that visible).
+    #[cfg(debug_assertions)]
+    if let Some(dir) = std::env::var_os("GROVE_QA_REPO") {
+        let snapshot = scan(&PathBuf::from(dir));
+        return Boot::Ready(
+            Library {
+                settings_file,
+                settings,
+                store: SnapshotStore::from_snapshot(snapshot),
+                saves: Default::default(),
+            },
+            false,
+        );
     }
 
     // Dev/testing: behave as if this folder was just picked in setup.
@@ -275,6 +294,7 @@ impl Setup {
     }
 
     fn render_choose(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let palette = theme::palette(cx);
         let folder = self.folder.as_deref().map(tilde);
         let has_repos = self.scanned.as_ref().is_some_and(|s| !s.repos.is_empty());
         let scanning = self.folder.is_some() && self.scanned.is_none();
@@ -286,24 +306,21 @@ impl Setup {
             .px(px(14.))
             .py(px(10.))
             .rounded(px(10.))
-            .bg(theme::field())
+            .bg(palette.field())
             .border_1()
-            .border_color(if has_repos {
-                gpui_kit::rgb(0x2c4560)
-            } else {
-                theme::border_strong()
-            })
+            .border_color(palette.border_strong())
             .child(
                 theme::path_text(folder.clone().unwrap_or_else(|| "No folder chosen".into()))
                     .flex_1()
                     .text_size(px(13.))
                     .text_color(if folder.is_some() {
-                        theme::text()
+                        palette.text()
                     } else {
-                        theme::faint()
+                        palette.faint()
                     }),
             )
             .child(button(
+                cx,
                 "choose",
                 if has_repos {
                     "Change…"
@@ -319,7 +336,7 @@ impl Setup {
             (None, Some(_)) => Some(
                 div()
                     .text_size(px(13.))
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child("Looking for Git repos…")
                     .into_any_element(),
             ),
@@ -328,8 +345,8 @@ impl Setup {
                     .px(px(14.))
                     .py(px(12.))
                     .rounded(px(8.))
-                    .bg(theme::warn_bg())
-                    .text_color(theme::warn_text())
+                    .bg(palette.warn_bg())
+                    .text_color(palette.warn_text())
                     .text_size(px(13.))
                     .flex()
                     .flex_col()
@@ -360,7 +377,7 @@ impl Setup {
                             .flex()
                             .gap(px(4.))
                             .text_size(px(13.))
-                            .text_color(theme::text_soft())
+                            .text_color(palette.text_soft())
                             .child(div().flex_none().child(format!(
                                 "Found {} repo{} in",
                                 s.repos.len(),
@@ -385,7 +402,7 @@ impl Setup {
                                         .justify_between()
                                         .gap(px(8.))
                                         .rounded(px(8.))
-                                        .bg(theme::card())
+                                        .bg(palette.card())
                                         .child(
                                             theme::mono(r.display_name.clone())
                                                 .min_w_0()
@@ -396,7 +413,7 @@ impl Setup {
                                             div()
                                                 .flex_none()
                                                 .text_size(px(12.))
-                                                .text_color(theme::link())
+                                                .text_color(palette.link())
                                                 .child(format!(
                                                     "{n} worktree{}",
                                                     if n == 1 { "" } else { "s" }
@@ -416,19 +433,25 @@ impl Setup {
             .flex_col()
             .gap(px(20.))
             .p(px(32.))
-            .child(header(if changing {
-                "Code folder"
-            } else {
-                "Setup · 1 step"
-            }))
+            .child(header(
+                if changing {
+                    "Code folder"
+                } else {
+                    "Setup · 1 step"
+                },
+                cx,
+            ))
             .child(title("Where do you keep your code?"))
-            .child(paragraph(if changing {
-                "Pick the one folder that holds your Git repos. Grove reads only this folder — \
+            .child(paragraph(
+                if changing {
+                    "Pick the one folder that holds your Git repos. Grove reads only this folder — \
                  repos outside it disappear from Grove."
-            } else {
-                "Pick the one folder that holds your Git repos. Grove reads only this folder — \
-                 nothing else on your Mac is scanned. You can change it later in settings."
-            }))
+                } else {
+                    "Pick the one folder that holds your Git repos. Grove reads only this folder — \
+                     nothing else on your Mac is scanned. You can change it later in settings."
+                },
+                cx,
+            ))
             .child(field)
             .child(div().flex_1().min_h_0().flex().flex_col().children(result))
             .child(
@@ -437,22 +460,20 @@ impl Setup {
                     .items_center()
                     .justify_between()
                     .gap(px(12.))
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(theme::faint())
-                            .child(if scanning {
-                                "Scanning…"
-                            } else {
-                                "Grove never changes your repos."
-                            }),
-                    )
+                    .child(div().text_size(px(12.)).text_color(palette.faint()).child(
+                        if scanning {
+                            "Scanning…"
+                        } else {
+                            "Grove never changes your repos."
+                        },
+                    ))
                     .child(
                         div()
                             .flex()
                             .gap(px(8.))
                             .when(changing, |d| {
                                 d.child(button(
+                                    cx,
                                     "cancel",
                                     "Cancel",
                                     ButtonKind::Secondary,
@@ -462,6 +483,7 @@ impl Setup {
                                 ))
                             })
                             .child(button(
+                                cx,
                                 "continue",
                                 "Continue",
                                 ButtonKind::Primary,
@@ -472,6 +494,7 @@ impl Setup {
     }
 
     fn render_git_problem(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let palette = theme::palette(cx);
         let (headline, detail) = match &self.stage {
             Stage::GitProblem(GitError::TooOld { found }) => (
                 "Grove needs a newer Git".to_string(),
@@ -497,15 +520,15 @@ impl Setup {
                         .px(px(12.))
                         .py(px(8.))
                         .rounded(px(6.))
-                        .bg(theme::field())
+                        .bg(palette.field())
                         .border_1()
-                        .border_color(theme::border())
+                        .border_color(palette.border())
                         .text_size(px(13.)),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::faint())
+                        .text_color(palette.faint())
                         .child(note),
                 )
         };
@@ -515,13 +538,16 @@ impl Setup {
             .flex_col()
             .gap(px(18.))
             .p(px(32.))
-            .child(header("Setup"))
+            .child(header("Setup", cx))
             .child(title(headline))
-            .child(paragraph(detail).text_color(theme::warn_text()))
-            .child(paragraph(format!(
-                "Install Git {} or later with one of these in Terminal, then check again:",
-                git::MIN_VERSION
-            )))
+            .child(paragraph(detail, cx).text_color(palette.warn_text()))
+            .child(paragraph(
+                format!(
+                    "Install Git {} or later with one of these in Terminal, then check again:",
+                    git::MIN_VERSION
+                ),
+                cx,
+            ))
             .child(command(
                 "xcode-select --install",
                 "Apple's Command Line Tools (includes git).",
@@ -534,12 +560,14 @@ impl Setup {
                     .justify_end()
                     .gap(px(8.))
                     .child(button(
+                        cx,
                         "quit",
                         "Quit",
                         ButtonKind::Secondary,
                         Some(|_: &ClickEvent, _: &mut Window, cx: &mut App| shell::quit(cx)),
                     ))
                     .child(button(
+                        cx,
                         "recheck",
                         if checking {
                             "Checking…"
@@ -555,6 +583,7 @@ impl Setup {
 
 impl Render for Setup {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let body = match self.stage {
             Stage::Choose => self.render_choose(cx).into_any_element(),
             _ => self.render_git_problem(cx).into_any_element(),
@@ -564,18 +593,19 @@ impl Render for Setup {
             .when_some(self.focus.as_ref(), |d, f| d.track_focus(f))
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
-            .bg(theme::panel())
-            .text_color(theme::text())
+            .bg(palette.panel())
+            .text_color(palette.text())
             .child(body)
     }
 }
 
-fn header(step: &'static str) -> impl IntoElement {
+fn header(step: &'static str, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     div()
         .flex()
         .items_center()
         .gap(px(10.))
-        .child(div().size(px(10.)).rounded(px(5.)).bg(theme::accent()))
+        .child(div().size(px(10.)).rounded(px(5.)).bg(palette.accent()))
         .child(
             div()
                 .text_size(px(15.))
@@ -586,7 +616,7 @@ fn header(step: &'static str) -> impl IntoElement {
             div()
                 .ml_auto()
                 .text_size(px(12.))
-                .text_color(theme::faint())
+                .text_color(palette.faint())
                 .child(step),
         )
 }
@@ -598,11 +628,11 @@ fn title(text: impl Into<gpui_kit::SharedString>) -> impl IntoElement {
         .child(text.into())
 }
 
-fn paragraph(text: impl Into<gpui_kit::SharedString>) -> gpui_kit::Div {
+fn paragraph(text: impl Into<gpui_kit::SharedString>, cx: &App) -> gpui_kit::Div {
     div()
         .text_size(px(14.))
         .line_height(px(21.))
-        .text_color(theme::muted())
+        .text_color(theme::palette(cx).muted())
         .child(text.into())
 }
 
@@ -635,7 +665,7 @@ pub fn change_code_dir(done: impl FnOnce(Snapshot, &mut App) + Send + 'static, c
     };
     let options = window_options("Choose Code Folder", cx);
     cx.activate(true);
-    match gpui_kit::open_window(options, cx, |window, cx| {
+    match windows::open_window(options, cx, |window, cx| {
         let setup = setup.view(window, cx);
         setup.update(cx, |setup, cx| setup.prompt(cx));
         setup
@@ -675,7 +705,7 @@ fn window_options(title: &'static str, cx: &App) -> WindowOptions {
 fn open(setup: Setup, cx: &mut App) {
     let options = window_options("Grove Setup", cx);
     cx.activate(true);
-    if let Err(e) = gpui_kit::open_window(options, cx, |window, cx| setup.view(window, cx)) {
+    if let Err(e) = windows::open_window(options, cx, |window, cx| setup.view(window, cx)) {
         eprintln!("[grove] setup window: {e:#}");
         shell::quit(cx);
     }

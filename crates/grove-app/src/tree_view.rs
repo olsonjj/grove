@@ -7,11 +7,11 @@ use gpui_kit::base::Button;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    AnyElement, App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement,
     Pixels, Point, Render, Role as A11yRole, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Subscription, TestSupportExt, Window, anchored, deferred,
-    div, px, rgb,
+    div, px,
 };
 use grove_core::{
     Badge, LastOpened, NavEffect, NavKey, Presence, RepoSnapshot, Role, Row, RowId, RowKind,
@@ -407,6 +407,7 @@ impl TreeView {
     }
 
     fn row_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let palette = theme::palette(cx);
         let menu = self.row_menu.as_ref()?;
         let path = menu.path.clone();
         let enabled = menu.offer.reason.is_none();
@@ -423,15 +424,15 @@ impl TreeView {
             .px(px(10.))
             .justify_start()
             .rounded(px(5.))
-            .focus(|s| s.bg(theme::selected()))
+            .focus(|s| s.bg(palette.selected()))
             .when_else(
                 enabled,
                 |b| {
                     b.cursor_pointer()
-                        .text_color(theme::text())
-                        .hover(|s| s.bg(theme::selected()))
+                        .text_color(palette.text())
+                        .hover(|s| s.bg(palette.selected()))
                 },
-                |b| b.text_color(theme::faint()),
+                |b| b.text_color(palette.faint()),
             )
             .child(menu.offer.label)
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -446,7 +447,7 @@ impl TreeView {
                 .px(px(10.))
                 .pb(px(4.))
                 .text_size(px(12.))
-                .text_color(theme::muted())
+                .text_color(palette.muted())
                 .child(reason)
                 .test_support()
         });
@@ -485,8 +486,8 @@ impl TreeView {
                         .flex_col()
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(theme::border_strong())
-                        .bg(theme::raised())
+                        .border_color(palette.border_strong())
+                        .bg(palette.raised())
                         .shadow_lg()
                         .occlude()
                         .font_family(theme::SANS)
@@ -520,6 +521,7 @@ impl TreeView {
     }
 
     fn render_row(&self, ix: usize, row: &Row, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         if row.kind == RowKind::DetachedSection {
             return div()
                 .id(("tree-row", ix))
@@ -527,7 +529,7 @@ impl TreeView {
                 .pb(px(6.))
                 .px(px(10.))
                 .text_size(px(11.))
-                .text_color(theme::faint())
+                .text_color(palette.faint())
                 .child("DETACHED WORKTREES")
                 .into_any_element();
         }
@@ -541,8 +543,8 @@ impl TreeView {
             }
         );
         let bg = match (selected, is_wt) {
-            (true, _) => Some(theme::selected()),
-            (false, true) => Some(theme::worktree_row()),
+            (true, _) => Some(palette.selected()),
+            (false, true) => Some(palette.worktree_row()),
             _ => None,
         };
         let base = div()
@@ -562,8 +564,8 @@ impl TreeView {
             .when_some(bg, |d, bg| d.bg(bg))
             .when_else(
                 selected,
-                |d| d.child(theme::selection_bar()),
-                |d| d.hover(|s| s.bg(theme::raised())),
+                |d| d.child(theme::selection_bar(cx)),
+                |d| d.hover(|s| s.bg(palette.raised())),
             )
             .role(A11yRole::TreeItem)
             .aria_label(row_label(row))
@@ -584,7 +586,7 @@ impl TreeView {
                 collapsed,
             } => base
                 .aria_expanded(!collapsed)
-                .text_color(theme::muted())
+                .text_color(palette.muted())
                 .child(
                     icon(
                         if *collapsed {
@@ -594,18 +596,18 @@ impl TreeView {
                         },
                         14.,
                     )
-                    .text_color(theme::muted()),
+                    .text_color(palette.muted()),
                 )
                 .child(single_line(prefix.clone()))
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::faint())
+                        .text_color(palette.faint())
                         .child(count.to_string()),
                 ),
             RowKind::Branch { label, .. } => base
-                .text_color(theme::text())
-                .child(icon(icons::BRANCH, 15.).text_color(theme::text_soft()))
+                .text_color(palette.text())
+                .child(icon(icons::BRANCH, 15.).text_color(palette.text_soft()))
                 .child(single_line(label.clone())),
             RowKind::Worktree {
                 display,
@@ -615,19 +617,19 @@ impl TreeView {
             } => base
                 // Dimmed by color, not opacity, so its words stay readable.
                 .text_color(if unavailable {
-                    theme::faint()
+                    palette.faint()
                 } else {
-                    theme::worktree_text()
+                    palette.worktree_text()
                 })
                 .child(
                     icon(icons::ELBOW, 14.)
                         .ml(px(-4.))
-                        .text_color(theme::connector()),
+                        .text_color(palette.connector()),
                 )
                 .child(icon(icons::FOLDER, 15.).text_color(if unavailable {
-                    theme::faint()
+                    palette.faint()
                 } else {
-                    theme::link()
+                    palette.link()
                 }))
                 .child(
                     div()
@@ -641,19 +643,19 @@ impl TreeView {
                                 .flex_shrink(1.)
                                 .overflow_hidden()
                                 .text_ellipsis_start()
-                                .text_color(theme::faint())
+                                .text_color(palette.faint())
                                 .child(display.parent.clone()),
                         )
                         .child(div().flex_none().child(display.name.clone())),
                 )
-                .children(badges.iter().enumerate().map(|(i, b)| badge(i, b)))
+                .children(badges.iter().enumerate().map(|(i, b)| badge(i, b, cx)))
                 .when(*presence == Presence::Missing, |d| {
                     d.child(
                         div()
                             .flex_none()
                             .font_family(theme::SANS)
                             .text_size(px(11.))
-                            .text_color(theme::faint())
+                            .text_color(palette.faint())
                             .child("use Remove missing entry…"),
                     )
                 })
@@ -672,6 +674,7 @@ impl TreeView {
 impl TreeView {
     /// Inline "Open in <editor>" on the selected worktree row; disabled when missing.
     fn open_button(&self, ix: usize, presence: Presence, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let openable = presence.is_openable();
         let editor = crate::launcher::target_name(Role::Editor, cx);
         let label: SharedString = match &editor {
@@ -682,7 +685,7 @@ impl TreeView {
             None => format!("{label} (↵)").into(),
             Some(reason) => format!("Can't open: {reason}").into(),
         };
-        inline_button(("open-editor", ix), presence)
+        inline_button(("open-editor", ix), presence, cx)
             .h(px(24.))
             .px(px(8.))
             .gap(px(6.))
@@ -691,16 +694,16 @@ impl TreeView {
             .accessibility_label(label.clone())
             .aria_keyshortcuts("Enter")
             .child(icon(icons::EDITOR, 13.).text_color(if openable {
-                theme::link()
+                palette.link()
             } else {
-                theme::faint()
+                palette.faint()
             }))
             .child(label)
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .when_else(
                 openable,
-                |d| d.text_color(theme::text()),
-                |d| d.text_color(theme::faint()),
+                |d| d.text_color(palette.text()),
+                |d| d.text_color(palette.faint()),
             )
             .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Editor, cx)))
             .into_any_element()
@@ -708,6 +711,7 @@ impl TreeView {
 
     /// Inline icon button "Open in <terminal>" next to the editor button.
     fn terminal_button(&self, ix: usize, presence: Presence, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let openable = presence.is_openable();
         let label: SharedString = match crate::launcher::target_name(Role::Terminal, cx) {
             Some(name) => format!("Open in {name}").into(),
@@ -717,14 +721,14 @@ impl TreeView {
             None => format!("{label} (⌘↵)").into(),
             Some(reason) => format!("Can't open: {reason}").into(),
         };
-        inline_button(("open-terminal", ix), presence)
+        inline_button(("open-terminal", ix), presence, cx)
             .size(px(24.))
             .accessibility_label(label)
             .aria_keyshortcuts("Command+Enter")
             .child(icon(icons::TERMINAL, 13.).text_color(if openable {
-                theme::link()
+                palette.link()
             } else {
-                theme::faint()
+                palette.faint()
             }))
             .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_click(cx.listener(|this, _, _, cx| this.request_open(Role::Terminal, cx)))
@@ -733,7 +737,8 @@ impl TreeView {
 }
 
 /// A row's open button. Not a tab stop: Enter / ⌘Enter on the focused tree do the same.
-fn inline_button(id: impl Into<gpui_kit::ElementId>, presence: Presence) -> Button {
+fn inline_button(id: impl Into<gpui_kit::ElementId>, presence: Presence, cx: &App) -> Button {
+    let palette = theme::palette(cx);
     let openable = presence.is_openable();
     Button::new(id)
         .focusable(false)
@@ -741,12 +746,12 @@ fn inline_button(id: impl Into<gpui_kit::ElementId>, presence: Presence) -> Butt
         .flex_none()
         .rounded(px(6.))
         .border_1()
-        .border_color(theme::border_strong())
+        .border_color(palette.border_strong())
         .when_some(presence.reason(), |b, reason| b.aria_description(reason))
         .when(openable, |b| {
-            b.bg(theme::raised())
+            b.bg(palette.raised())
                 .cursor_pointer()
-                .hover(|s| s.bg(theme::border()))
+                .hover(|s| s.bg(palette.border()))
         })
 }
 
@@ -779,13 +784,14 @@ fn single_line(text: String) -> gpui_kit::Div {
 }
 
 /// Worded state badge; color only reinforces the words. Tooltip gives the long form.
-fn badge(i: usize, b: &Badge) -> impl IntoElement {
+fn badge(i: usize, b: &Badge, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     let (bg, fg) = match b {
-        Badge::Changed(_) => (theme::accent_bg(), theme::accent()),
+        Badge::Changed(_) => (palette.accent_bg(), palette.accent()),
         Badge::Missing | Badge::UpstreamGone(_) | Badge::StatusFailed(_) => {
-            (theme::warn_bg(), theme::warn_text())
+            (palette.warn_bg(), palette.warn_text())
         }
-        _ => (theme::border(), theme::text_soft()),
+        _ => (palette.border(), palette.text_soft()),
     };
     let tip: SharedString = b.description().into();
     div()
@@ -817,23 +823,24 @@ fn legend_item(icon_el: impl IntoElement, label: &'static str) -> impl IntoEleme
         .child(label)
 }
 
-fn legend() -> impl IntoElement {
+fn legend(cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     let folder_chip = div()
         .size(px(18.))
         .flex()
         .items_center()
         .justify_center()
         .rounded(px(4.))
-        .bg(rgb(0x17222f))
-        .child(icon(icons::FOLDER, 12.).text_color(theme::link()));
+        .bg(palette.legend_chip())
+        .child(icon(icons::FOLDER, 12.).text_color(palette.link()));
     div()
         .flex()
         .flex_wrap()
         .gap(px(16.))
         .text_size(px(12.))
-        .text_color(theme::muted())
+        .text_color(palette.muted())
         .child(legend_item(
-            icon(icons::BRANCH, 13.).text_color(theme::text_soft()),
+            icon(icons::BRANCH, 13.).text_color(palette.text_soft()),
             "Branch",
         ))
         .child(legend_item(folder_chip, "Worktree (folder on disk)"))
@@ -841,6 +848,7 @@ fn legend() -> impl IntoElement {
 
 impl Render for TreeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let rows: Vec<AnyElement> = self
             .tree
             .rows
@@ -878,7 +886,7 @@ impl Render for TreeView {
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(theme::muted())
+                            .text_color(palette.muted())
                             .child(self.count_line()),
                     )
                     .child(
@@ -886,7 +894,7 @@ impl Render for TreeView {
                             .flex()
                             .items_center()
                             .gap(px(12.))
-                            .child(legend())
+                            .child(legend(cx))
                             .child(self.sort_menu.clone()),
                     ),
             )
@@ -896,8 +904,8 @@ impl Render for TreeView {
                     .mb(px(8.))
                     .p(px(10.))
                     .rounded(px(6.))
-                    .bg(theme::warn_bg())
-                    .text_color(theme::warn_text())
+                    .bg(palette.warn_bg())
+                    .text_color(palette.warn_text())
                     .text_size(px(13.))
                     .child(e)
             }))
@@ -918,7 +926,7 @@ impl Render for TreeView {
                             div()
                                 .p(px(6.))
                                 .text_size(px(13.))
-                                .text_color(theme::muted())
+                                .text_color(palette.muted())
                                 .child("No worktrees"),
                         )
                     })

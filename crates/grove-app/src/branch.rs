@@ -130,10 +130,11 @@ impl SearchableListDelegate for BranchMenu {
         item: &Offer,
         checked: bool,
         _: &mut Window,
-        _: &mut App,
+        cx: &mut App,
     ) -> Option<gpui_kit::AnyElement> {
         // The row's accessibility label stands on its own: a possible pick is the branch
         // name, an impossible one says which worktree holds it.
+        let palette = theme::palette(cx);
         let label = item.held_by.as_ref().map_or_else(
             || item.branch.clone(),
             |held| format!("{}, checked out in worktree {held}", item.branch),
@@ -159,10 +160,10 @@ impl SearchableListDelegate for BranchMenu {
                                 .min_w_0()
                                 .truncate()
                                 .text_color(if item.held_by.is_none() {
-                                    theme::text()
+                                    palette.text()
                                 } else {
                                     // Grayed: another worktree holds it.
-                                    theme::muted()
+                                    palette.muted()
                                 })
                                 .child(item.branch.clone()),
                         )
@@ -170,7 +171,7 @@ impl SearchableListDelegate for BranchMenu {
                             div()
                                 .flex_none()
                                 .text_size(px(11.))
-                                .text_color(theme::faint())
+                                .text_color(palette.faint())
                                 .child(format!("in `{held}`"))
                         })),
                 )
@@ -179,7 +180,7 @@ impl SearchableListDelegate for BranchMenu {
                         .id(("branch-check", ix.row))
                         .test_support()
                         .flex_none()
-                        .child(crate::icons::icon(icons::CHECK, 12.).text_color(theme::text()))
+                        .child(crate::icons::icon(icons::CHECK, 12.).text_color(palette.text()))
                 }))
                 .test_support()
                 .into_any_element(),

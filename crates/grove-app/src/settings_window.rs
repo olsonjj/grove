@@ -1,27 +1,32 @@
-//! Settings: code folder, default editor and terminal, custom commands, and the general
-//! toggles. Edits a draft; Save applies it to every surface, Cancel drops it.
+//! Settings: code folder, default editor and terminal, custom commands, the general
+//! toggles, and the theme choice. Edits a draft; Save applies it to every surface,
+//! Cancel drops it — the theme excepted: a pick applies the theme live and Save
+//! persists it. Any way the window closes re-applies the choice it opened with.
 
 use std::path::Path;
 
 use gpui_kit::base::Button;
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::searchable_list::SearchableListDelegate as _;
+use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyWindowHandle, App, AppContext, Bounds, ClickEvent, Context, ElementId, Entity,
     FocusHandle, FontWeight, Global, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, TestSupportExt, TitlebarOptions,
-    Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, TestSupportExt,
+    TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, div, px, size,
 };
 use grove_core::{
     CustomCommand, LoginItemStatus, NoTarget, Opener, Preferences, Role, Settings, Snapshot,
-    TargetKind, TerminalOpensIn, command_line,
+    TargetKind, TerminalOpensIn, ThemeChoice, command_line,
 };
 
 use crate::icons::{self, icon};
 use crate::login_item::{self, LOGIN_ITEMS, LoginItems};
 use crate::main_window::tilde;
 use crate::theme::{self, ButtonKind, button};
-use crate::{setup, shell};
+use crate::theme_picker::ThemeMenu;
+use crate::{setup, shell, theme_picker, windows};
 
 const SIZE: (f32, f32) = (820., 760.);
 const VERSION: &str = concat!(
@@ -32,10 +37,44 @@ const VERSION: &str = concat!(
     ")"
 );
 
-/// The open settings window, so Settings… brings it forward instead of opening another.
-struct Open(AnyWindowHandle);
+/// The open settings window and the theme choice it opened with, so every close
+/// path re-applies that choice: they all funnel through window removal, and the
+/// `closed` observer sees the removal wherever it came from.
+struct Open {
+    window: AnyWindowHandle,
+    /// The persisted choice as stored when the window opened (not its resolution,
+    /// so a later Follow System entry isn't pinned by a cancel — spec story 16): a
+    /// FollowSystem entry re-resolves from the system's appearance at cancel time.
+    entry_theme: Option<ThemeChoice>,
+    /// Keeps the window-closed observer alive while the window is open (dropped
+    /// with the global; the underscore keeps the never-read lint quiet).
+    _closed: Subscription,
+}
 
 impl Global for Open {}
+
+/// Marks `window` the open settings dialog and remembers the entry choice.
+fn became_open(window: AnyWindowHandle, cx: &mut App) {
+    let entry_theme = shell::library(cx).settings.theme.clone();
+    let closed = cx.on_window_closed(|cx: &mut App, window_id| {
+        let Some(open) = cx.try_global::<Open>() else {
+            return;
+        };
+        if open.window.window_id() != window_id {
+            return;
+        }
+        // Save rewrites the entry before removing itself, so this keeps what the
+        // window saved; every other path keeps what it opened with.
+        let entry = open.entry_theme.clone();
+        cx.remove_global::<Open>();
+        theme::apply_entry_choice(entry, cx);
+    });
+    cx.set_global(Open {
+        window,
+        entry_theme,
+        _closed: closed,
+    });
+}
 
 pub fn open(cx: &mut App) {
     cx.activate(true);
@@ -61,14 +100,14 @@ pub fn open(cx: &mut App) {
         ..Default::default()
     };
     match open_with(options, cx) {
-        Ok((handle, _)) => cx.set_global(Open(handle)),
+        Ok((handle, _)) => became_open(handle, cx),
         Err(e) => eprintln!("[grove] settings: {e:#}"),
     }
 }
 
 pub fn window(cx: &App) -> Option<AnyWindowHandle> {
     cx.try_global::<Open>()
-        .map(|o| o.0)
+        .map(|o| o.window)
         .filter(|w| cx.windows().contains(w))
 }
 
@@ -76,7 +115,7 @@ fn open_with(
     options: WindowOptions,
     cx: &mut App,
 ) -> gpui_kit::Result<(AnyWindowHandle, Entity<SettingsWindow>)> {
-    gpui_kit::open_window(options, cx, |window, cx| {
+    windows::open_window(options, cx, |window, cx| {
         cx.new(|cx| SettingsWindow::new(window, cx))
     })
 }
@@ -89,6 +128,9 @@ pub struct SettingsWindow {
     login_status: Option<LoginItemStatus>,
     /// The custom command being added or edited.
     form: Option<CommandForm>,
+    /// The THEME dropdown's select: the registry's themes, the committed choice and
+    /// the open popup live in the entity.
+    theme_select: Entity<SelectState<ThemeMenu>>,
     focus: FocusHandle,
 }
 
@@ -114,11 +156,26 @@ impl SettingsWindow {
             });
         })
         .detach();
+        // The THEME dropdown over the themes registered at launch; the stored choice
+        // (Grove Dark when nothing is stored) starts committed, so the trigger reads
+        // it and the list opens on it with its check.
+        let display = theme_display(&shell::library(cx).settings.theme);
+        let menu = ThemeMenu::new(theme_picker::sections(cx));
+        let selected = menu.position(&display);
+        let theme_select =
+            cx.new(|cx| SelectState::new(menu, selected, window, cx).searchable(true));
+        cx.subscribe_in(
+            &theme_select,
+            window,
+            |this, _, ev: &SelectEvent<ThemeMenu>, _, cx| this.theme_picked(ev, cx),
+        )
+        .detach();
         Self {
             draft: shell::library(cx).settings.preferences(),
             scanned: None,
             login_status: None,
             form: None,
+            theme_select,
             focus,
         }
     }
@@ -133,6 +190,11 @@ impl SettingsWindow {
             prefs.code_dir = shell::library(cx).settings.code_dir.clone();
         }
         shell::save_preferences(prefs, self.scanned.take(), cx);
+        // What this window leaves behind is what it saved: the close-revert keeps
+        // the saved theme instead of the one the window opened with.
+        if cx.has_global::<Open>() {
+            cx.global_mut::<Open>().entry_theme = self.draft.theme.clone();
+        }
         window.remove_window();
     }
 
@@ -277,6 +339,7 @@ impl SettingsWindow {
 
     fn code_folder(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (folder, repos) = self.shown_folder(cx);
+        let palette = theme::palette(cx);
         let folder = folder.map_or_else(|| "No folder chosen".into(), tilde);
         div()
             .flex()
@@ -286,9 +349,9 @@ impl SettingsWindow {
             .py(px(14.))
             .rounded(px(10.))
             .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::raised())
-            .child(icon(icons::FOLDER, 18.).text_color(theme::link()))
+            .border_color(palette.border_strong())
+            .bg(palette.raised())
+            .child(icon(icons::FOLDER, 18.).text_color(palette.link()))
             .child(
                 div()
                     .flex_1()
@@ -296,7 +359,7 @@ impl SettingsWindow {
                     .flex()
                     .flex_col()
                     .gap(px(2.))
-                    .child(label("CODE FOLDER"))
+                    .child(label("CODE FOLDER", cx))
                     .child(
                         div()
                             .flex()
@@ -307,7 +370,7 @@ impl SettingsWindow {
                                 div()
                                     .flex_none()
                                     .text_size(px(12.))
-                                    .text_color(theme::muted())
+                                    .text_color(palette.muted())
                                     .child(format!(
                                         "· {repos} repo{} · Grove scans nothing outside it",
                                         if repos == 1 { "" } else { "s" }
@@ -316,6 +379,7 @@ impl SettingsWindow {
                     ),
             )
             .child(button(
+                cx,
                 "settings-change-folder",
                 "Change…",
                 ButtonKind::Secondary,
@@ -329,6 +393,7 @@ impl SettingsWindow {
             Role::Editor => ("EDITOR", "settings-editor"),
             Role::Terminal => ("TERMINAL", "settings-terminal"),
         };
+        let palette = theme::palette(cx);
         let targets = cx
             .try_global::<crate::launcher::Launcher>()
             .and_then(|l| l.targets.clone());
@@ -338,9 +403,9 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label(title).mb(px(4.)));
+            .child(label(title, cx).mb(px(4.)));
         let Some(targets) = targets else {
-            return col.child(note("Looking for apps…")).into_any_element();
+            return col.child(note("Looking for apps…", cx)).into_any_element();
         };
         let settings = self.draft_settings();
         let chosen = grove_core::default_opener(role, &settings, &targets);
@@ -350,9 +415,10 @@ impl SettingsWindow {
             _ => None,
         };
         match &chosen {
-            Err(e @ NoTarget::NoneDetected(_)) => col = col.child(note(e.to_string())),
+            Err(e @ NoTarget::NoneDetected(_)) => col = col.child(note(e.to_string(), cx)),
             Err(e) => {
-                col = col.child(note(format!("{e}. Pick another.")).text_color(theme::warn_text()));
+                col = col
+                    .child(note(format!("{e}. Pick another."), cx).text_color(palette.warn_text()));
             }
             Ok(_) => {}
         }
@@ -371,8 +437,8 @@ impl SettingsWindow {
                 if on { ", selected" } else { "" }
             );
             col = col.child(
-                choice((id, ix), on, a11y)
-                    .child(radio(on))
+                choice((id, ix), on, a11y, cx)
+                    .child(radio(on, cx))
                     .child(
                         div()
                             .flex_1()
@@ -384,7 +450,7 @@ impl SettingsWindow {
                             .min_w_0()
                             .truncate()
                             .text_size(px(12.))
-                            .text_color(theme::muted()),
+                            .text_color(palette.muted()),
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         let id = Some(kind.id().to_string());
@@ -407,13 +473,14 @@ impl SettingsWindow {
 
     /// Custom commands, each selectable as the default editor, and the add / edit form.
     fn commands(&self, selected: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let editing = self.form.is_some();
         let mut col = div()
             .mt(px(6.))
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label("CUSTOM COMMANDS"));
+            .child(label("CUSTOM COMMANDS", cx));
         for (ix, cmd) in self.draft.custom_commands.iter().enumerate() {
             let on = selected == Some(cmd.id().as_str());
             let detail = if cmd.run_in_terminal {
@@ -427,10 +494,10 @@ impl SettingsWindow {
                 cmd.template,
                 if on { ", selected" } else { "" }
             );
-            let row = choice(("settings-command", ix), on, a11y)
+            let row = choice(("settings-command", ix), on, a11y, cx)
                 .flex_1()
                 .min_w_0()
-                .child(radio(on))
+                .child(radio(on, cx))
                 .child(
                     div()
                         .flex_1()
@@ -442,7 +509,7 @@ impl SettingsWindow {
                             theme::mono(format!("{} · {detail}", cmd.template))
                                 .truncate()
                                 .text_size(px(12.))
-                                .text_color(theme::muted()),
+                                .text_color(palette.muted()),
                         ),
                 )
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
@@ -454,6 +521,7 @@ impl SettingsWindow {
                 !editing,
                 |d| {
                     d.child(button(
+                        cx,
                         ("settings-command-edit", ix),
                         "Edit",
                         ButtonKind::Secondary,
@@ -462,6 +530,7 @@ impl SettingsWindow {
                         })),
                     ))
                     .child(button(
+                        cx,
                         ("settings-command-remove", ix),
                         "Remove",
                         ButtonKind::Secondary,
@@ -476,6 +545,7 @@ impl SettingsWindow {
         match &self.form {
             Some(form) => col.child(self.command_form(form, cx)),
             None => col.child(div().flex().child(button(
+                cx,
                 "settings-command-add",
                 "Add command…",
                 ButtonKind::Secondary,
@@ -488,12 +558,13 @@ impl SettingsWindow {
     }
 
     fn command_form(&self, form: &CommandForm, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let field = |id: &'static str, title: &'static str, state: &Entity<InputState>| {
             div()
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(label(title))
+                .child(label(title, cx))
                 .child(
                     div()
                         .id(id)
@@ -513,7 +584,7 @@ impl SettingsWindow {
             .p(px(12.))
             .rounded(px(8.))
             .border_1()
-            .border_color(theme::border_strong())
+            .border_color(palette.border_strong())
             .child(field("settings-command-label", "NAME", &form.label))
             .child(field(
                 "settings-command-template",
@@ -525,6 +596,7 @@ impl SettingsWindow {
                     "settings-command-terminal",
                     false,
                     format!("Run in terminal, {}", if on { "on" } else { "off" }),
+                    cx,
                 )
                 .child(
                     div()
@@ -536,9 +608,10 @@ impl SettingsWindow {
                         .child(div().text_size(px(14.)).child("Run in terminal"))
                         .child(note(
                             "On: a new tab in your terminal. Off: runs in the background.",
+                            cx,
                         )),
                 )
-                .child(switch(on))
+                .child(switch(on, cx))
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                     if let Some(form) = &mut this.form {
                         form.run_in_terminal = !form.run_in_terminal;
@@ -547,7 +620,7 @@ impl SettingsWindow {
                 })),
             )
             .when_some(form.problem, |d, problem| {
-                d.child(note(problem).text_color(theme::warn_text()))
+                d.child(note(problem, cx).text_color(palette.warn_text()))
             })
             .child(
                 div()
@@ -555,6 +628,7 @@ impl SettingsWindow {
                     .justify_end()
                     .gap(px(8.))
                     .child(button(
+                        cx,
                         "settings-command-discard",
                         "Discard",
                         ButtonKind::Secondary,
@@ -565,6 +639,7 @@ impl SettingsWindow {
                         })),
                     ))
                     .child(button(
+                        cx,
                         "settings-command-done",
                         "Done",
                         ButtonKind::Primary,
@@ -577,11 +652,31 @@ impl SettingsWindow {
             )
     }
 
+    /// A confirmed pick: the draft keeps the choice — Save persists it, unlike the
+    /// other prefs — and the theme re-skins every visible window now (including
+    /// this one, whose own chrome follows), through the same route the launch
+    /// choice takes.
+    fn theme_picked(&mut self, ev: &SelectEvent<ThemeMenu>, cx: &mut Context<Self>) {
+        let SelectEvent::Confirm(Some(value)) = ev else {
+            return;
+        };
+        let choice = theme_picker::choice_for(value);
+        self.draft.theme = Some(choice.clone());
+        // The resolved theme re-skins every visible window now — a Follow System
+        // pick resolves from the system's current appearance (see theme::apply_choice).
+        // The pick is NOT exempt from live tracking: with Follow System still persisted,
+        // a macOS appearance change re-applies Follow System's resolution over this
+        // unsaved preview (and a Save then persists the draft as usual).
+        theme::apply_choice(cx, Some(&choice));
+        cx.notify();
+    }
+
     /// New tab or new window, for the default terminal where it supports both.
     fn opens_in_picker(&self, t: grove_core::Terminal, cx: &mut Context<Self>) -> AnyElement {
         if !t.supports_tabs() {
-            return note(format!("{} opens new windows only.", t.name())).into_any_element();
+            return note(format!("{} opens new windows only.", t.name()), cx).into_any_element();
         }
+        let palette = theme::palette(cx);
         let current = self.opens_in(TargetKind::Terminal(t));
         let option = |id: &'static str, text: &'static str, value: TerminalOpensIn| {
             let on = current == Some(value);
@@ -599,20 +694,20 @@ impl SettingsWindow {
                 .rounded(px(6.))
                 .border_1()
                 .border_color(gpui_kit::transparent_black())
-                .focus_visible(|s| s.border_color(theme::link()))
+                .focus_visible(|s| s.border_color(palette.link()))
                 .text_size(px(13.))
                 .cursor_pointer()
                 .when_else(
                     on,
                     |b| {
-                        b.bg(theme::selected())
-                            .border_color(theme::text_soft())
-                            .text_color(theme::text())
+                        b.bg(palette.selected())
+                            .border_color(palette.text_soft())
+                            .text_color(palette.text())
                             .font_weight(FontWeight::SEMIBOLD)
                     },
                     |b| {
-                        b.text_color(theme::muted())
-                            .hover(|s| s.bg(theme::border()))
+                        b.text_color(palette.muted())
+                            .hover(|s| s.bg(palette.border()))
                     },
                 )
                 .child(text)
@@ -626,16 +721,16 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label("OPENS IN"))
+            .child(label("OPENS IN", cx))
             .child(
                 div()
                     .flex()
                     .gap(px(4.))
                     .p(px(3.))
                     .rounded(px(8.))
-                    .bg(theme::field())
+                    .bg(palette.field())
                     .border_1()
-                    .border_color(theme::border())
+                    .border_color(palette.border())
                     .child(option(
                         "settings-opens-tab",
                         "New tab",
@@ -652,6 +747,7 @@ impl SettingsWindow {
                 |d| {
                     d.child(note(
                         "Terminal tabs also need Accessibility permission (Grove presses ⌘T).",
+                        cx,
                     ))
                 },
             )
@@ -671,7 +767,7 @@ impl SettingsWindow {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(label("GENERAL").mb(px(4.)))
+            .child(label("GENERAL", cx).mb(px(4.)))
             .child(self.toggle(
                 "settings-menu-bar-icon",
                 "Show menu bar icon",
@@ -712,10 +808,12 @@ impl SettingsWindow {
         hint: Option<String>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let palette = theme::palette(cx);
         choice(
             id,
             false,
             format!("{title}, {}", if on { "on" } else { "off" }),
+            cx,
         )
         .py(px(10.))
         .child(
@@ -729,19 +827,19 @@ impl SettingsWindow {
                 .child(
                     div()
                         .text_size(px(12.))
-                        .text_color(theme::muted())
+                        .text_color(palette.muted())
                         .child(detail),
                 )
                 .when_some(hint, |d, hint| {
                     d.child(
                         div()
                             .text_size(px(12.))
-                            .text_color(theme::warn_text())
+                            .text_color(palette.warn_text())
                             .child(hint),
                     )
                 }),
         )
-        .child(switch(on))
+        .child(switch(on, cx))
         .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
             let value = field(&mut this.draft);
             *value = !*value;
@@ -749,7 +847,40 @@ impl SettingsWindow {
         }))
     }
 
+    /// The THEME section: its own header above the version note and the choice
+    /// dropdown, styled like the sections above it and the secondary buttons. The
+    /// window keeps its fixed size; the list is the select's popup.
+    fn theme_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
+        let display = theme_display(&self.draft.theme);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(label("THEME", cx).mb(px(4.)))
+            .child(
+                div().flex_none().w(px(300.)).child(
+                    // The trigger is the component's own div, so the secondary-button
+                    // look rides on the style refinement; it can't carry Grove's hover
+                    // tint with it. Focus/open still show the component's ring.
+                    Select::new(&self.theme_select)
+                        .id("theme-picker")
+                        .search_placeholder("Search themes…")
+                        .placeholder(display.clone())
+                        .accessibility_label(format!("Theme, {display}, opens theme list",))
+                        .h(px(34.))
+                        .px(px(14.))
+                        .rounded(px(8.))
+                        .border_1()
+                        .border_color(palette.border_strong())
+                        .bg(palette.raised())
+                        .text_size(px(13.)),
+                ),
+            )
+    }
+
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let targets = cx
             .try_global::<crate::launcher::Launcher>()
             .and_then(|l| l.targets.clone())
@@ -773,13 +904,13 @@ impl SettingsWindow {
             .px(px(32.))
             .py(px(16.))
             .border_t_1()
-            .border_color(theme::border())
+            .border_color(palette.border())
             .child(
                 div()
                     .min_w_0()
                     .truncate()
                     .text_size(px(13.))
-                    .text_color(theme::muted())
+                    .text_color(palette.muted())
                     .child(summary),
             )
             .child(
@@ -787,6 +918,7 @@ impl SettingsWindow {
                     .flex()
                     .gap(px(10.))
                     .child(button(
+                        cx,
                         "settings-cancel",
                         "Cancel",
                         ButtonKind::Secondary,
@@ -795,6 +927,7 @@ impl SettingsWindow {
                         }),
                     ))
                     .child(button(
+                        cx,
                         "settings-save",
                         "Save",
                         ButtonKind::Primary,
@@ -806,14 +939,15 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
             .flex()
             .flex_col()
-            .bg(theme::panel())
-            .text_color(theme::text())
+            .bg(palette.panel())
+            .text_color(palette.text())
             .child(
                 div()
                     .id("settings-body")
@@ -837,9 +971,10 @@ impl Render for SettingsWindow {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child("Settings"),
                             )
-                            .child(div().text_size(px(14.)).text_color(theme::muted()).child(
-                                "Stored on this Mac only. Nothing changes until you \
-                                         Save.",
+                            .child(div().text_size(px(14.)).text_color(palette.muted()).child(
+                                "Stored on this Mac only. Themes preview live — Save keeps \
+                                         your choice, Cancel restores it. Other changes apply \
+                                         when you Save.",
                             )),
                     )
                     .child(self.code_folder(cx))
@@ -851,7 +986,8 @@ impl Render for SettingsWindow {
                             .child(self.choices(Role::Terminal, cx)),
                     )
                     .child(self.general(cx))
-                    .child(note(VERSION)),
+                    .child(self.theme_section(cx))
+                    .child(note(VERSION, cx)),
             )
             .child(self.footer(cx))
     }
@@ -883,22 +1019,34 @@ fn login_hint(
     (!lines.is_empty()).then(|| lines.join(" "))
 }
 
-fn label(text: &'static str) -> gpui_kit::Div {
+fn label(text: &'static str, cx: &App) -> gpui_kit::Div {
     div()
         .text_size(px(11.))
-        .text_color(theme::faint())
+        .text_color(theme::palette(cx).faint())
         .child(text)
 }
 
-fn note(text: impl Into<SharedString>) -> gpui_kit::Div {
+fn note(text: impl Into<SharedString>, cx: &App) -> gpui_kit::Div {
     div()
         .text_size(px(12.))
-        .text_color(theme::muted())
+        .text_color(theme::palette(cx).muted())
         .child(text.into())
 }
 
+/// What the theme dropdown reads for a stored choice: the choice as stored — a
+/// theme by name, "Follow System" for the FollowSystem kind; Grove Dark when
+/// nothing is stored, the default the launch apply stood up.
+fn theme_display(choice: &Option<ThemeChoice>) -> SharedString {
+    match choice {
+        Some(ThemeChoice::Name(name)) => name.clone().into(),
+        Some(ThemeChoice::FollowSystem) => theme_picker::FOLLOW_SYSTEM.into(),
+        None => theme::GROVE_DARK_NAME.into(),
+    }
+}
+
 /// A selectable row: radio choice or toggle.
-fn choice(id: impl Into<ElementId>, selected: bool, a11y: String) -> Button {
+fn choice(id: impl Into<ElementId>, selected: bool, a11y: String, cx: &App) -> Button {
+    let palette = theme::palette(cx);
     Button::new(id)
         .accessibility_label(a11y)
         .selected(selected)
@@ -910,30 +1058,32 @@ fn choice(id: impl Into<ElementId>, selected: bool, a11y: String) -> Button {
         .rounded(px(8.))
         .border_1()
         .border_color(gpui_kit::transparent_black())
-        .focus_visible(|s| s.border_color(theme::link()))
+        .focus_visible(|s| s.border_color(palette.link()))
         .cursor_pointer()
         .when_else(
             selected,
-            |b| b.bg(theme::selected()),
-            |b| b.bg(theme::raised()).hover(|s| s.bg(theme::border())),
+            |b| b.bg(palette.selected()),
+            |b| b.bg(palette.raised()).hover(|s| s.bg(palette.border())),
         )
 }
 
-fn radio(on: bool) -> impl IntoElement {
+fn radio(on: bool, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     div()
         .flex_none()
         .size(px(14.))
         .rounded(px(7.))
         .border_1()
         .border_color(if on {
-            theme::accent()
+            palette.accent()
         } else {
-            theme::border_strong()
+            palette.border_strong()
         })
         .when(on, |d| d.border_4())
 }
 
-fn switch(on: bool) -> impl IntoElement {
+fn switch(on: bool, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     div()
         .flex_none()
         .w(px(34.))
@@ -943,10 +1093,10 @@ fn switch(on: bool) -> impl IntoElement {
         .rounded(px(10.))
         .when_else(
             on,
-            |d| d.bg(theme::accent()).justify_end(),
-            |d| d.bg(theme::border_strong()),
+            |d| d.bg(palette.accent()).justify_end(),
+            |d| d.bg(palette.border_strong()),
         )
-        .child(div().size(px(16.)).rounded(px(8.)).bg(theme::text()))
+        .child(div().size(px(16.)).rounded(px(8.)).bg(palette.text()))
 }
 
 #[cfg(test)]
@@ -955,23 +1105,34 @@ mod tests {
     use std::process::Command;
     use std::sync::{Arc, Mutex};
 
+    use gpui_kit::WindowAppearance;
+    use gpui_kit::component::IndexPath;
+    use gpui_kit::component::theme::ActiveTheme;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{Point, TestAppContext};
-    use grove_core::{Outcome, Settings, SettingsFile, TerminalOpensIn, search};
+    use gpui_kit::{ElementId, Point, TestAppContext};
+    use grove_core::{Outcome, Settings, SettingsFile, TerminalOpensIn, ThemeChoice, search};
+
+    use ThemeChoice::{FollowSystem, Name};
     use tempfile::TempDir;
 
     use super::*;
     use crate::main_window::Status;
-    use crate::test_support::{canned, fake_launcher, set_library, settings_file, tab_to};
+    use crate::test_support::{
+        canned, fake_launcher, indexed_labels, set_library, settings_file, tab_to,
+    };
 
     /// Grove past setup, with the fake launcher's apps detected.
     fn running(cx: &mut TestAppContext, file: &SettingsFile) {
         fake_launcher(cx, Ok(Outcome::Opened));
         cx.update(|cx| {
             gpui_kit::init(cx);
+            theme::init(cx);
             shell::init(cx);
             set_library(file, vec![canned()], cx);
             shell::start_bare(cx);
+            // Launch applies the persisted choice once (main.rs); the seeded file
+            // stands in for the settings file here.
+            theme::apply_choice_from(file, cx);
         });
     }
 
@@ -990,7 +1151,7 @@ mod tests {
                 ..Default::default()
             };
             let opened = open_with(options, cx).unwrap();
-            cx.set_global(Open(opened.0));
+            became_open(opened.0, cx);
             opened
         })
     }
@@ -1574,5 +1735,390 @@ mod tests {
         assert!(s.background_fetch);
         assert!(!s.show_menu_bar_icon);
         assert!(s.custom_commands.is_empty());
+    }
+
+    fn press(cx: &mut TestAppContext, w: AnyWindowHandle, key: &'static str) {
+        cx.update_window(w, |_, window, cx| window.press(key, cx))
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    /// The a11y label of the rendered element with `id`.
+    fn label(cx: &mut TestAppContext, w: AnyWindowHandle, id: impl Into<ElementId>) -> String {
+        cx.update_window(w, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(id.into()).label().unwrap().to_string()
+        })
+        .unwrap()
+    }
+
+    /// The active theme's name.
+    fn applied(cx: &mut TestAppContext) -> String {
+        cx.update(|cx| cx.theme().theme_name().to_string())
+    }
+
+    fn draft_theme(cx: &mut TestAppContext, view: &Entity<SettingsWindow>) -> Option<ThemeChoice> {
+        view.read_with(cx, |v, _| v.draft.theme.clone())
+    }
+
+    /// The dropdown's row labels in display order, with the list open.
+    fn theme_rows(cx: &mut TestAppContext, w: AnyWindowHandle) -> Vec<String> {
+        indexed_labels(cx, w, "theme-row")
+    }
+
+    fn theme_sections(cx: &mut TestAppContext, w: AnyWindowHandle) -> Vec<String> {
+        indexed_labels(cx, w, "theme-section")
+    }
+
+    /// Opens the theme list and picks by typing `query`, then ⏎ (the keyboard path).
+    fn pick_theme(cx: &mut TestAppContext, w: AnyWindowHandle, query: &str) {
+        click(cx, w, "theme-picker");
+        typed(cx, w, query);
+        press(cx, w, "enter");
+    }
+
+    /// The theme right after Grove Dark in the picker's display order — where one
+    /// arrow-down steps from the committed choice.
+    fn next_theme_after_grove_dark(cx: &mut TestAppContext) -> String {
+        cx.update(|cx| {
+            use gpui_kit::component::searchable_list::SearchableListItem as _;
+            let menu = ThemeMenu::new(theme_picker::sections(cx));
+            let mut names: Vec<SharedString> = Vec::new();
+            for section in 0..menu.sections_count(cx) {
+                for row in 0..menu.items_count(section) {
+                    names.push(
+                        menu.item(IndexPath::default().section(section).row(row))
+                            .unwrap()
+                            .title(),
+                    );
+                }
+            }
+            let grove = names.iter().position(|name| name == "Grove Dark").unwrap();
+            names[grove + 1].to_string()
+        })
+    }
+
+    #[gpui_kit::test]
+    fn picking_a_theme_applies_it_live_and_stays_a_draft(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let (w, view) = open_settings_view(cx);
+        // Arrows step the keyboard cursor off the committed choice; ⏎ picks where
+        // it lands (spec story 5).
+        let next = next_theme_after_grove_dark(cx);
+        click(cx, w, "theme-picker");
+        press(cx, w, "down");
+        press(cx, w, "enter");
+        assert_eq!(applied(cx), next);
+        assert_eq!(draft_theme(cx, &view), Some(Name(next)));
+        // Unlike the other prefs, the pick leaves the stored choice alone.
+        assert_eq!(settings(cx).theme, None);
+        assert_eq!(file.load().unwrap().theme, None);
+    }
+
+    #[gpui_kit::test]
+    fn the_list_is_grouped_searchable_and_labeled(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let w = open_settings(cx);
+        assert_eq!(
+            label(cx, w, "theme-picker"),
+            "Theme, Grove Dark, opens theme list"
+        );
+        click(cx, w, "theme-picker");
+        // SYSTEM first with its single fixed row, then LIGHT (spec story 3, 35):
+        // on this tall window the fold shows both groups, Follow System atop.
+        assert_eq!(theme_sections(cx, w), ["SYSTEM", "LIGHT"]);
+        let rows = theme_rows(cx, w);
+        assert_eq!(
+            rows.first().map(String::as_str),
+            Some("Follow System, follows system appearance")
+        );
+        assert!(
+            rows[1..].iter().all(|row| row.ends_with(", light")),
+            "only light rows after Follow System: {rows:?}"
+        );
+        // A query landing in a single group shows that group alone: on the still
+        // open list, the search starts empty ("latte" only matches Catppuccin Latte).
+        typed(cx, w, "latte");
+        assert_eq!(theme_sections(cx, w), ["LIGHT"]);
+        let rows = theme_rows(cx, w);
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter().all(|row| row.ends_with(", light")),
+            "only light rows in the query's group: {rows:?}"
+        );
+        // The committed choice is checked wherever it shows (spec story 4).
+        press(cx, w, "escape");
+        click(cx, w, "theme-picker");
+        typed(cx, w, "grove");
+        assert_eq!(theme_rows(cx, w), ["Grove Dark, dark, selected"]);
+        // Follow System is searchable with the themes (ticket 35).
+        press(cx, w, "escape");
+        click(cx, w, "theme-picker");
+        typed(cx, w, "sys");
+        assert_eq!(
+            theme_rows(cx, w),
+            ["Follow System, follows system appearance"]
+        );
+        // The search narrows case-insensitively on the name (spec story 2), and a
+        // query into both groups shows LIGHT's rows before DARK's.
+        press(cx, w, "escape");
+        click(cx, w, "theme-picker");
+        typed(cx, w, "GRU");
+        assert_eq!(
+            theme_rows(cx, w),
+            ["Gruvbox Light, light", "Gruvbox Dark, dark"]
+        );
+        press(cx, w, "escape");
+        click(cx, w, "theme-picker");
+        typed(cx, w, "kibble");
+        assert_eq!(theme_sections(cx, w), ["DARK"]);
+        assert_eq!(
+            theme_rows(cx, w),
+            ["Kibble, dark"],
+            "uncommitted rows carry no check; Grove Dark holds it"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn cancel_reverts_to_the_entry_theme_after_several_picks(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(Name("Kibble".into())),
+                ..Settings::default()
+            },
+        );
+        running(cx, &file);
+        let w = open_settings(cx);
+        for pick in ["flexoki dark", "ayu light"] {
+            pick_theme(cx, w, pick);
+        }
+        assert_eq!(applied(cx), "Ayu Light");
+        click(cx, w, "settings-cancel");
+        assert!(!is_open(cx, w));
+        // The entry theme is back, and the file was never touched (story 16).
+        assert_eq!(applied(cx), "Kibble");
+        assert_eq!(settings(cx).theme, Some(Name("Kibble".into())));
+        assert_eq!(file.load().unwrap().theme, Some(Name("Kibble".into())));
+        // Reopen: the dropdown still names the stored choice.
+        let w = open_settings(cx);
+        assert_eq!(
+            label(cx, w, "theme-picker"),
+            "Theme, Kibble, opens theme list"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn save_persists_the_choice_and_it_survives_reopen(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let w = open_settings(cx);
+        pick_theme(cx, w, "kibble");
+        click(cx, w, "settings-save");
+        assert!(!is_open(cx, w));
+        assert_eq!(applied(cx), "Kibble", "Save keeps the picked theme live");
+        let s = settings(cx);
+        assert_eq!(s.theme, Some(Name("Kibble".into())));
+        assert_eq!(file.load().unwrap().theme, Some(Name("Kibble".into())));
+        // Reopen shows the stored choice committed in the picker.
+        let w = open_settings(cx);
+        assert_eq!(
+            label(cx, w, "theme-picker"),
+            "Theme, Kibble, opens theme list"
+        );
+        click(cx, w, "theme-picker");
+        typed(cx, w, "kibble");
+        assert_eq!(
+            theme_rows(cx, w),
+            ["Kibble, dark, selected"],
+            "the reopened picker checks Kibble"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn escape_closes_the_open_list_and_the_next_one_cancels(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let (w, view) = open_settings_view(cx);
+        click(cx, w, "theme-picker");
+        assert!(!theme_rows(cx, w).is_empty(), "the list is open");
+        press(cx, w, "escape");
+        assert!(
+            is_open(cx, w),
+            "the open list's escape doesn't cancel the dialog"
+        );
+        assert!(theme_rows(cx, w).is_empty(), "the list closed");
+        assert_eq!(draft_theme(cx, &view), None, "nothing was picked");
+        press(cx, w, "escape");
+        assert!(!is_open(cx, w));
+        assert_eq!(settings(cx).theme, None);
+    }
+
+    /// Any close path funnels through window removal; the removal observer is the
+    /// path the traffic light and shell::close take.
+    #[gpui_kit::test]
+    fn closing_the_window_reverts_to_the_entry_theme(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(Name("Kibble".into())),
+                ..Settings::default()
+            },
+        );
+        running(cx, &file);
+        let w = open_settings(cx);
+        pick_theme(cx, w, "ayu light");
+        assert_eq!(applied(cx), "Ayu Light");
+        cx.update(|cx| shell::close(w, cx));
+        cx.run_until_parked();
+        assert!(!is_open(cx, w));
+        assert_eq!(applied(cx), "Kibble");
+        assert_eq!(settings(cx).theme, Some(Name("Kibble".into())));
+        assert_eq!(file.load().unwrap().theme, Some(Name("Kibble".into())));
+    }
+
+    #[gpui_kit::test]
+    fn picking_a_theme_keeps_the_open_command_form(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let (w, view) = open_settings_view(cx);
+        click(cx, w, "settings-command-add");
+        click(cx, w, "settings-command-label");
+        typed(cx, w, "Neovim");
+        pick_theme(cx, w, "ayu dark");
+        assert_eq!(applied(cx), "Ayu Dark");
+        let (open, label) = view.read_with(cx, |v, cx| {
+            (
+                v.form.is_some(),
+                v.form.as_ref().map(|f| f.label.read(cx).value().clone()),
+            )
+        });
+        assert!(open, "the form survives the pick");
+        assert_eq!(label, Some("Neovim".into()), "the field keeps its text");
+    }
+
+    #[gpui_kit::test]
+    fn picking_follow_system_resolves_and_persists(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        let (w, view) = open_settings_view(cx);
+        pick_theme(cx, w, "system");
+        // The pick resolves from the system's appearance (the test platform reports
+        // light): Follow System's light resolution, same route a named pick takes
+        // (spec story 12).
+        assert_eq!(applied(cx), "Default Light");
+        assert_eq!(draft_theme(cx, &view), Some(FollowSystem));
+        // Unlike the other prefs, the pick leaves the stored choice alone.
+        assert_eq!(settings(cx).theme, None);
+
+        click(cx, w, "settings-save");
+        assert!(!is_open(cx, w));
+        assert_eq!(settings(cx).theme, Some(FollowSystem));
+        assert_eq!(file.load().unwrap().theme, Some(FollowSystem));
+        assert_eq!(
+            applied(cx),
+            "Default Light",
+            "Save keeps the resolution live"
+        );
+
+        // Reopen shows the stored choice committed in the picker (story 4).
+        let w = open_settings(cx);
+        assert_eq!(
+            label(cx, w, "theme-picker"),
+            "Theme, Follow System, opens theme list"
+        );
+        click(cx, w, "theme-picker");
+        typed(cx, w, "system");
+        assert_eq!(
+            theme_rows(cx, w),
+            ["Follow System, follows system appearance, selected"]
+        );
+    }
+
+    /// macOS's appearance changed while Settings is open: Grove rethemes live — the
+    /// simulated notification routes the same core the per-window callbacks run
+    /// (story 13) — and Cancel re-applies the entry choice AS STORED: Follow System
+    /// re-resolved from the appearance it reads now, not the resolution the change
+    /// left standing and not a theme name (story 16, this ticket's entry semantics).
+    #[gpui_kit::test]
+    fn cancel_after_an_appearance_change_re_applies_the_entry_choice(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(FollowSystem),
+                ..Default::default()
+            },
+        );
+        running(cx, &file);
+        let w = open_settings(cx);
+        cx.update(|cx| assert!(theme::follow_appearance_changed(WindowAppearance::Dark, cx)));
+        assert_eq!(applied(cx), "Grove Dark");
+        click(cx, w, "settings-cancel");
+        assert!(!is_open(cx, w));
+        // The test platform reports light, so Cancel re-resolves light — proving the
+        // re-resolve (a pinned resolution would keep Grove Dark).
+        assert_eq!(applied(cx), "Default Light");
+        assert_eq!(settings(cx).theme, Some(FollowSystem));
+        assert_eq!(file.load().unwrap().theme, Some(FollowSystem));
+    }
+
+    /// A settings file persisted under Follow System opens on its light resolution
+    /// here (the test platform reports light), and the picker opens committed on the
+    /// Follow System row.
+    #[gpui_kit::test]
+    fn launch_with_follow_system_resolves_and_the_picker_agrees(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(FollowSystem),
+                ..Default::default()
+            },
+        );
+        running(cx, &file);
+        assert_eq!(applied(cx), "Default Light");
+        let w = open_settings(cx);
+        assert_eq!(
+            label(cx, w, "theme-picker"),
+            "Theme, Follow System, opens theme list"
+        );
+    }
+
+    /// An unknown stored name resolves to Grove Dark at launch (spec story 15), and
+    /// Cancel reverts to that entry resolution too (story 16): a pick applied over
+    /// it is undone, and the stale name stays in the untouched file until the user
+    /// saves a different choice.
+    #[gpui_kit::test]
+    fn canceling_with_an_unknown_stored_name_reverts_to_grove_dark(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(
+            &tmp,
+            Settings {
+                theme: Some(Name("Removed Long Ago".into())),
+                ..Default::default()
+            },
+        );
+        running(cx, &file);
+        assert_eq!(applied(cx), "Grove Dark", "launch fallback");
+        let w = open_settings(cx);
+        pick_theme(cx, w, "kibble");
+        assert_eq!(applied(cx), "Kibble");
+        let before = std::fs::read(file.path()).unwrap();
+        click(cx, w, "settings-cancel");
+        assert!(!is_open(cx, w));
+        assert_eq!(applied(cx), "Grove Dark", "the entry resolution is back");
+        assert_eq!(settings(cx).theme, Some(Name("Removed Long Ago".into())));
+        assert_eq!(std::fs::read(file.path()).unwrap(), before);
     }
 }

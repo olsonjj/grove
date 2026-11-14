@@ -117,7 +117,7 @@ fn open_with(
     options: WindowOptions,
     cx: &mut App,
 ) -> gpui_kit::Result<(AnyWindowHandle, Entity<Switcher>)> {
-    gpui_kit::open_window(options, cx, |window, cx| {
+    windows::open_window(options, cx, |window, cx| {
         cx.new(|cx| {
             close_on_deactivate(window, cx);
             Switcher::new(window, cx)
@@ -367,7 +367,8 @@ impl Switcher {
 }
 
 impl Switcher {
-    fn input_row(&self) -> impl IntoElement {
+    fn input_row(&self, cx: &App) -> impl IntoElement {
+        let palette = theme::palette(cx);
         div()
             .flex_none()
             .h(px(56.))
@@ -377,8 +378,8 @@ impl Switcher {
             .items_center()
             .gap(px(12.))
             .border_b_1()
-            .border_color(theme::border())
-            .child(icon(icons::SEARCH, 18.).text_color(theme::muted()))
+            .border_color(palette.border())
+            .child(icon(icons::SEARCH, 18.).text_color(palette.muted()))
             .child(
                 Input::new(&self.input)
                     .appearance(false)
@@ -395,14 +396,15 @@ impl Switcher {
                     .py(px(4.))
                     .rounded(px(6.))
                     .border_1()
-                    .border_color(theme::border_strong())
+                    .border_color(palette.border_strong())
                     .text_size(px(12.))
-                    .text_color(theme::text_soft())
+                    .text_color(palette.text_soft())
                     .child("Esc"),
             )
     }
 
     fn row(&self, ix: usize, hit: &Hit, cx: &mut Context<Self>) -> AnyElement {
+        let palette = theme::palette(cx);
         let selected = ix == self.selected;
         let (title, title_ranges) = match &hit.branch {
             Some(branch) => (branch.clone(), &hit.matches.branch),
@@ -442,14 +444,14 @@ impl Switcher {
             .relative()
             .when_else(
                 selected,
-                |d| d.bg(theme::selected()).child(theme::selection_bar()),
-                |d| d.hover(|s| s.bg(theme::raised())),
+                |d| d.bg(palette.selected()).child(theme::selection_bar(cx)),
+                |d| d.hover(|s| s.bg(palette.raised())),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.on_row_click(ix, cx)))
             .child(icon(icons::FOLDER, 16.).text_color(if dim {
-                theme::faint()
+                palette.faint()
             } else {
-                theme::link()
+                palette.link()
             }))
             .child(
                 div()
@@ -465,19 +467,19 @@ impl Switcher {
                             .whitespace_nowrap()
                             .font_family(theme::MONO)
                             .text_size(px(14.))
-                            .text_color(if dim { theme::faint() } else { theme::text() })
+                            .text_color(if dim { palette.faint() } else { palette.text() })
                             .child(
                                 div()
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_ellipsis()
-                                    .child(highlighted(title, title_ranges)),
+                                    .child(highlighted(title, title_ranges, cx)),
                             )
                             .when(hit.branch.is_none(), |d| {
                                 d.child(
                                     div()
                                         .flex_none()
-                                        .text_color(theme::faint())
+                                        .text_color(palette.faint())
                                         .child(" (detached)"),
                                 )
                             }),
@@ -488,12 +490,12 @@ impl Switcher {
                             .min_w_0()
                             .whitespace_nowrap()
                             .text_size(px(12.))
-                            .text_color(theme::muted())
+                            .text_color(palette.muted())
                             .child(
                                 div()
                                     .flex_none()
                                     .font_family(theme::MONO)
-                                    .child(highlighted(hit.repo.clone(), &hit.matches.repo)),
+                                    .child(highlighted(hit.repo.clone(), &hit.matches.repo, cx)),
                             )
                             .child(div().flex_none().child("\u{a0}·\u{a0}"))
                             .child(
@@ -502,18 +504,18 @@ impl Switcher {
                                     .overflow_hidden()
                                     .text_ellipsis_start()
                                     .font_family(theme::MONO)
-                                    .child(highlighted(path.full(), &folder_ranges)),
+                                    .child(highlighted(path.full(), &folder_ranges, cx)),
                             ),
                     ),
             )
-            .children(badges.enumerate().map(|(i, b)| badge(ix, i, b)))
+            .children(badges.enumerate().map(|(i, b)| badge(ix, i, b, cx)))
             .child(
                 div()
                     .flex_none()
                     .w(px(14.))
                     .font_family(theme::MONO)
                     .text_size(px(12.))
-                    .text_color(theme::text_soft())
+                    .text_color(palette.text_soft())
                     .when(selected, |d| d.child("↵")),
             )
             .test_support()
@@ -521,6 +523,7 @@ impl Switcher {
     }
 
     fn results(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let header = |label: &'static str| {
             div()
                 .flex_none()
@@ -528,7 +531,7 @@ impl Switcher {
                 .pt(px(8.))
                 .pb(px(6.))
                 .text_size(px(11.))
-                .text_color(theme::faint())
+                .text_color(palette.faint())
                 .child(label)
                 .into_any_element()
         };
@@ -563,7 +566,7 @@ impl Switcher {
                 .flex()
                 .justify_center()
                 .text_size(px(14.))
-                .text_color(theme::muted())
+                .text_color(palette.muted())
                 .child(text)
                 .test_support()
         });
@@ -583,6 +586,7 @@ impl Switcher {
     }
 
     fn footer(&self, cx: &App) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let key = |keys: &'static str, label: String| {
             div()
                 .flex()
@@ -594,7 +598,7 @@ impl Switcher {
                         .min_w(px(20.))
                         .flex()
                         .justify_center()
-                        .text_color(theme::text())
+                        .text_color(palette.text())
                         .child(keys),
                 )
                 .child(label)
@@ -611,10 +615,10 @@ impl Switcher {
             .px(px(18.))
             .py(px(12.))
             .border_t_1()
-            .border_color(theme::border())
-            .bg(theme::panel())
+            .border_color(palette.border())
+            .bg(palette.panel())
             .text_size(px(12.))
-            .text_color(theme::muted())
+            .text_color(palette.muted())
             .child(key("↑↓", "Move".into()))
             .child(key("↵", format!("Open in {}", app(Role::Editor, "editor"))))
             .child(key(
@@ -626,9 +630,9 @@ impl Switcher {
 }
 
 /// `text` with `ranges` in the accent color.
-fn highlighted(text: String, ranges: &[Range<usize>]) -> StyledText {
+fn highlighted(text: String, ranges: &[Range<usize>], cx: &App) -> StyledText {
     let style = HighlightStyle {
-        color: Some(theme::accent().into()),
+        color: Some(theme::palette(cx).accent()),
         font_weight: Some(FontWeight::SEMIBOLD),
         ..Default::default()
     };
@@ -639,11 +643,12 @@ fn shift(ranges: &[Range<usize>], by: usize) -> Vec<Range<usize>> {
     ranges.iter().map(|r| r.start + by..r.end + by).collect()
 }
 
-fn badge(row: usize, i: usize, b: &Badge) -> impl IntoElement {
+fn badge(row: usize, i: usize, b: &Badge, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     let (bg, fg) = match b {
-        Badge::Changed(_) => (theme::accent(), theme::on_accent()),
-        Badge::Missing => (theme::warn_bg(), theme::warn_text()),
-        _ => (theme::border(), theme::text_soft()),
+        Badge::Changed(_) => (palette.accent(), palette.on_accent()),
+        Badge::Missing => (palette.warn_bg(), palette.warn_text()),
+        _ => (palette.border(), palette.text_soft()),
     };
     let tip: SharedString = b.description().into();
     div()
@@ -664,6 +669,7 @@ fn badge(row: usize, i: usize, b: &Badge) -> impl IntoElement {
 
 impl Render for Switcher {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let status = self.status.clone().map(|n| {
             div()
                 .id("switcher-status")
@@ -671,12 +677,12 @@ impl Render for Switcher {
                 .px(px(18.))
                 .py(px(10.))
                 .border_t_1()
-                .border_color(theme::border())
+                .border_color(palette.border())
                 .text_size(px(12.))
                 .when_else(
                     n.warn,
-                    |d| d.bg(theme::warn_bg()).text_color(theme::warn_text()),
-                    |d| d.bg(theme::panel()).text_color(theme::text_soft()),
+                    |d| d.bg(palette.warn_bg()).text_color(palette.warn_text()),
+                    |d| d.bg(palette.panel()).text_color(palette.text_soft()),
                 )
                 .child(n.text)
         });
@@ -694,11 +700,11 @@ impl Render for Switcher {
             .overflow_hidden()
             .rounded(px(14.))
             .border_1()
-            .border_color(theme::border_strong())
-            .bg(theme::raised())
-            .text_color(theme::text())
+            .border_color(palette.border_strong())
+            .bg(palette.raised())
+            .text_color(palette.text())
             .font_family(theme::SANS)
-            .child(self.input_row())
+            .child(self.input_row(cx))
             .child(self.results(cx))
             .children(status)
             .child(self.footer(cx))

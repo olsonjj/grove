@@ -205,6 +205,14 @@ pub fn start(library: Library, cached: bool, cx: &mut App) {
     })
     .detach();
     handle(PlatformEvent::ShowMain, cx);
+    // Debug-only QA hook: with `GROVE_QA_REPO` set (see `setup::boot`), `GROVE_QA_SETTINGS=1`
+    // additionally opens Settings, so theme screenshots can include it. Debug builds only.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("GROVE_QA_REPO").is_some()
+        && std::env::var_os("GROVE_QA_SETTINGS").is_some()
+    {
+        settings_window::open(cx);
+    }
 }
 
 /// App-wide hooks, set before any window opens: window bookkeeping, the app menu with ⌘Q,

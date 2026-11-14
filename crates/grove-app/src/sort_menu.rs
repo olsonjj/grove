@@ -83,6 +83,7 @@ impl SortMenu {
     }
 
     fn button(&self, cx: &mut Context<Self>) -> Button {
+        let palette = theme::palette(cx);
         let mode = self.mode;
         Button::new(self.ids.button)
             .track_focus(&self.button)
@@ -95,13 +96,13 @@ impl SortMenu {
             .rounded(px(5.))
             .border_1()
             .border_color(gpui_kit::transparent_black())
-            .focus_visible(|s| s.border_color(theme::link()))
+            .focus_visible(|s| s.border_color(palette.link()))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::border()))
+            .hover(|s| s.bg(palette.border()))
             .text_size(px(11.))
-            .text_color(theme::muted())
+            .text_color(palette.muted())
             .child(mode.label())
-            .child(icon(icons::CHEVRON_DOWN, 10.).text_color(theme::muted()))
+            .child(icon(icons::CHEVRON_DOWN, 10.).text_color(palette.muted()))
             .on_click(cx.listener(move |this, _, window, cx| {
                 if this.open {
                     this.close(window, cx);
@@ -115,6 +116,7 @@ impl SortMenu {
     }
 
     fn menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = theme::palette(cx);
         let items = MODES.into_iter().enumerate().map(|(i, mode)| {
             Button::new((self.ids.choice, i))
                 .track_focus(&self.items[i])
@@ -128,12 +130,12 @@ impl SortMenu {
                 .gap(px(12.))
                 .rounded(px(5.))
                 .cursor_pointer()
-                .text_color(theme::text())
-                .hover(|s| s.bg(theme::selected()))
-                .focus(|s| s.bg(theme::selected()))
+                .text_color(palette.text())
+                .hover(|s| s.bg(palette.selected()))
+                .focus(|s| s.bg(palette.selected()))
                 .child(mode.label())
                 .when(mode == self.mode, |d| {
-                    d.child(div().text_color(theme::link()).child("✓"))
+                    d.child(div().text_color(palette.link()).child("✓"))
                 })
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.mode = mode;
@@ -169,8 +171,8 @@ impl SortMenu {
                     .flex_col()
                     .rounded(px(8.))
                     .border_1()
-                    .border_color(theme::border_strong())
-                    .bg(theme::raised())
+                    .border_color(palette.border_strong())
+                    .bg(palette.raised())
                     .shadow_lg()
                     .occlude()
                     .text_size(px(13.))
@@ -179,7 +181,7 @@ impl SortMenu {
                             .px(px(10.))
                             .py(px(4.))
                             .text_size(px(11.))
-                            .text_color(theme::faint())
+                            .text_color(palette.faint())
                             .child("SORT BY"),
                     )
                     .children(items)

@@ -58,6 +58,7 @@ impl MainWindow {
 
     /// The header button that opens the manage-visibility popover.
     pub(crate) fn manage_button(&self, cx: &mut Context<Self>) -> Button {
+        let palette = theme::palette(cx);
         Button::new("manage-visibility")
             .track_focus(&self.visibility_button)
             .accessibility_label("Manage repository visibility")
@@ -68,11 +69,11 @@ impl MainWindow {
             .rounded(px(5.))
             .border_1()
             .border_color(gpui_kit::transparent_black())
-            .focus_visible(|s| s.border_color(theme::link()))
+            .focus_visible(|s| s.border_color(palette.link()))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::border()))
+            .hover(|s| s.bg(palette.border()))
             .tooltip(|window, cx| Tooltip::new("Manage visibility").build(window, cx))
-            .child(icon(icons::EYE, 13.).text_color(theme::muted()))
+            .child(icon(icons::EYE, 13.).text_color(palette.muted()))
             .on_click(cx.listener(|this, _, window, cx| {
                 if this.visibility.is_some() {
                     this.close_visibility(window, cx);
@@ -84,6 +85,7 @@ impl MainWindow {
 
     /// The header chip naming the hidden repos; a click opens the popover.
     pub(crate) fn hidden_chip(&self, hidden: usize, cx: &mut Context<Self>) -> Button {
+        let palette = theme::palette(cx);
         Button::new("hidden-chip")
             .accessibility_label(format!("{hidden} hidden"))
             .flex_none()
@@ -91,9 +93,9 @@ impl MainWindow {
             .px(px(4.))
             .rounded(px(5.))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::border()))
+            .hover(|s| s.bg(palette.border()))
             .text_size(px(11.))
-            .text_color(theme::faint())
+            .text_color(palette.faint())
             .child(format!("· {hidden} hidden"))
             .on_click(cx.listener(move |this, _, window, cx| this.open_visibility(window, cx)))
     }
@@ -109,16 +111,17 @@ impl MainWindow {
         hidden: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let palette = theme::palette(cx);
         let eye = Button::new(("visibility-eye", ix))
             .accessibility_label(format!("{} {name}", if hidden { "Show" } else { "Hide" }))
             .flex_none()
             .size(px(22.))
             .rounded(px(5.))
             .cursor_pointer()
-            .hover(|s| s.bg(theme::border()))
+            .hover(|s| s.bg(palette.border()))
             .child(
                 icon(if hidden { icons::EYE_OFF } else { icons::EYE }, 13.)
-                    .text_color(theme::muted()),
+                    .text_color(palette.muted()),
             )
             .on_click(cx.listener({
                 let path = path.to_path_buf();
@@ -149,9 +152,9 @@ impl MainWindow {
                     .min_w_0()
                     .truncate()
                     .text_color(if hidden {
-                        theme::faint()
+                        palette.faint()
                     } else {
-                        theme::text_soft()
+                        palette.text_soft()
                     })
                     .when(hidden, |d| d.line_through()),
             )
@@ -197,6 +200,7 @@ impl MainWindow {
             let filter = self.visibility.as_ref().map(|v| v.filter.clone());
             (matched, filter)
         };
+        let palette = theme::palette(cx);
         let rows = matched
             .into_iter()
             .map(|(ix, name, path, hidden)| self.visibility_row(ix, &name, &path, hidden, cx))
@@ -236,8 +240,8 @@ impl MainWindow {
                 .gap(px(2.))
                 .rounded(px(8.))
                 .border_1()
-                .border_color(theme::border_strong())
-                .bg(theme::raised())
+                .border_color(palette.border_strong())
+                .bg(palette.raised())
                 .shadow_lg()
                 .occlude()
                 .text_size(px(13.))
@@ -249,8 +253,8 @@ impl MainWindow {
                         .mb(px(2.))
                         .rounded(px(5.))
                         .border_1()
-                        .border_color(theme::border())
-                        .bg(theme::bg())
+                        .border_color(palette.border())
+                        .bg(palette.bg())
                         // Column + centering: the input's own height is its line height, so
                         // this keeps the text vertically centered in the field.
                         .flex()

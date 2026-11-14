@@ -1,7 +1,7 @@
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSAppearance, NSAppearanceNameDarkAqua, NSApplication, NSApplicationActivationOptions, NSEvent,
-    NSRunningApplication, NSScreen, NSWorkspace,
+    NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
+    NSApplicationActivationOptions, NSEvent, NSRunningApplication, NSScreen, NSWorkspace,
 };
 use objc2_foundation::{MainThreadMarker, NSNumber, NSPoint, NSRect, ns_string};
 
@@ -15,6 +15,31 @@ pub fn use_dark_appearance() {
     let name = unsafe { NSAppearanceNameDarkAqua };
     let appearance = NSAppearance::appearanceNamed(name);
     NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());
+}
+
+/// Light theme choice: also lightens titlebars and system panels (folder picker),
+/// the counterpart to [`use_dark_appearance`]. No-op off the main thread.
+pub fn use_light_appearance() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    // SAFETY: AppKit-provided constant.
+    let name = unsafe { NSAppearanceNameAqua };
+    let appearance = NSAppearance::appearanceNamed(name);
+    NSApplication::sharedApplication(mtm).setAppearance(appearance.as_deref());
+}
+
+/// Follow System: clears Grove's appearance override (a nil `NSApp.appearance`) so
+/// titlebars and system panels track macOS's setting again — and, with it, so gpui's
+/// per-window appearance-changed callbacks keep firing: while an appearance is
+/// forced, windows stop receiving them, so Follow System could never re-resolve
+/// live. The counterpart to the forced [`use_dark_appearance`]/[`use_light_appearance`]
+/// pair, which a named theme choice needs. No-op off the main thread.
+pub fn use_system_appearance() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    NSApplication::sharedApplication(mtm).setAppearance(None);
 }
 
 /// Undoes Hide Grove, which activating alone doesn't. No-op off the main thread.

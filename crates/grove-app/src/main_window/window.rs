@@ -35,7 +35,7 @@ pub(super) fn open_with(
     options: WindowOptions,
     cx: &mut App,
 ) -> gpui_kit::Result<(AnyWindowHandle, Entity<MainWindow>)> {
-    gpui_kit::open_window(options, cx, |window, cx| {
+    crate::windows::open_window(options, cx, |window, cx| {
         cx.new(|cx| MainWindow::new(window, cx))
     })
 }

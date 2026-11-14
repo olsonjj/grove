@@ -107,6 +107,7 @@ impl MainWindow {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let palette = theme::palette(cx);
         let name = repo.name().to_string();
         let path = repo.repo.path.clone();
         let count = repo.worktree_count();
@@ -141,7 +142,7 @@ impl MainWindow {
             .rounded(px(6.))
             .border_1()
             .border_color(gpui_kit::transparent_black())
-            .focus_visible(|s| s.border_color(theme::link()))
+            .focus_visible(|s| s.border_color(palette.link()))
             .cursor_pointer()
             .on_click(cx.listener({
                 let name = name.clone();
@@ -172,7 +173,7 @@ impl MainWindow {
                 div()
                     .flex_none()
                     .text_size(px(11.))
-                    .text_color(theme::link())
+                    .text_color(palette.link())
                     .child(format!("{count} wt")),
             );
         let pin_slot = div().flex_none().size(px(24.)).mr(px(6.));
@@ -200,19 +201,19 @@ impl MainWindow {
             .when_else(
                 is_selected,
                 |d| {
-                    d.bg(theme::selected())
-                        .text_color(theme::text())
+                    d.bg(palette.selected())
+                        .text_color(palette.text())
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(theme::selection_bar())
+                        .child(theme::selection_bar(cx))
                 },
                 |d| {
-                    d.text_color(theme::text_soft())
-                        .hover(|s| s.bg(theme::raised()))
+                    d.text_color(palette.text_soft())
+                        .hover(|s| s.bg(palette.raised()))
                 },
             )
             .child(button)
             .child(if show_pin {
-                pin_button(ix, &repo.display_name, pinned)
+                pin_button(ix, &repo.display_name, pinned, cx)
                     .track_focus(&pin_focus)
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_pin(&path, cx)))
                     .into_any_element()
@@ -223,6 +224,7 @@ impl MainWindow {
     }
 
     pub(super) fn repo_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let palette = theme::palette(cx);
         let menu = self.repo_menu.as_ref()?;
         let (label, path) = (if menu.pinned { "Unpin" } else { "Pin" }, menu.path.clone());
         let item = Button::new("repo-menu-pin")
@@ -235,9 +237,9 @@ impl MainWindow {
             .justify_start()
             .rounded(px(5.))
             .cursor_pointer()
-            .text_color(theme::text())
-            .hover(|s| s.bg(theme::selected()))
-            .focus(|s| s.bg(theme::selected()))
+            .text_color(palette.text())
+            .hover(|s| s.bg(palette.selected()))
+            .focus(|s| s.bg(palette.selected()))
             .child(label)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.toggle_pin(&path, cx);
@@ -276,8 +278,8 @@ impl MainWindow {
                         .flex_col()
                         .rounded(px(8.))
                         .border_1()
-                        .border_color(theme::border_strong())
-                        .bg(theme::raised())
+                        .border_color(palette.border_strong())
+                        .bg(palette.raised())
                         .shadow_lg()
                         .occlude()
                         .text_size(px(13.))

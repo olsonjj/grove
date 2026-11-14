@@ -4,8 +4,8 @@ use gpui_kit::base::Button;
 use gpui_kit::component::WindowExt;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext, Context, FocusHandle, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, TestSupportExt, WeakEntity, Window, div, px,
+    App, AppContext, Context, FocusHandle, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, StatefulInteractiveElement, Styled, TestSupportExt, WeakEntity, Window, div, px,
 };
 use grove_core::{GitError, RemovalPlan, Worktree, read_removal_plan};
 
@@ -158,7 +158,7 @@ impl MainWindow {
                         .child(r.confirm.message.clone())
                         .test_support(),
                 )
-                .footer(removal_footer(&r, main.clone()))
+                .footer(removal_footer(&r, main.clone(), cx))
                 // The dialog binds Enter to OK; make it press the focused button instead.
                 .on_ok(move |_, window, cx| {
                     on_ok
@@ -288,12 +288,17 @@ impl MainWindow {
 }
 
 /// Cancel (focused first) and the confirm, which shows progress while removal runs.
-fn removal_footer(r: &Removal, main: WeakEntity<MainWindow>) -> impl IntoElement {
+fn removal_footer(r: &Removal, main: WeakEntity<MainWindow>, cx: &App) -> impl IntoElement {
+    let palette = theme::palette(cx);
     let cancel_main = main.clone();
     let (bg, fg, hover) = if r.confirm.destructive {
-        (theme::warn_text(), theme::bg(), theme::warn_text())
+        (palette.warn_text(), palette.bg(), palette.warn_text())
     } else {
-        (theme::accent(), theme::on_accent(), theme::accent_hover())
+        (
+            palette.accent(),
+            palette.on_accent(),
+            palette.accent_hover(),
+        )
     };
     let button = |id: &'static str| {
         Button::new(id)
@@ -302,8 +307,8 @@ fn removal_footer(r: &Removal, main: WeakEntity<MainWindow>) -> impl IntoElement
             .px(px(14.))
             .rounded(px(7.))
             .border_1()
-            .border_color(theme::border_strong())
-            .focus_visible(|s| s.border_color(theme::link()))
+            .border_color(palette.border_strong())
+            .focus_visible(|s| s.border_color(palette.link()))
             .text_size(px(13.))
             .when(!r.running, |b| b.cursor_pointer())
     };
@@ -316,9 +321,9 @@ fn removal_footer(r: &Removal, main: WeakEntity<MainWindow>) -> impl IntoElement
             button("remove-cancel")
                 .track_focus(&r.cancel)
                 .accessibility_label("Cancel")
-                .bg(theme::raised())
-                .text_color(theme::text())
-                .hover(|s| s.bg(theme::border()))
+                .bg(palette.raised())
+                .text_color(palette.text())
+                .hover(|s| s.bg(palette.border()))
                 .child("Cancel")
                 .on_click(move |_, window, cx| {
                     if matches!(

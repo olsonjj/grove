@@ -40,7 +40,7 @@ pub use removal::{RemovalPlan, read_removal_plan};
 pub use search::{Hit, Matches, search};
 pub use settings::{
     CustomCommand, LastOpened, LoginItemHost, LoginItemStatus, MAX_RECENTS, Preferences, Settings,
-    SettingsFile, SortMode, TerminalOpensIn, is_installed_location,
+    SettingsFile, SortMode, TerminalOpensIn, ThemeChoice, is_installed_location,
 };
 pub use snapshot::{
     FetchRead, FetchReport, FetchResult, Presence, RepoRead, RepoResult, RepoSnapshot, ScanRead,
