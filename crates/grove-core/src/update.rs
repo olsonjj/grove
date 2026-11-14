@@ -109,13 +109,15 @@ fn parse_tag(tag: &str) -> Option<semver::Version> {
 /// strictly newer than the persisted `dismissed` version — up-to-date, failed, and an
 /// already-seen (or newer-than-available) release all stay silent. The dismissed
 /// version gates only the auto-check; a manual check always reports the truth.
-/// A dismissed value that no longer parses gates nothing; Grove writes it only from a
-/// parsed release, so it should never be unreadable.
+/// A dismissed value that no longer parses reads as no dismissed version at all —
+/// the gate stays open — the same fallback `set_dismissed_version` applies; Grove
+/// writes it only from a parsed release, so it should never be unreadable.
 pub fn auto_check_alerts(decision: &UpdateDecision, dismissed: Option<&str>) -> bool {
     let UpdateDecision::Available { version, .. } = decision else {
         return false;
     };
-    dismissed.is_none_or(|d| semver::Version::parse(d).is_ok_and(|seen| *version > seen))
+    let seen = dismissed.and_then(|d| semver::Version::parse(d).ok());
+    seen.is_none_or(|seen| *version > seen)
 }
 
 #[cfg(test)]
@@ -282,5 +284,17 @@ mod tests {
             &check_for_update(RUNNING, serving(LATEST)),
             Some("0.1.0")
         ));
+    }
+
+    /// One corrupt persisted value reads as no dismissed version at all (`set_dismissed_version`
+    /// reads unreadable values the same way), so invalid stale data never silently
+    /// suppresses every future launch alert.
+    #[test]
+    fn an_unparsable_dismissed_version_gates_nothing() {
+        let available = UpdateDecision::Available {
+            version: semver::Version::parse("0.2.0").unwrap(),
+            page_url: "https://example.com/tag".into(),
+        };
+        assert!(auto_check_alerts(&available, Some("not a version")));
     }
 }

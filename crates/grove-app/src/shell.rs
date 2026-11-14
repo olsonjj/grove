@@ -234,8 +234,9 @@ pub fn init(cx: &mut App) {
     cx.on_window_closed(|cx, id| {
         if is_running(cx) {
             on_window_closed(cx, id);
-        } else {
-            // Setup closed before finishing: nothing else can bring Grove back.
+        } else if setup::first_run_closed(cx, id) {
+            // The setup window closed before finishing: nothing else can bring Grove
+            // back. Windows opened beside it (About) stay open without ending Grove.
             quit(cx);
         }
     })
@@ -1046,6 +1047,24 @@ mod tests {
         assert!(!cx.update(|cx| cx.windows().contains(&main)));
         assert!(cx.update(|cx| is_running(cx)));
         assert_eq!(main_window(cx), None);
+    }
+
+    /// Settings… before `shell::start`: the Grove menu exists from launch ([`init`]),
+    /// but Settings reads the Library `start` installs, so the dispatch stays a no-op
+    /// in the half-configured state only setup is open in.
+    #[gpui_kit::test]
+    fn opening_settings_before_setup_finishes_opens_nothing(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            init(cx);
+        });
+        let settings = menu_action(cx, "Grove", "Settings…");
+        cx.update(|cx| cx.dispatch_action(settings.as_ref()));
+        cx.run_until_parked();
+        assert!(
+            cx.update(|cx| cx.windows().is_empty()),
+            "the half-configured app opens no Settings"
+        );
     }
 
     /// Like Esc: no reopen guard, so the shortcut right after opens it again.

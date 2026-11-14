@@ -71,6 +71,11 @@ fn became_open(window: AnyWindowHandle, cx: &mut App) {
 }
 
 pub fn open(cx: &mut App) {
+    // Settings reads the Library `shell::start` installs (spec: a half-configured Grove
+    // shows setup alone), so the Grove menu's entry dispatching before setup is a no-op.
+    if !shell::is_running(cx) {
+        return;
+    }
     cx.activate(true);
     if let Some(w) = window(cx) {
         let _ = w.update(cx, |_, window, _| window.activate_window());

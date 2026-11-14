@@ -50,6 +50,14 @@ struct Dev(bool);
 
 impl Global for Dev {}
 
+/// Makes every update-dialog open fail, for tests: the [`Dev`] override's pattern,
+/// standing in for the window-system failure [`open_dialog`] reports through.
+#[cfg(test)]
+struct UnavailableDialog;
+
+#[cfg(test)]
+impl Global for UnavailableDialog {}
+
 /// Whether this launch is a dev run: the [`Dev`] Global's override when set, otherwise
 /// whether `GROVE_DEV` is in the environment.
 fn dev_run(cx: &App) -> bool {
@@ -171,8 +179,15 @@ pub fn window(cx: &App) -> Option<AnyWindowHandle> {
 }
 
 /// Opens the shared dialog, at its progress stage unless it opens showing a finished
-/// outcome (the auto-check never shows a progress stage).
-fn open_dialog(stage: Option<UpdateDecision>, cx: &mut App) {
+/// outcome (the auto-check never shows a progress stage). Returns whether it opened.
+fn open_dialog(stage: Option<UpdateDecision>, cx: &mut App) -> bool {
+    #[cfg(test)]
+    if cx.has_global::<UnavailableDialog>() {
+        // The injected failure stands in for the `Err` the platform's window factory
+        // can raise below; report through the same channel to keep the seam's shape.
+        eprintln!("[grove] update: dialog unavailable");
+        return false;
+    }
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,
@@ -207,8 +222,13 @@ fn open_dialog(stage: Option<UpdateDecision>, cx: &mut App) {
                 dialog: dialog.clone(),
                 _closed: closed,
             });
+            true
         }
-        Err(e) => eprintln!("[grove] update: {e:#}"),
+        // The caller reads the return as whether anything was shown (see `report`).
+        Err(e) => {
+            eprintln!("[grove] update: {e:#}");
+            false
+        }
     }
 }
 
@@ -242,8 +262,9 @@ fn spawn_check(kind: Kind, cx: &mut App) {
 /// A manual check keeps its behavior on every outcome and on a dialog closed while its
 /// check ran (the user closed it; the next trigger runs a check of its own). The
 /// auto-check opens the shared dialog only for a release newer than both the running
-/// version and the persisted seen one; otherwise it shows nothing and records nothing.
-/// A shown update-available counts as seen, from either entry point.
+/// version and the persisted seen one, and records the release only if that dialog
+/// opened; otherwise it shows nothing and records nothing. A shown update-available
+/// counts as seen, from either entry point.
 fn report(decision: UpdateDecision, kind: Kind, cx: &mut App) {
     cx.remove_global::<Running>();
     if let Kind::Auto = kind {
@@ -253,7 +274,11 @@ fn report(decision: UpdateDecision, kind: Kind, cx: &mut App) {
         }
         // No progress stage: the auto-check opens the shared dialog straight at its
         // result, the same dialog the menu entry shows.
-        open_dialog(Some(decision.clone()), cx);
+        if !open_dialog(Some(decision.clone()), cx) {
+            // A dialog that couldn't open showed nothing, so the release stays unseen:
+            // recording it would silence every later launch's alert for it.
+            return;
+        }
     } else {
         let Some(open) = cx.try_global::<Open>().map(|open| open.dialog.clone()) else {
             return;
@@ -734,6 +759,28 @@ mod tests {
         assert!(
             !auto_check_alerts(&release, saved.dismissed_version.as_deref()),
             "the persisted version gates the auto-check on the next launch"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn an_auto_check_dialog_that_cannot_open_records_nothing(cx: &mut TestAppContext) {
+        let (_tmp, file) = launched(cx, Settings::default());
+        let hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        cx.update(|cx| {
+            cx.set_global(UnavailableDialog);
+            update::auto_check(cx);
+        });
+        cx.run_until_parked();
+
+        assert_eq!(hits.lock().unwrap().len(), 1, "the check ran");
+        assert!(
+            cx.update(|cx| update::window(cx)).is_none(),
+            "no dialog opened"
+        );
+        assert_eq!(
+            file.load().unwrap().dismissed_version,
+            None,
+            "nothing was shown, so nothing is recorded"
         );
     }
 
