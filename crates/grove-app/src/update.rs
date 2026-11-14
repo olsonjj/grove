@@ -1,7 +1,9 @@
 //! Check for Updates…: the Grove-menu entry, the one shared check state, and the result
 //! dialog for its three outcomes — up-to-date, a newer release with Download…, and a
 //! failed check with Retry (`specs/updater.md`, "Check state single and global" and
-//! "Result dialogs").
+//! "Result dialogs"). The launch auto-check shares all of this, except in a dev run
+//! (`GROVE_DEV=1`, set by `just run` and `just run-release`): it skips the auto-check
+//! entirely — no fetch, no dialog, nothing recorded — while the menu entry still checks.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -38,6 +40,23 @@ pub struct Fetcher {
 }
 
 impl Global for Fetcher {}
+
+/// Marks a dev run: the launch auto-check ([`auto_check`]) is a silent no-op, while the
+/// manual entry ([`check`]) always checks. That's `GROVE_DEV=1`, which `just run` and
+/// `just run-release` set; tests override this Global instead of the process env, the
+/// [`Fetcher`] override's pattern, so tests don't depend on the environment and parallel
+/// tests stay isolated.
+struct Dev(bool);
+
+impl Global for Dev {}
+
+/// Whether this launch is a dev run: the [`Dev`] Global's override when set, otherwise
+/// whether `GROVE_DEV` is in the environment.
+fn dev_run(cx: &App) -> bool {
+    cx.try_global::<Dev>()
+        .map(|dev| dev.0)
+        .unwrap_or_else(|| std::env::var_os("GROVE_DEV").is_some())
+}
 
 /// The check's getter, overridden or not.
 fn fetcher(cx: &App) -> Fetch {
@@ -129,12 +148,15 @@ pub fn check(cx: &mut App) {
 /// The one auto-check at the end of the launch (`shell::start`): once per launch, only
 /// when the settings toggle is on, sharing the engine, state and dialogs with the menu
 /// entry. Its report is fully silent unless a newer, not-yet-dismissed release shows.
+/// A dev run ([`dev_run`]) skips the check entirely — no fetch, no dialog, nothing
+/// recorded — while consuming the same once-per-launch slot, so a later call still runs
+/// nothing; the manual entry is unaffected.
 pub fn auto_check(cx: &mut App) {
     if cx.has_global::<AutoRan>() {
         return;
     }
     cx.set_global(AutoRan);
-    if cx.has_global::<Running>() || !shell::library(cx).settings.check_for_updates {
+    if dev_run(cx) || cx.has_global::<Running>() || !shell::library(cx).settings.check_for_updates {
         return;
     }
     cx.set_global(Running);
@@ -733,6 +755,64 @@ mod tests {
             dialog_labels(cx).0.as_deref(),
             Some("Grove 0.2.0 is available."),
             "manual checks ignore the seen version and report the truth"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_dev_run_never_auto_checks(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(cx, Settings::default());
+        cx.update(|cx| cx.set_global(Dev(true)));
+        let hits = inject(cx, vec![]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        assert!(hits.lock().unwrap().is_empty(), "no fetch at all");
+        assert!(cx.update(|cx| update::window(cx)).is_none(), "no dialog");
+        assert_eq!(
+            cx.update(|cx| shell::library(cx).settings.dismissed_version.clone()),
+            None,
+            "silence records nothing"
+        );
+        // The dev run consumed the once-per-launch slot, so a later call also runs
+        // nothing.
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+        assert!(hits.lock().unwrap().is_empty());
+    }
+
+    #[gpui_kit::test]
+    fn the_dev_override_off_leaves_the_auto_check_on_the_normal_path(cx: &mut TestAppContext) {
+        let (_tmp, _file) = launched(cx, Settings::default());
+        cx.update(|cx| cx.set_global(Dev(false)));
+        let hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        cx.update(update::auto_check);
+        cx.run_until_parked();
+
+        assert_eq!(
+            hits.lock().unwrap().clone(),
+            [RELEASES_ENDPOINT.to_string()],
+            "the override off checks as ever"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_manual_entry_still_checks_in_a_dev_run(cx: &mut TestAppContext) {
+        let tmp = TempDir::new().unwrap();
+        let file = settings_file(&tmp, Settings::default());
+        running(cx, &file);
+        cx.update(|cx| cx.set_global(Dev(true)));
+        let hits = inject(cx, vec![Reply::Body(body_for("v0.2.0"))]);
+        menu_dispatch(cx, "Check for Updates…");
+        cx.run_until_parked();
+
+        assert_eq!(
+            hits.lock().unwrap().clone(),
+            [RELEASES_ENDPOINT.to_string()],
+            "the dev marker never blocks the menu entry"
+        );
+        assert_eq!(
+            dialog_labels(cx).0.as_deref(),
+            Some("Grove 0.2.0 is available."),
         );
     }
 }
