@@ -4,9 +4,13 @@
 
 use serde::Deserialize;
 
-/// The releases endpoint the check queries; the repo lives in this one place (spec:
-/// `olsonjj/grove`). If the repo ever moves, this constant moves with it.
+/// The releases endpoint the check queries and the repo's page below: the repo lives
+/// in this one place (spec: `olsonjj/grove`), so a move takes the About window's link
+/// and every other user-facing URL with it.
 pub const RELEASES_ENDPOINT: &str = "https://api.github.com/repos/olsonjj/grove/releases";
+
+/// The repo's page on GitHub — the About window's link to the project.
+pub const REPO_URL: &str = "https://github.com/olsonjj/grove";
 
 /// Why the injected fetch of [`RELEASES_ENDPOINT`] failed. Every failure — offline,
 /// non-200, malformed JSON — maps into the same check-failed outcome rather than an error

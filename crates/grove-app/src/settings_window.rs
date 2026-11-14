@@ -21,6 +21,7 @@ use grove_core::{
     TargetKind, TerminalOpensIn, ThemeChoice, command_line,
 };
 
+use crate::about::VERSION;
 use crate::icons::{self, icon};
 use crate::login_item::{self, LOGIN_ITEMS, LoginItems};
 use crate::main_window::tilde;
@@ -29,13 +30,6 @@ use crate::theme_picker::ThemeMenu;
 use crate::{setup, shell, theme_picker, windows};
 
 const SIZE: (f32, f32) = (820., 760.);
-const VERSION: &str = concat!(
-    "Grove ",
-    env!("CARGO_PKG_VERSION"),
-    " (build ",
-    env!("GROVE_BUILD"),
-    ")"
-);
 
 /// The open settings window and the theme choice it opened with, so every close
 /// path re-applies that choice: they all funnel through window removal, and the

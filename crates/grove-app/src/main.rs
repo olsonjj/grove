@@ -1,5 +1,6 @@
 //! Grove: a native macOS menu-bar app for managing git worktrees.
 
+mod about;
 mod branch;
 mod details_view;
 mod hotkeys;

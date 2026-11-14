@@ -19,7 +19,7 @@ use objc2_app_kit::NSRunningApplication;
 use tray_icon::TrayIcon;
 
 use crate::{
-    PlatformEvent, hotkeys, login_item, macos, main_window, popover, settings_window, setup,
+    PlatformEvent, about, hotkeys, login_item, macos, main_window, popover, settings_window, setup,
     status_item, switcher, windows,
 };
 
@@ -37,7 +37,16 @@ const BACKGROUND_FETCH: Duration = Duration::from_secs(15 * 60);
 
 gpui_kit::actions!(
     grove,
-    [Quit, Hide, HideOthers, ShowAll, CloseWindow, Minimize]
+    [
+        About,
+        OpenSettings,
+        Quit,
+        Hide,
+        HideOthers,
+        ShowAll,
+        CloseWindow,
+        Minimize
+    ]
 );
 
 /// Settings and snapshot the windows render from. A global of its own so windows don't
@@ -232,6 +241,8 @@ pub fn init(cx: &mut App) {
         async {}
     })
     .detach();
+    cx.on_action(|_: &About, cx| about::open(cx));
+    cx.on_action(|_: &OpenSettings, cx| settings_window::open(cx));
     cx.on_action(|_: &Quit, cx| quit(cx));
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
@@ -262,9 +273,15 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-cmd-h", HideOthers, None),
         KeyBinding::new("cmd-w", CloseWindow, None),
         KeyBinding::new("cmd-m", Minimize, None),
+        KeyBinding::new("cmd-,", OpenSettings, None),
     ]);
     cx.set_menus([
+        // Ticket 38 slots "Check for Updates…" after the first separator.
         Menu::new("Grove").items([
+            MenuItem::action("About Grove", About),
+            MenuItem::separator(),
+            MenuItem::action("Settings…", OpenSettings),
+            MenuItem::separator(),
             MenuItem::action("Hide Grove", Hide),
             MenuItem::action("Hide Others", HideOthers),
             MenuItem::action("Show All", ShowAll),
@@ -894,13 +911,13 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
 mod tests {
     use std::path::{Path, PathBuf};
 
+    use gpui_kit::TestAppContext;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{OwnedMenuItem, TestAppContext};
     use grove_core::{Outcome, Settings, SettingsFile};
     use tempfile::TempDir;
 
     use super::*;
-    use crate::test_support::{canned, fake_launcher, set_library, settings_file};
+    use crate::test_support::{canned, fake_launcher, menu_action, set_library, settings_file};
 
     /// Grove past setup with its main window open and an unsaved settings change.
     fn running(cx: &mut TestAppContext, file: &SettingsFile) -> AnyWindowHandle {
@@ -998,22 +1015,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(recents(&file), [PathBuf::from("/c/wt/api-y")]);
-    }
-
-    /// The action behind `menu`'s `item`.
-    fn menu_action(cx: &mut TestAppContext, menu: &str, item: &str) -> Box<dyn gpui_kit::Action> {
-        let menus = cx.update(|cx| cx.get_menus()).unwrap();
-        menus
-            .into_iter()
-            .find(|m| m.name == menu)
-            .unwrap()
-            .items
-            .into_iter()
-            .find_map(|i| match i {
-                OwnedMenuItem::Action { name, action, .. } if name == item => Some(action),
-                _ => None,
-            })
-            .unwrap()
     }
 
     #[gpui_kit::test]

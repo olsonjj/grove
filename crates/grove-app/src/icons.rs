@@ -89,14 +89,22 @@ const ICONS: &[(&str, &str)] = &[
     ),
 ];
 
+/// The app icon as a real image (gradients, no tint): the About window shows it.
+pub const APP_ICON: &str = "grove/icon-1024.png";
+
 /// Grove's icons, then GPUI Kit's default bundle.
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        match ICONS.iter().find(|(p, _)| *p == path) {
-            Some((_, svg)) => Ok(Some(Cow::Borrowed(svg.as_bytes()))),
-            None => gpui_kit::assets::Assets.load(path),
+        match path {
+            APP_ICON => Ok(Some(Cow::Borrowed(
+                include_bytes!("../icons/icon-1024.png") as &'static [u8],
+            ))),
+            _ => match ICONS.iter().find(|(p, _)| *p == path) {
+                Some((_, svg)) => Ok(Some(Cow::Borrowed(svg.as_bytes()))),
+                None => gpui_kit::assets::Assets.load(path),
+            },
         }
     }
 
@@ -106,6 +114,9 @@ impl AssetSource for Assets {
             .filter(|(p, _)| p.starts_with(path))
             .map(|(p, _)| (*p).into())
             .collect();
+        if APP_ICON.starts_with(path) {
+            out.push(APP_ICON.into());
+        }
         out.extend(gpui_kit::assets::Assets.list(path)?);
         Ok(out)
     }
