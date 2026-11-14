@@ -1,9 +1,14 @@
 # Release build: Developer ID–signed, notarized DMG of Grove.
 #
 # Triggers:
-#   - manual `workflow_dispatch` (great for testing the pipeline; notarization
-#     steps auto-skip if the APPLE_* secrets aren't configured)
-#   - pushing a tag `v*` (cuts a real GitHub Release with the stapled DMG)
+#   - manual `workflow_dispatch` — a full release: bumps the workspace version
+#     (chosen via `bump`, or an explicit `version`), commits it to main, then
+#     creates the tag + draft GitHub Release via the Releases API.
+#   - pushing a tag `v*` (cuts a draft GitHub Release with the stapled DMG;
+#     kept for manual/reproducible cuttings)
+#
+# Dispatch notarization steps auto-skip if the APPLE_* secrets aren't
+# configured.
 #
 # Secrets required (repo → Settings → Secrets and variables → Actions):
 #   APPLE_CERTIFICATE_BASE64     base64 of the Developer ID .p12
@@ -14,12 +19,23 @@
 #   APPLE_API_KEY_BASE64         base64 of the AuthKey_<KEYID>.p8
 #   APPLE_TEAM_ID                10-char Team ID (notarization profile)
 #
-# Build number comes from github.run_number (no commit-back to the repo).
+# Build number comes from github.run_number (the only commit-back is the
+# version bump, done by the workflow itself on dispatch).
 
 name: release
 
 on:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump to apply on dispatch (ignored when `version` is set)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: "Explicit version (e.g. 0.2.0); overrides `bump`"
+        required: false
+        default: ""
   push:
     tags: ["v*"]
 
@@ -87,19 +103,55 @@ jobs:
           [ -n "$IDENTITY_HASH" ] || { echo "No DEVELOPER ID identity found in keychain" >&2; exit 1; }
           echo "SIGN_IDENTITY=$IDENTITY_HASH" >> "$GITHUB_ENV"
 
-      - name: Determine version
+      # Tag push: the version comes from the tag name.
+      # Dispatch: compute the target version (explicit input or a bump of the
+      # workspace version), write it back to Cargo.toml, and commit it to main
+      # so the DMG version matches the crate metadata. The tag itself is
+      # created later by the Releases API (it auto-creates a missing tag).
+      - name: Determine version (bump + commit on dispatch)
+        env:
+          EXPLICIT_VERSION: ${{ inputs.version }}
+          BUMP_KIND: ${{ inputs.bump }}
         run: |
           set -euo pipefail
+          CURRENT="$(awk '/^\[workspace.package\]/,/^\[/ { if ($1 == "version") { gsub(/"/, "", $3); print $3; exit } }' Cargo.toml)"
+
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
+            TARGET_COMMITISH="$GITHUB_SHA"
           else
-            # Manual dispatch: take the workspace version and mark it as a CI build.
-            VERSION="$(awk '/^\[workspace.package\]/,/^\[/ { if ($1 == "version") { gsub(/"/, "", $3); print $3; exit } }' Cargo.toml)+ci.$(date +%Y%m%d)"
+            if [[ -n "$EXPLICIT_VERSION" ]]; then
+              VERSION="$EXPLICIT_VERSION"
+            else
+              IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
+              PATCH=${PATCH:-0}
+              case "$BUMP_KIND" in
+                major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+                minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+                *)     PATCH=$((PATCH + 1)) ;;
+              esac
+              VERSION="$MAJOR.$MINOR.$PATCH"
+            fi
+
+            if [[ "$VERSION" != "$CURRENT" ]]; then
+              NEW_VERSION="$VERSION" perl -pi -e 'BEGIN{$in=0} if (/^\[workspace\.package\]/) { $in=1 } elsif (/^\[/) { $in=0 } if ($in) { s/^version\s*=\s*".*"/version = "$ENV{NEW_VERSION}"/ }' Cargo.toml
+              grep -q "^version = \"$VERSION\"" Cargo.toml # sanity check the bump
+              git config user.name "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git commit -am "chore(release): bump version to $VERSION"
+              git push origin HEAD
+              TARGET_COMMITISH="$(git rev-parse HEAD)" # tag the bumped commit
+            else
+              # Re-run for the same version: nothing to commit.
+              TARGET_COMMITISH="$GITHUB_SHA"
+            fi
           fi
+
           echo "Version: $VERSION (build $GITHUB_RUN_NUMBER)"
           {
             echo "VERSION=$VERSION"
             echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER"
+            echo "TARGET_COMMITISH=$TARGET_COMMITISH"
           } >> "$GITHUB_ENV"
 
       - name: Bundle app
@@ -160,10 +212,13 @@ jobs:
           name: Grove-${{ env.VERSION }}
           path: Grove-*.dmg
 
-      # Attach the DMG to a GitHub Release when the build was triggered by a v* tag.
+      # Cut a draft GitHub Release with the DMG. On a tag push, tag_name
+      # matches the pushed tag; on dispatch, the Releases API creates the tag
+      # (at TARGET_COMMITISH) if it doesn't exist yet.
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ env.VERSION }}
+          target_commitish: ${{ env.TARGET_COMMITISH }}
           files: Grove-*.dmg
           draft: true
