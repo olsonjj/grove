@@ -114,7 +114,15 @@ jobs:
           BUMP_KIND: ${{ inputs.bump }}
         run: |
           set -euo pipefail
-          CURRENT="$(awk '/^\[workspace.package\]/,/^\[/ { if ($1 == "version") { gsub(/"/, "", $3); print $3; exit } }' Cargo.toml)"
+          # Note: not a range pattern — the [workspace.package] line also
+          # matches /^\[/, which closes the range on itself and yields an
+          # empty CURRENT. Use a state flag instead. Also: don't name the
+          # flag `in` — it's a reserved keyword in awk.
+          CURRENT="$(awk 'BEGIN{p=0} /^\[workspace\.package\]/ {p=1; next} /^\[/ {p=0} p && $1 == "version" {gsub(/"/, "", $3); print $3; exit}' Cargo.toml)"
+          if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unparseable workspace version: '$CURRENT'" >&2
+            exit 1
+          fi
 
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
@@ -131,6 +139,10 @@ jobs:
                 *)     PATCH=$((PATCH + 1)) ;;
               esac
               VERSION="$MAJOR.$MINOR.$PATCH"
+            fi
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Invalid target version: '$VERSION'" >&2
+              exit 1
             fi
 
             if [[ "$VERSION" != "$CURRENT" ]]; then
