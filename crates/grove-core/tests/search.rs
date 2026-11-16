@@ -192,6 +192,79 @@ fn ranges_are_byte_offsets_for_non_ascii_names() {
 }
 
 #[test]
+fn hyphen_and_underscore_are_equivalent_for_contiguous_branch_matches() {
+    let mut s = snapshot();
+    s.repos[0].worktrees[1].branch = Some("feature/hello-world".into());
+    s.repos[0].worktrees[2].branch = Some("fix/hello_world".into());
+
+    for query in ["hello_world", "hello-world"] {
+        let hits = search(&s, &[], query);
+        assert_eq!(paths(&hits), ["/c/wt/auth-refresh", "/c/wt/rate-limit"]);
+        assert_eq!(find(&hits, "/c/wt/auth-refresh").matches.branch, [8..19]);
+        assert_eq!(find(&hits, "/c/wt/rate-limit").matches.branch, [4..15]);
+    }
+}
+
+#[test]
+fn hyphen_and_underscore_are_equivalent_for_contiguous_folder_matches() {
+    let mut s = snapshot();
+    s.repos[0].worktrees[3].path = "/c/wt/hello_world".into();
+    s.repos[1].worktrees[1].path = "/c/wt/hello-world".into();
+    s.repos[1].worktrees[1].branch = None;
+    s.repos[1].worktrees[1].detached = true;
+
+    for query in ["hello_world", "hello-world"] {
+        let hits = search(&s, &[], query);
+        assert_eq!(paths(&hits), ["/c/wt/hello_world", "/c/wt/hello-world"]);
+        assert_eq!(find(&hits, "/c/wt/hello_world").matches.folder, [0..11]);
+        assert_eq!(find(&hits, "/c/wt/hello-world").matches.folder, [0..11]);
+    }
+}
+
+#[test]
+fn hyphen_and_underscore_are_equivalent_for_scattered_branch_matches() {
+    let mut s = snapshot();
+    s.repos[0].worktrees[1].branch = Some("feature/hello-world".into());
+    s.repos[0].worktrees[2].branch = Some("fix/hello_world".into());
+
+    for query in ["h_w", "h-w"] {
+        let hits = search(&s, &[], query);
+        assert_eq!(paths(&hits), ["/c/wt/auth-refresh", "/c/wt/rate-limit"]);
+        assert_eq!(find(&hits, "/c/wt/auth-refresh").matches.branch, [8..9, 13..15]);
+        assert_eq!(find(&hits, "/c/wt/rate-limit").matches.branch, [4..5, 9..11]);
+    }
+}
+
+#[test]
+fn hyphen_and_underscore_are_equivalent_for_scattered_folder_matches() {
+    let mut s = snapshot();
+    s.repos[0].worktrees[3].path = "/c/wt/hello_world".into();
+    s.repos[1].worktrees[1].path = "/c/wt/hello-world".into();
+    s.repos[1].worktrees[1].branch = None;
+    s.repos[1].worktrees[1].detached = true;
+
+    for query in ["h_w", "h-w"] {
+        let hits = search(&s, &[], query);
+        assert_eq!(paths(&hits), ["/c/wt/hello_world", "/c/wt/hello-world"]);
+        assert_eq!(find(&hits, "/c/wt/hello_world").matches.folder, [0..1, 5..7]);
+        assert_eq!(find(&hits, "/c/wt/hello-world").matches.folder, [0..1, 5..7]);
+    }
+}
+
+#[test]
+fn ordinary_letters_still_match_case_insensitively() {
+    // Letter matching is unchanged: `RATE` matches `rate` case-insensitively.
+    let hits = search(&snapshot(), &[], "RATE");
+    assert_eq!(hits[0].path, PathBuf::from("/c/wt/rate-limit"));
+    assert_eq!(hits[0].matches.branch, [4..8]);
+
+    // The new equivalence is limited to `-`/`_`: a letter does not stand in for `_`.
+    let mut s = snapshot();
+    s.repos[0].worktrees[1].branch = Some("feature/hello_world".into());
+    assert!(search(&s, &[], "helloxworld").is_empty());
+}
+
+#[test]
 fn hits_carry_presence_and_badges() {
     let mut s = snapshot();
     s.repos[0].worktrees[1].status = Some(Ok(WorktreeStatus {

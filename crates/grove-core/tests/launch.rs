@@ -57,6 +57,7 @@ fn stub_cli_receives_new_window_flag_path_and_cwd() {
     );
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_a_reports_unknown_app() {
     let tmp = TempDir::new().unwrap();
